@@ -132,21 +132,40 @@ struct DockTile: Codable, Hashable, Sendable {
     }
 
     /// 按 Dock 的格式合成新条目。**不给 `GUID`**，让 Dock 自己分配（计划 §3.6）。
-    static func makeFileTile(url: URL, label: String, bundleIdentifier: String?, fileType: Int = 41) -> DockTile {
+    ///
+    /// - Parameter dockExtra: 真实域里**用户自己拖进来的** App 是 `true`，
+    ///   系统自带项（启动台）是 `false`。默认按用户条目处理。
+    static func makeFileTile(
+        url: URL,
+        label: String,
+        bundleIdentifier: String?,
+        fileType: Int = 41,
+        dockExtra: Bool = true
+    ) -> DockTile {
         let fileData: [String: PlistValue] = [
-            "_CFURLString": .string(url.absoluteString),
+            "_CFURLString": .string(directoryURLString(for: url)),
             "_CFURLStringType": .int(15),
         ]
         var tileData: [String: PlistValue] = [
             "file-data": .dictionary(fileData),
             "file-label": .string(label),
-            "dock-extra": .bool(false),
+            "dock-extra": .bool(dockExtra),
             "file-type": .int(fileType),
         ]
         if let bundleIdentifier {
             tileData["bundle-identifier"] = .string(bundleIdentifier)
         }
         return DockTile(raw: ["tile-type": .string("file-tile"), "tile-data": .dictionary(tileData)])
+    }
+
+    /// Dock 对 `.app` 包写的是**带尾斜杠**的目录 URL（`file:///Applications/X.app/`）。
+    ///
+    /// `URL(fileURLWithPath:).absoluteString` 不带尾斜杠，与真实域不一致；
+    /// P0 的写入实验用的也是带尾斜杠的形式（`scripts/spike-reload.sh`）。
+    static func directoryURLString(for url: URL) -> String {
+        let absolute = url.absoluteString
+        guard !absolute.hasSuffix("/") else { return absolute }
+        return absolute + "/"
     }
 }
 
@@ -181,6 +200,22 @@ struct DockAppearance: Codable, Hashable, Sendable {
         return entries
     }
 
+    /// 只保留 `present` 里存在的键。
+    ///
+    /// **为什么要过滤**：本机 `com.apple.dock` 的 34 个键里**没有** `show-process-indicators`、
+    /// `autohide-delay`、`autohide-time-modifier`（P0 实测，见 `docs/spikes.md`）。
+    /// 给一个系统上根本不存在的键写值，最好的情况是无声无息，最坏的情况是引入
+    /// 一个语义未知的键。所以**只写当前域里已经存在的键**；UI 层对应地把这些控件禁用掉，
+    /// 不做"能改但没反应"的假开关。
+    func domainEntries(restrictedTo present: Set<String>) -> [String: PlistValue] {
+        domainEntries.filter { present.contains($0.key) }
+    }
+
+    /// 本机 Dock 域里缺失、因而无法安全写入的外观键。
+    func unavailableKeys(in present: Set<String>) -> Set<String> {
+        Set(domainEntries.keys).subtracting(present)
+    }
+
     /// 从真实域读取，缺键则用默认值兜底。
     static func read(from domain: [String: PlistValue]) -> DockAppearance {
         var appearance = DockAppearance()
@@ -205,11 +240,18 @@ struct DockConfig: Codable, Hashable, Sendable {
     var appearance = DockAppearance()
 
     /// 归一化指纹。内容相同则整条应用流水线短路，**完全不重启 Dock**（计划 §3.4 第 2 条）。
-    var fingerprint: String {
+    var fingerprint: String { fingerprint(restrictedTo: nil) }
+
+    /// 只比较 `keys` 里的外观键（nil = 全部）。
+    ///
+    /// 写入后校验要用它：本机缺失的外观键不会被写，若把它们算进比对，
+    /// 就会出现"明明写成功了却判定失败"的假阴性。
+    func fingerprint(restrictedTo keys: Set<String>?) -> String {
         var parts: [String] = ["apps:" + pinnedApps.map(\.normalizedKey).joined(separator: ">")]
         parts.append("others:" + otherItems.map(\.normalizedKey).joined(separator: ">"))
-        parts.append("appearance:" + appearance.domainEntries.keys.sorted()
-            .map { "\($0)=\(appearance.domainEntries[$0]!.fingerprintToken)" }
+        let entries = appearance.domainEntries.filter { keys?.contains($0.key) ?? true }
+        parts.append("appearance:" + entries.keys.sorted()
+            .map { "\($0)=\(entries[$0]!.fingerprintToken)" }
             .joined(separator: ","))
         return parts.joined(separator: "\n")
     }
@@ -282,10 +324,12 @@ struct AppSettings: Codable, Hashable, Sendable {
     var reloadStrategy: ReloadStrategy = .auto
     /// 切换桌面时在屏幕中上部弹 1 秒的桌面名提示（`docs/PLAN.md` §3.10）。
     var showToastOnDesktopSwitch = true
+    /// 默认 Dock（通用 Tab 编辑的那一套）。没有单独绑定的桌面就用它。
+    var defaultDock = DockConfig()
 
     enum CodingKeys: String, CodingKey {
         case restoreOnQuit, clickAction, autoApplyOnEdit, autoCaptureUserEdits, reloadStrategy
-        case showToastOnDesktopSwitch
+        case showToastOnDesktopSwitch, defaultDock
     }
 
     init() {}
@@ -304,5 +348,6 @@ struct AppSettings: Codable, Hashable, Sendable {
         reloadStrategy = try container.decodeIfPresent(ReloadStrategy.self, forKey: .reloadStrategy) ?? .auto
         showToastOnDesktopSwitch =
             try container.decodeIfPresent(Bool.self, forKey: .showToastOnDesktopSwitch) ?? true
+        defaultDock = try container.decodeIfPresent(DockConfig.self, forKey: .defaultDock) ?? DockConfig()
     }
 }

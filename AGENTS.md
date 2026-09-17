@@ -61,7 +61,9 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 
 ## 3. 当前进度
 
-**P0（实验）、P1（骨架 + 识别 + 菜单栏）、P2.5（桌面命名 + 切换 toast）已完成并实测通过。下一步是 P2（编辑条 + 应用）。**
+**P0（实验）、P1（骨架 + 识别 + 菜单栏）、P2.5（桌面命名 + 切换 toast）、P2（编辑条 + 应用）已完成并实测通过。下一步是 P3（桌面页 + 自动切换）。**
+
+> ⚠️ **从 P2 起，代码真的会改用户的 Dock 了。** 写路径已接线：设置页「立即应用」→ `DockController` → 写偏好 + 重启 Dock。无痕原则靠 `LifecycleController` 的退出还原 + 会话标记兜底（见 §3 的 P2 小节）。
 
 ### 已完成
 
@@ -69,37 +71,64 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | --- | --- | --- |
 | SwiftPM 包 | `Package.swift` | 执行目标 `MultiDock` + **测试目标 `MultiDockTests`**，`platforms: [.macOS(.v14)]` |
 | 程序入口 | `Sources/MultiDock/MultiDockApp.swift` | `@main` + `NSApplication`（**不是** SwiftUI `App`，原因见下） |
-| App 委托 | `App/AppDelegate.swift` | 组装状态、菜单栏、窗口；退出流程交给 `LifecycleController` |
-| 全局状态 | `App/AppState.swift` | `@MainActor @Observable`，空间值转发给 observer（不复制） |
+| App 委托 | `App/AppDelegate.swift` | 组装状态、菜单栏、窗口；接线 toast、`onDockApplied`、`restoreHandler` |
+| 全局状态 | `App/AppState.swift` | `@MainActor @Observable`，空间值转发给 observer（不复制）；**依赖全部可注入**（`DockController` / 两个 Store），所以按钮路径能单测 |
 | 日志落盘 | `App/FileLogSink.swift` | 追加写 `multidock.log`，512 KB 上限 |
-| 生命周期 | `App/LifecycleController.swift` | 启动自检 + 会话标记；**还原动作是空实现（P4 接上）** |
+| 生命周期 | `App/LifecycleController.swift` | 启动自检 + 会话标记 + **退出还原（已接线）**；**只在本次运行改过 Dock 时才还原** |
 | SkyLight 桥 | `Spaces/SkyLightBridge.swift` | `dlopen` + `dlsym`，符号缺失即降级 |
 | 桌面枚举 | `Spaces/SpaceProvider.swift` | 协议 + 私有 API 实现 + 降级实现 |
 | 桌面观察 | `Spaces/SpaceObserver.swift` | **300 ms 轮询为主 + 通知为辅**，`type != 0` 过滤，按桌面身份去重 |
 | 桌面切换 | `Spaces/SpaceSwitcher.swift` | 同显示器内循环取下一个/上一个，两端循环 |
-| 配置模型 | `Dock/DockConfig.swift` | `PlistValue` / `DockTile` / `DockAppearance` / `DockConfig` / `DesktopBinding` / `AppSettings`（`AppSettings` 已改手写解码，见下） |
-| 桌面命名 | `Spaces/DesktopNaming.swift` | 归一化（≤10 字素簇）、显示名解析、改名规则；**纯函数，全部有单测** |
-| toast 调度 | `UI/ToastPresenter.swift` | `ToastPresenting` 协议 + 纯逻辑调度（1 s 计时、连击取消重启、只在桌面→桌面时弹） |
-| toast 窗口 | `UI/DesktopNameToast.swift` | 无边框 `NSWindow`，跨空间、不抢焦点、不挡点击，零权限 |
-| Dock 偏好 | `Dock/DockPreferences.swift` | 白名单 + 全量域读 + 原子写（**写路径仍未接线，代码里只调 `exportDomainData()` 读**） |
+| 配置模型 | `Dock/DockConfig.swift` | `PlistValue` / `DockTile` / `DockAppearance` / `DockConfig` / `DesktopBinding` / `AppSettings`（`AppSettings` 手写解码，见下） |
+| 图标条规则 | `Dock/DockStripRules.swift` | 启动台必须在首位（已有则原样保留，不覆盖 `GUID`/`book`）、Finder 只是幻影、从 `.app` 造条目、取图标 |
+| Dock 偏好 | `Dock/DockPreferences.swift` | 白名单 + 全量域读 + 原子写；**写路径已接线** |
+| Dock 重载 | `Dock/DockReloader.swift` | `DockProcessControlling` 协议 + 真实实现（含 `pgrep` 兜底）；SIGHUP 主路径 → SIGTERM → `launchctl kickstart` 三级降级 |
+| 应用流水线 | `Dock/DockController.swift` | 指纹短路 → 备份 → 读全量域 → 只覆盖白名单键 → 原子写 → 重启 → 读回校验（**不一致重试一次**）；`request()` 带防抖合并 |
 | 配置持久化 | `Store/ConfigStore.swift` | 原子写 `config.json` |
 | 基准快照 | `Store/BaselineStore.swift` | 基准 + 会话标记 + 备份轮转（保留 20 份） |
-| 菜单栏 | `UI/MenuBarController.swift` | `NSStatusItem`，区分左右键，标题显示当前桌面序号 |
-| 调试面板 | `UI/DebugPanelView.swift` | 当前 spaceUUID/id64/type、桌面列表、实时日志、**「测试 toast」按钮** |
-| 设置窗口 | `UI/SettingsView.swift` | 通用 / 桌面 两个 Tab；桌面页可**就地改名**（≤10 字符 + `n/10` 计数），通用页有 toast 开关 |
+| 菜单栏 | `UI/MenuBarController.swift` | `NSStatusItem`，区分左右键，标题显示当前桌面名 |
+| 图标条编辑器 | `UI/DockStripEditor.swift` | 拖入/拖出/排序、从访达拖 `.app` 进来、垃圾桶移除、从当前 Dock 抓取；**Finder 与启动台锁在最前** |
+| 调试面板 | `UI/DebugPanelView.swift` | 当前 spaceUUID/id64/type、桌面列表、实时日志、「测试 toast」按钮 |
+| 设置窗口 | `UI/SettingsView.swift` | 通用（**默认 Dock 编辑条 + 立即应用 / 立即还原 / 设为新基准**）/ 桌面（就地改名）两个 Tab |
+| 桌面命名 | `Spaces/DesktopNaming.swift` | 归一化（≤10 字素簇）、显示名解析、改名规则；**纯函数，全部有单测** |
+| toast 调度 / 窗口 | `UI/ToastPresenter.swift`、`UI/DesktopNameToast.swift` | 纯逻辑调度 + 无边框窗口；跨空间、不抢焦点、零权限 |
 | toast 验收工具 | `scripts/check-toast-window.sh` | 用 `CGWindowListCopyWindowInfo` 读窗口元数据（零权限），`--watch` 报告出现/消失时刻 |
 | P0 实验脚本 | `scripts/spike-*.{sh,swift}` | 重载策略 / 切桌面 / 停机时长 / 探测（含显示器 UUID 映射） |
 | 打包脚本 | `scripts/build-app.sh` | 编译 → 组装 `.app` → ad-hoc 签名 |
-| 测试 | `Tests/MultiDockTests/` | **70 个测试，全绿** |
+| 测试 | `Tests/MultiDockTests/` | **142 个测试，全绿**（其中 1 个真实 Dock 验收默认跳过，需显式开启） |
 | 设计文档 | `docs/PLAN.md` | 已按 P0 结论修订 |
 | P0 结论 | `docs/spikes.md` | 三个实验的原始数据与决定 |
 
+### 已完成：P2（编辑条 + 应用）✅ 2026-09-18
+
+**这是本项目第一次真的写 `com.apple.dock`。** 规格见 `docs/PLAN.md` §3.4–§3.7，验收证据见 §8 第 5 次记录。
+
+**实现要点（改动时别踩）**：
+
+1. **`DockController` 的顺序不能改**：指纹短路 → 备份（失败只记 `note`，不阻断）→ 读全量域 → `entries(for:restrictedTo:)` 只挑**域里真实存在**的键 → 单次原子写 → 重启 Dock → 读回校验；不一致**最多重试一次**（`for attempt in 1...2`）。校验只比**实际写进去的那些键**（`comparableKeys`），把本机缺失的键算进去会产生假阴性。
+2. **绝不写当前域里不存在的键**。本机 34 个键里只有 `show-process-indicators` 是白名单中缺失的（`autohide-delay` / `autohide-time-modifier` 读回来是 nil，压根不进 `domainEntries`）。`DockAppearance.unavailableKeys(in:)` 负责报告，UI 据此禁用控件，不做"能改但没反应"的假开关。
+3. **启动台条目原样保留**：`DockStripRules.normalizedApps` 优先复用数组里已有的启动台条目（连 `GUID` / `book` / `file-mod-date` 一起），只有域里没有时才 `makeLaunchpadTile()` 现造。早先版本无条件覆盖它，每次编辑都会抹掉真实域里那几个字段。
+4. **`.app` 的 URL 要带尾斜杠**（`file:///Applications/X.app/`）：`URL.absoluteString` 不带，与真实域和 P0 的写入实验都不一致。统一走 `DockTile.directoryURLString(for:)`。
+5. **用户 App 的 `dock-extra` 是 `true`**，启动台是 `false`（本机实测）。`makeFileTile` 默认 `true`。
+6. **拖拽排序只在 `performDrop` 时落盘 + 应用一次**。`dropEntered` 会连续触发，所以 `AppState.setDefaultDock` 只改内存、`dockConfigEdited` 才落盘。否则拖过一个图标就写一次 `config.json` 并重启一次 Dock。
+7. **退出还原有门槛**：`LifecycleController.shouldTerminate` 只在 `sessionChangedDock`（会话标记里的 `appliedFingerprint != nil`）时才还原。**不能无条件还原** —— 用户可能在运行期间自己拖了图标，写回基准会把他的改动一起抹掉。另外 `AppState.restoreToBaseline` 会比一次白名单键，已经与基准一致就跳过（省掉一次没必要的 Dock 重启）。
+8. **`DockController.onOutcome` 是 `var` 而不是 `let`**：`AppState.init` 里要先构造 controller 再挂回调（闭包要捕获 `self`），`let` 做不到。
+
 ### 未完成（计划里已定义、代码里还没有）
 
-- `Dock/DockController.swift`（应用流水线、防抖合并、内容相同跳过）、`Dock/DockReloader.swift`（SIGHUP 主 + SIGTERM 兜底）、`Dock/DockWatcher.swift`（手动改动回存）—— **全部属于 P2/P3**。
-- `UI/DockStripEditor.swift`（P2）、`UI/DesktopListView.swift`（P3）。
-- `docs/PLAN.md` §2 列出的 `Tests/` 里的"合并、还原逻辑"测试：合并（防抖）随 `DockController` 一起做；还原逻辑目前只测了 `BaselineStore` 层。
+- `Dock/DockWatcher.swift`（识别用户在真实 Dock 上的手动改动并回存）—— **P3**。
+- `UI/DesktopListView.swift`（P3）。
+- P4：强杀/崩溃后的**启动自愈还原**（目前只检测残留标记并记日志，不会自动写回基准）、`mru-spaces` 开关。
+- P5：多显示器 / 热插拔、README。
 
+### 下一步：P3（桌面页 + 自动切换）
+
+1. `UI/DesktopListView.swift`：列出所有桌面，每个桌面可单独设置 Dock（位置/大小/图标），或勾选「沿用默认」。
+2. `DesktopBinding.override` 接上 `DockController`：切桌面时应用该桌面的配置（`DockController.request` 自带防抖合并，切桌面连击只会应用最终落点）。
+3. `DockWatcher`：轮询真实域，发现用户手动改动 → 回存到当前桌面的绑定（受「识别真实 Dock 上的手动改动并回存」开关控制）。
+4. **做之前必须先问清 §6.1 第 1 条**（「桌面」页里"位置"指什么）。
+
+---
 ### 已完成：P2.5（桌面命名 + 切换 toast，不写 Dock）✅ 2026-09-18
 
 用户已明确要的功能，且完全不碰 Dock，所以插在 P2 之前做掉了。规格与验收证据见 `docs/PLAN.md` §3.10 / §4。
@@ -113,17 +142,9 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 5. toast 触发点只有 `SpaceObserver.onActiveSpaceChanged` 一个；`ToastPresenter` 用 `lastDesktop` 记账，**全屏空间（nil）会把它清成 nil**，于是「启动首次采样」和「从全屏退回桌面」都不弹。开关关闭时**仍要记账**（否则打开开关会补弹一次）。
 6. `DesktopNameToastWindow` 的窗口属性是硬约束：`collectionBehavior` 必须含 `.canJoinAllSpaces` + `.fullScreenAuxiliary`（少了就只在自己所在空间显示，切过去反而看不见）、`canBecomeKey`/`canBecomeMain` = false、`ignoresMouseEvents` = true、`level = .statusBar`、用 `orderFrontRegardless()` 显示。
 
-### 下一步：P2（编辑条 + 应用）
+### 下一步：P3（桌面页 + 自动切换）
 
-P0 已把 §3.5 的主路径定死为 **SIGHUP**。P2 要做的第一件事是把写路径接起来：
-
-1. `DockReloader`：`kill(dockPID, SIGHUP)`，等 Dock 归位（轮询 PID 变化 + 上限 5 s），未归位则 `launchctl kickstart -k gui/$(id -u)/com.apple.Dock.agent` 兜底。**绝不用 AppleEvent 优雅退出**（`SuccessfulExit=0` 时 launchd 不会拉回 Dock）。
-2. `DockController`：读全量域 → 只覆盖白名单键 → 单次原子写 → 触发重载 → **校验指纹，不一致重试一次**（SIGTERM 清理窗口的竞态，见 spikes.md）。
-3. `UI/DockStripEditor`：拖入/拖出/排序，Finder 与 Launchpad 锁定在最前。**Finder 不需要写进 plist**（P0 已确认无法表示），Launchpad 是普通条目、保证它存在即可。
-4. 通用 Tab 接上编辑条与「立即应用」「立即还原到原始 Dock」按钮。
-5. 验收：`defaults read com.apple.dock` 与操作前 diff，**除白名单键外无任何差异**；点还原后逐键等于 baseline。
-
-⚠️ **P2 首次写外观键前必须实测键名**：本机 34 个键里**没有** `show-process-indicators`、`autohide-delay`、`autohide-time-modifier`。白名单里保留了它们，但写之前要确认当前系统上这些键真的有效，否则会出现"设置页能改、Dock 没反应"。
+见本文档 §3 末尾的 P3 步骤清单。**做之前必须先问清 §6.1 第 1 条。**
 
 ---
 
@@ -146,9 +167,19 @@ P0 已把 §3.5 的主路径定死为 **SIGHUP**。P2 要做的第一件事是�
 | Dock 热重载 | **不存在**。post `com.apple.dock.prefchanged`（darwin 与分布式两种都试过）完全无效 |
 | Dock 重启 | `kill -HUP`：进程消失于 +13 ms、归位 +101 ms（**总不可用约 101 ms**）。`kill -TERM`：Dock 先做约 255 ms 清理，总不可用 **约 367–395 ms**。**主路径选 SIGHUP** |
 | Dock 进程守护 | `/System/Library/LaunchAgents/com.apple.Dock.plist` 为 `KeepAlive = {AfterInitialDemand:1, SuccessfulExit:0}` → 必须信号致死才会被拉起；**优雅退出（exit 0）不会重启，用户会当场失去 Dock** |
-| **Dock 是否应用了写入** | 判据：写入的 tile 不带 `GUID`，Dock 真正读取并应用后会**补上 `GUID`**。实测正负两种情形都验证过 |
+| **Dock 是否应用了写入** | 判据：写入的 tile 不带 `GUID`，Dock 真正读取并应用后会**补上 `GUID`**。实测正负两种情形都验证过。**回写是异步的**：P2 验收里 apply 返回后立刻读还是 `nil`，轮询 200 ms 内就出现了 → 判据要配轮询，别读完就断言 |
+| **只写白名单键：已实测成立** | P2 验收（2026-09-18）：apply 一次（改 `tilesize` + `magnification` + 加一个 Calculator 条目）后与操作前全量域 diff，**变化只有 `magnification` / `persistent-apps` / `tilesize`**，白名单外的键一个都没动 |
+| **写外观键真的生效** | `tilesize` 36 → 52、`magnification` 翻转，写入后域里的值就是新值，且 Dock 重启（PID 变化）。`persistent-apps` 的新条目被补上 `GUID`（实测 `i:1414651200` 等，每次不同）→ Dock 确实按新偏好重建了 Dock |
+| **本机白名单键的可用性（逐键实测）** | **可用**：`persistent-apps` `persistent-others` `orientation` `tilesize` `magnification` `largesize` `autohide` `mineffect` `minimize-to-application`。**不存在**：`show-process-indicators`（域里没有）。`autohide-delay` / `autohide-time-modifier` 域里也没有，且 `DockAppearance.read` 读回来是 nil → 压根不进写入集合。结论：**只写"域里已有的键"这条规则就够了**，不需要额外黑名单 |
+| **Dock 自己会改的键** | 重启一次 Dock，`mod-count` 就 +1；`recent-apps` 也会变。这两个**不在白名单里、我们从不写**，所以验收时"还原后仍有差异"是正常的。判据是：**差异只能落在白名单键或 `{mod-count, recent-apps, trash-full}` 上** |
+| **SIGHUP 实测耗时（P2 复测）** | 连续多次 apply 都是 **125–138 ms**，与 P0 的 101 ms 同一量级。还原路径同样 136–138 ms |
+| **`pgrep -x Dock` 可作 PID 兜底** | `NSRunningApplication.runningApplications(withBundleIdentifier:)` 在非 `.app` 进程（`swift test` 的 xctest runner）里可能查不到，`RealDockProcessControl.dockPID()` 用 `pgrep -x Dock` 兜底 |
 | Finder | `persistent-apps` 里没有 Finder；**全量域 34 个键里没有任何 Finder 相关键或值** → 写偏好无法删除它，"钉住"天然成立，无需代码 |
-| Dock 偏好域 | 34 个键；`persistent-apps` 15 项（首项 Launchpad）、`persistent-others` 1 项。**没有** `show-process-indicators` / `autohide-delay` / `autohide-time-modifier` |
+| Dock 偏好域 | 34 个键；`persistent-apps` 15 项（首项 Launchpad，`file-type=169`、`dock-extra=false`、`bundle-identifier=com.apple.launchpad.launcher`）、`persistent-others` 1 项（下载文件夹）。用户 App 是 `file-type=41`、`dock-extra=true`。**没有** `show-process-indicators` / `autohide-delay` / `autohide-time-modifier` |
+| **`.app` 的 `_CFURLString` 带尾斜杠** | 真实域里是 `file:///System/Applications/Launchpad.app/`。`URL(fileURLWithPath:).absoluteString` **不带**尾斜杠 → 必须自己补（`DockTile.directoryURLString(for:)`） |
+| **写偏好会不会污染别的键：不会** | `CFPreferencesSetMultiple` + 全量域读回 + 只覆盖白名单键，实测 `mru-spaces` / `wvous-*` / `mod-count` / `recent-apps` 全部原样 |
+| **`plutil -p` 比对长数组会错位** | 用 `diff` 比对 `plutil -p` 导出的文本时，数组元素行数不同会导致后面整体错位，产生**假差异**。要判断"成员/顺序变了"就抽出标签序列比，要判断"值变了"就用 `PlistValue` 结构比较（验收测试里 `differences(between:and:)` 就是这么做的） |
+| **测试窗口期内别手动改 Dock** | 实测踩过：验收跑到一半 Dock 被外部改动（`persistent-others` 从 4 项变 1 项），"还原后仍有差异"报了假失败 |
 | 多显示器空间 | `com.apple.spaces spans-displays` 不存在 → 默认"显示器各自独立空间"，映射键需 `(displayUUID, spaceUUID)` |
 | 风险项 | 本机 `mru-spaces = 1`（自动重排空间），会打乱桌面顺序、破坏"下一个桌面"直觉 → 设置页给显式开关，**用户主动点击才改** |
 | 截图验证不可用 | 本机未授予屏幕录制权限，`screencapture` 只返回壁纸（无菜单栏、无窗口）。**验收请用 `multidock.log` 或调试面板，不要依赖截图** |
@@ -167,18 +198,23 @@ P0 已把 §3.5 的主路径定死为 **SIGHUP**。P2 要做的第一件事是�
 
 ```bash
 swift build -c release      # 编译
-swift test                  # 70 个测试（已可用，见下）
+swift test                  # 142 个测试（含 1 个默认跳过的真实 Dock 验收）
 ./scripts/build-app.sh      # 组装 build/MultiDock.app（ad-hoc 签名）
 open build/MultiDock.app    # 运行（必须在 .app 里跑，菜单栏图标才正常）
 ./scripts/check-toast-window.sh --watch 12   # 客观验收 toast（零权限，读窗口元数据）
+
+# 真实 Dock 验收：会真的改 com.apple.dock 并重启 Dock，跑完自动还原
+MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --filter DockAcceptanceTests
 ```
 
 - **`swift test` 现在可用了**：`Package.swift` 已加 `MultiDockTests` 测试目标。（旧版这里写的"会报 no tests found"已过时。）
+- **真实 Dock 验收默认跳过**（`DockAcceptanceTests`，靠环境变量开启）。它会写 `com.apple.dock` 并重启 Dock 两次，跑完把操作前的全量域写回去；中间产物落在 `/tmp/multidock-acceptance-{before,after-apply,after-restore}.plist`。**跑的时候别手动改 Dock**，否则会报假失败。
+- 想更保险就先手工备份：`defaults export com.apple.dock /tmp/dock-backup.plist`。
 - **写 Swift 小工具时注意 stdout 缓冲**：重定向到文件时是块缓冲，观察类脚本要 `setvbuf(stdout, nil, _IONBF, 0)`，否则一行都看不到（`check-toast-window.sh` 已这么处理）。
 - 反复调用的 Swift 探测工具要**编译一次缓存复用**（`swiftc -O -o /tmp/... `），别每次 `swift file.swift` —— 那是每次都完整编译，几十毫秒级轮询根本跑不动。
 - 打包脚本用的是 `codesign --force --sign -`，不是计划原文写的 `--deep`（Apple 已废弃 `--deep`）。
 - 也可以直接用 Xcode 打开 `Package.swift`，但**不要**手写 `.xcodeproj`。
-- **仓库已初始化**（`git init -b main`，首个 commit `e3e359a`，见 §8）。提交签名走 1Password，**提交前先确认 1Password 在跑**（见 §0）。
+- **仓库已初始化**（`git init -b main`，首个 commit `e3e359a`，见 §8）。提交签名走 1Password，**提交前先确认 1Password 在跑并且已解锁**（见 §0）。
 - **不要用 `rm -rf .build/...` 清缓存**：本机有 safe-delete 保护会拦截。要全新构建请用
   `swift build -c release --build-path /tmp/multidock-build`。
 
@@ -192,7 +228,9 @@ open build/MultiDock.app    # 运行（必须在 .app 里跑，菜单栏图标�
 - 代码不写解释性注释；只在"为什么"不显然时才写。
 - 新增功能必须有对应的实测验证，不接受"编译通过就算完成"。
 - **给 `AppSettings` 加字段时，必须同时在它手写的 `init(from:)` 里补一行 `decodeIfPresent`**，否则旧配置文件缺这个键会导致整份配置解码失败、静默退回默认值（`ConfigStore.load()` 的行为）。
-- **可测性拆分**：跟 AppKit / 系统调用打交道的部分（窗口、私有 API）单独放一个类型并抽成协议（`ToastPresenting`、`SpaceProviding`），纯逻辑放另一个类型。这样行为能单测，剩下的才靠实测。
+- **可测性拆分**：跟 AppKit / 系统调用打交道的部分（窗口、私有 API、Dock 进程）单独放一个类型并抽成协议（`ToastPresenting`、`SpaceProviding`、`DockPreferenceAccessing`、`DockProcessControlling`），纯逻辑放另一个类型。这样行为能单测，剩下的才靠实测。
+- **`AppState` 的依赖全部可注入**（`dockController` / `configStore` / `baselineStore`），并且 **AppState 内部不要直接调 `DockPreferences.readDomain()` 这类静态入口** —— 那会绕过注入点，测试里会读到真实系统的偏好域。要读就走 `dockController.readDomain()` / `captureLiveConfig()`。（P2 踩过：`captureCurrentDockAsDefault` 就是直接调静态方法，导致三个单测读到真实 Dock。）
+- **文件末尾的 `try` / `defer` 里不要阻塞主线程**：`@MainActor` 的异步测试里 `DispatchSemaphore.wait` 会死锁（`Task { @MainActor }` 永远排不上）。要在收尾还原，就写 `do { try await ... } catch { await cleanup(); throw error }` + 正常路径显式收尾。
 
 ### 与计划原文的两处刻意偏离（不要"改回去"）
 
@@ -215,6 +253,7 @@ open build/MultiDock.app    # 运行（必须在 .app 里跑，菜单栏图标�
 | 2 | toast 在桌面**没有自定义名**时显示「桌面 N」还是不显示？ | 不阻塞 | ✅ P2.5 已按"显示「桌面 N」"实现，等用户点头 |
 | 3 | "屏幕中上部"的具体位置（定在距可见区顶部 80 pt、水平居中） | 不阻塞 | ✅ P2.5 已按 80 pt 实现（实测 `y=80`），等用户点头 |
 | 4 | 10 个字符按**字素簇**还是按**视觉宽度**（中文 2 / 英文 1）算？ | 不阻塞 | ✅ P2.5 已按字素簇实现，等用户点头 |
+| 5 | **默认 Dock 为空时要不要自动抓取？** 现在**不自动抓**（避免首启就写盘/意外清空 Dock），改为在设置页显示橙色警告并把「立即应用」禁用掉，让用户先点「从当前 Dock 抓取」 | 不阻塞 | ⏳ P2 这么做了，等用户确认这个交互是否合适 |
 
 ### 6.2 已解决（留档，别重复问）
 
@@ -226,34 +265,75 @@ open build/MultiDock.app    # 运行（必须在 .app 里跑，菜单栏图标�
 
 | # | 事项 | 影响 | 何时处理 |
 | --- | --- | --- | --- |
-| 1 | **外观键 `show-process-indicators` / `autohide-delay` / `autohide-time-modifier` 在本机 34 个键里不存在** | 可能出现"设置页能改、Dock 没反应" | P2 首次写外观键前逐个实测键名 |
-| 2 | **SIGTERM 有约 255 ms 退出清理窗口**，Dock 可能回写自己的状态覆盖我们的写入（实测未发生，但不能假设永远安全） | 应用不生效 | P2：写完校验指纹，不一致重试一次。SIGTERM 只作兜底 |
+| 1 | ~~外观键 `show-process-indicators` / `autohide-delay` / `autohide-time-modifier` 在本机 34 个键里不存在~~ | 可能出现"设置页能改、Dock 没反应" | ✅ **已解决**：P2 实测确认只有 `show-process-indicators` 缺失；另两个读回来是 nil、压根不进写入集合。`DockAppearance.unavailableKeys(in:)` 负责报告，设置页据此禁用控件 |
+| 2 | ~~SIGTERM 有约 255 ms 退出清理窗口，Dock 可能回写覆盖我们的写入~~ | 应用不生效 | ✅ **已解决**：`DockController` 写完读回校验、不一致重试一次（`for attempt in 1...2`）。实测 SIGHUP 主路径每次一次过（`verifyAttempts == 1`），重试逻辑由单测 `testRetriesOnceWhenDockDidNotTakeTheWrite` 覆盖 |
 | 3 | **手动移除 Finder 是否落键**未验证 | 若有新键需纳入白名单 | 可选，30 秒。步骤见 `docs/spikes.md` 实验 3。风险低 |
 | 4 | **用户手动切桌面时 `activeSpaceDidChange` 通知是否触发**未知 | 只影响"能否把跟随延迟从 300 ms 降到接近 0"，不影响可用性 | P5 回归时顺手测 |
-| 5 | **`LifecycleController.restoreHandler` 是空实现**，会话标记的 `appliedFingerprint` 恒为 nil | 无痕原则目前靠"根本不写 Dock"实现，而非靠还原 | P4 接上还原全链路 |
-| 6 | `docs/PLAN.md` §2 提到 `Tests/` 要测"合并（防抖）、还原逻辑" | 覆盖不全 | 合并随 `DockController` 在 P2 做；还原逻辑目前只测到 `BaselineStore` 层 |
+| 5 | ~~`LifecycleController.restoreHandler` 是空实现~~ | 无痕原则靠"根本不写 Dock"实现 | ✅ **已解决**：P2 已接线（`AppDelegate` → `AppState.restoreToBaseline`），并且只在 `sessionChangedDock` 时才还原 |
+| 6 | ~~`Tests/` 要测"合并（防抖）、还原逻辑"~~ | 覆盖不全 | ✅ **已解决**：防抖合并由 `testRapidRequestsCollapseIntoOneApply` / `testRequestArrivingDuringApplyIsRunAfterwards` 覆盖；还原由 `AppStateDockTests` 的 5 个用例覆盖 |
 | 7 | ~~toast 窗口的 `ignoresMouseEvents` / `canBecomeKey = false` 效果未实测~~ | 万一抢焦点，用户切过去打字会打进 toast | ✅ **已验证**：连弹两次 toast 期间每 100 ms 采样 `lsappinfo front`，前台始终是别的 App，MultiDock 一次都没变成前台 |
 | 8 | ~~自定义名要替换所有 `DesktopSpace.displayName` 调用点~~ | 漏一处就会出现"菜单栏和设置页名字不一样" | ✅ **已完成**：`grep -rn '\.displayName' Sources/` 复查，UI 与日志全部走 `AppState.displayName(for:)`，只剩 `DesktopNaming` 内部的回落与 `AppDelegate` 的兜底 |
 | 9 | ~~toast 距顶 80 pt 的观感未调~~ | 可能偏高/偏低 | ✅ 已实测 `y=80`，观感由用户拍板（`docs/PLAN.md` §6 第 3 条） |
 | 10 | ~~toast 在"用户手动切桌面"时是否也弹未实测~~ | 影响是否符合直觉 | ✅ **已验证**：用外部进程 `spike-switch` 切桌面（等价于用户用触控板/快捷键切，不是 App 自己发起的），toast 照常弹出 |
 | 11 | **设置页的改名输入框没有点击验证过**（本机无屏幕录制、菜单栏自动隐藏，无法用脚本点击 UI） | 万一 SwiftUI 绑定写错，改完名字没生效 | 需要用户手动点一次：打开设置 → 桌面 → 改个名字 → 回车 → 切桌面看 toast。逻辑侧已由 `config.json` 注入 + 单测覆盖 |
 | 12 | **「连切 5 次只显示最终名字」只做了单测**，没做真机连击 | 真机上是否闪烁未实测 | 单测 `testRapidSwitchKeepsOnlyLatestTextAndHidesOnce` 覆盖了调度逻辑；真机连击需要手动快速点菜单栏 |
+| 13 | **设置页的「立即应用」「立即还原到原始 Dock」按钮没有被点过** | 按钮到 `AppState.applyDefaultDock()` 之间只有一行 SwiftUI action，类型检查通过；但没真人点过 | 逻辑侧已由 `AppStateDockTests`（18 个用例，覆盖空配置拒绝、写入、短路、退出还原门槛）+ `DockAcceptanceTests`（真实 Dock 往返）覆盖。**需要用户手动点一次确认** |
+| 14 | **图标条的拖拽（排序 / 拖出移除 / 从访达拖 `.app` 进来）没有被真人拖过** | SwiftUI 的 `onDrag` / `DropDelegate` / `dropDestination` 在真机上的手感与边界行为未验证 | 需要用户手动拖一次。排序逻辑本身由 `DockStripRulesTests` + `AppStateDockTests` 覆盖 |
+| 15 | **「立即还原」与退出还原都只比白名单键**，所以 `mod-count` / `recent-apps` 不会被还原 | 这两个是 Dock 自己的计数器，还原它们没有意义，但要知道差异存在 | 已有意为之，记录在案 |
+| 16 | **启动自愈还原（强杀/崩溃后写回基准）还没做** | 目前只检测残留标记并记日志，不会自动还原 | P4 |
 
 ---
 
 ## 7. 给下一个 session 的建议顺序
 
 1. 读本文件 → `docs/PLAN.md`（§3 核心机制、**§3.10 桌面命名与 toast**、§4 阶段与验收）→ `docs/spikes.md`（P0 结论，**含对计划的三处修正**）。
-2. 和用户确认 §6.1 第 1 条（做 P3 前必须），以及 §6.3 第 11 条（让用户点一次设置页）。
-3. 跑一次基线：`swift build -c release && swift test && ./scripts/build-app.sh`，确认全绿（应为 70 个测试通过、零警告）。
-4. 做 P2：`DockReloader` → `DockController` → `DockStripEditor` → 通用 Tab 接线 → 验收（`defaults read` diff 除白名单外无差异）。
-5. 收尾：按 §0 更新本文档 + `git commit`。
+2. 和用户确认 §6.1 第 1 条（做 P3 前必须），以及 §6.3 第 11 / 13 / 14 条（让用户点一次设置页、点一次按钮、拖一次图标条）。
+3. 跑一次基线：`swift build -c release && swift test && ./scripts/build-app.sh`，确认全绿（应为 142 个测试通过、零警告）。
+4. 需要动 Dock 的改动，验收用 `MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --filter DockAcceptanceTests`；**跑之前先 `defaults export com.apple.dock` 备份，且中途别手动改 Dock**。
+5. 做 P3：`DesktopListView` → `DesktopBinding.override` 接到 `DockController` → `DockWatcher` 回存手动改动。
+6. 收尾：按 §0 更新本文档 + `git commit`。
 
 ---
 
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-09-18（第 5 次）— 完成 P2：编辑条 + 应用（**本项目第一次真的写 Dock**）
+
+**做了什么**（用户：「按计划继续执行，直到计划中的所有阶段都实现（每个阶段实现后 git commit 一次）」）：
+
+- 新增 5 个源文件：`Dock/DockReloader.swift`（`DockProcessControlling` 协议 + 真实实现 + 三级降级）、`Dock/DockController.swift`（应用流水线 + 防抖合并）、`Dock/DockStripRules.swift`（启动台/Finder 规则 + 从 `.app` 造条目）、`UI/DockStripEditor.swift`（拖拽排序/移除/拖入/抓取）。
+- 新增 4 个测试文件：`DockReloaderTests`（10）、`DockControllerTests`（18）、`DockStripRulesTests`（22）、`AppStateDockTests`（18）、`DockAcceptanceTests`（1，默认跳过）、`TestSupport.swift`（共用替身）。
+- 改了：`DockConfig.swift`（`AppSettings.defaultDock` + 手写解码补一行；`DockAppearance.domainEntries(restrictedTo:)` / `unavailableKeys(in:)`；`DockConfig.fingerprint(restrictedTo:)`；`DockTile.makeFileTile` 加 `dockExtra` + 尾斜杠 URL）、`AppState.swift`（`dockController` + 应用/还原/抓取/编辑方法，**依赖全部可注入**）、`SettingsView.swift`（通用 Tab 接上编辑条 + 三个按钮 + 本机不支持键的提示）、`AppDelegate.swift`（接线 `onDockApplied` 与 `restoreHandler`）、`LifecycleController.swift`（**只在改过 Dock 时才还原**；`baselineStore` 可注入）。
+- `docs/PLAN.md`：§2 文件树、§3.4/§3.5/§3.6/§3.7 细则、§4 P2 标 ✅、§5 风险表、§6、§7 同步。
+
+**验收证据（真实 Dock，全部实测）**：
+
+- `swift build -c release` 零警告；`swift test` **142 个测试全绿**（1 个真实 Dock 验收默认跳过）。
+- `MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --filter DockAcceptanceTests` 通过：
+  - apply（`tilesize` 36→52、`magnification` 翻转、追加一个不带 `GUID` 的 Calculator 条目）：`SIGHUP 成功：PID 42542 → 44081，用时 132 ms；写入 9 个键`。
+  - **与操作前全量域 diff，变化的键只有 `["magnification", "persistent-apps", "tilesize"]`** —— 白名单外的键一个都没动 ✅。
+  - **Dock 给写入的条目补上了 `GUID`（`i:1414651200`）** → 写入真的被 Dock 读进去并重建了 Dock ✅。
+  - 还原（`SIGHUP 138 ms`）后：图标顺序逐项回到原样，白名单键逐键一致，键集合一致（34 个键）；**仅剩差异 `["mod-count", "recent-apps"]`**，那是 Dock 自己每次重启都会动的计数器。
+- App 级冒烟：`open build/MultiDock.app` 前后 `defaults export com.apple.dock` 逐键相同（默认 Dock 为空时不写任何东西）；日志正确报出 `本机 Dock 域里没有这些键…show-process-indicators`。
+- 单测覆盖了：指纹短路（内容相同不写不重启）、只写白名单、缺键跳过不写、校验失败重试一次、两次都失败就报失败且不记指纹、读不到域直接失败、备份失败非致命、连击合并成一次、应用中新请求补跑、退出还原的三个门槛、还原与基准一致时跳过。
+
+**关键手法 / 踩到的坑**：
+
+1. **Dock 回写 `GUID` 是异步的**：apply 返回后立刻读还是 `nil`，轮询 200 ms 内出现。判据必须配轮询，否则会误判成"写入没生效"。
+2. **`plutil -p` + `diff` 比对长数组会错位**，产生假差异。判断"成员/顺序"就抽标签序列比，判断"值"就用 `PlistValue` 结构比较。
+3. **测试窗口期内别手动改 Dock**：有一次验收跑到一半 Dock 被外部改动（`persistent-others` 4 项→1 项），"还原后仍有差异"报了假失败。
+4. **`DockStripRules.normalizedApps` 一开始无条件用合成条目覆盖启动台**，把真实域里的 `GUID` / `book` / `file-mod-date` 抹掉了。改成"优先复用已有的启动台条目"。
+5. **`.app` 的 `_CFURLString` 必须带尾斜杠**（`file:///Applications/X.app/`），`URL.absoluteString` 不带，与真实域和 P0 写入实验都不一致。
+6. **`AppState.captureCurrentDockAsDefault` 直接调了静态 `DockPreferences.readDomain()`**，绕过注入点 → 三个单测读到真实 Dock。加了 `DockController.readDomain()` / `captureLiveConfig()` 作为唯一入口。
+7. **`@MainActor` 异步测试里用 `DispatchSemaphore.wait` 会死锁**（`Task { @MainActor }` 排不上）。改成 `do/catch` + 显式收尾。
+8. **退出还原不能无条件做**：用户可能在运行期间自己拖了图标，写回基准会把他的改动一起抹掉。加了 `sessionChangedDock` 门槛 + "已与基准一致就跳过"。
+9. **`onOutcome` 得是 `var`**：`AppState.init` 要先构造 controller 再挂回调（闭包捕获 `self`），`let` 做不到。
+10. **非 `.app` 进程里 `NSRunningApplication.runningApplications(withBundleIdentifier:)` 可能查不到 Dock** → `dockPID()` 用 `pgrep -x Dock` 兜底。
+
+**当前进度**：P0 ✅、P1 ✅、P2.5 ✅、**P2 ✅**。**写路径已接线，App 现在真的会改 Dock**；无痕靠退出还原 + 会话标记兜底。
+**未解决**：§6.1 第 1 条（「位置」含义，**阻塞 P3**）、第 5 条（默认 Dock 为空的交互）；§6.3 第 3/4/11/12/13/14/16 条（其中 11/13/14 需要用户手动点/拖一次）。**1Password 处于锁定状态，本次的 commit 尚未落盘**（暂存区完好，解锁后重跑即可）。
 
 ### 2026-09-18（第 4 次）— 完成 P2.5：桌面命名 + 切换 toast
 

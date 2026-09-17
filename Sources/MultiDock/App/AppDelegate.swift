@@ -23,6 +23,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         attachToast(to: state)
 
         lifecycle = LifecycleController(state: state)
+        // 无痕原则的两条接线：把「改过 Dock」记进会话标记；退出时把基准写回真实 Dock。
+        state.onDockApplied = { [weak lifecycle] fingerprint in
+            lifecycle?.noteDockApplied(fingerprint: fingerprint)
+        }
+        lifecycle.restoreHandler = { [weak state] in
+            _ = await state?.restoreToBaseline()
+        }
         menuBar = MenuBarController(state: state)
         menuBar.onOpenDebugPanel = { [weak self] in self?.showDebugPanel() }
         menuBar.onOpenSettings = { [weak self] in self?.showSettings() }

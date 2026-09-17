@@ -33,8 +33,11 @@ macOS 多桌面工具，为每个 Space 绑定一套**原生 Dock** 配置。个
 - **程序化切桌面不触发空间变化通知** → `SpaceObserver` 用 300 ms 轮询为主、通知为辅；自己发起的切换必须预应用。
 - **Finder 在 plist 中无任何表示** → 钉住无需代码，也不要给它拖拽手柄。
 - 空间字典键名是 **`uuid`**（不是 `ManagedSpaceUUID`）。
-- 写 Dock 偏好：读**全量**域 → 只覆盖白名单键 → 单次原子写回，绝不整域替换。
+- 写 Dock 偏好：读**全量**域 → 只覆盖白名单键 → 单次原子写回，绝不整域替换。**只写当前域里真实存在的键**（本机缺 `show-process-indicators`；`autohide-delay`/`autohide-time-modifier` 压根不在域里）。写完读回校验，不一致**最多重试一次**。
+- **退出还原有门槛**：只在本次运行真的改过 Dock（会话标记里 `appliedFingerprint != nil`）时才还原 —— 否则会抹掉用户在运行期间自己拖的图标。还原前比一次白名单键，已与基准一致就跳过。
 - 菜单栏用 `NSStatusItem` 而非 `MenuBarExtra`；`DockTile.raw` 用 `[String: PlistValue]` 而非 `[String: Any]`。
+- **`AppState` 的依赖全部可注入**（`dockController` / `configStore` / `baselineStore`），且 AppState 内部**不直接调 `DockPreferences.readDomain()` 这类静态入口** —— 会绕过注入点，测试里读到真实系统的偏好域。要读就走 `DockController.readDomain()` / `captureLiveConfig()`。
+- `.app` 条目的 `_CFURLString` **必须带尾斜杠**（`file:///Applications/X.app/`）；用户 App `dock-extra=true`，启动台 `file-type=169` + `dock-extra=false`。启动台条目要**复用真实域里已有的**（保住 `GUID`/`book`），不要无条件重建。
 
 ## 开发环境
 
@@ -45,3 +48,7 @@ macOS 15.7.9 (24G830) / x86_64 / 单显示器 / Swift 6.2.4。换机器需重新
 - 不接受"编译通过就算完成"，每个功能都要实测。
 - **不能用截图验证**（本机无屏幕录制权限，`screencapture` 只返回壁纸）。用 `multidock.log`、调试面板，或"Dock 是否给 tile 补 GUID"这类客观信号。
 - 保持零警告构建（`swift build -c release --build-path /tmp/...` 可绕过 safe-delete 做全新构建）。
+- **动 Dock 的改动跑真实验收**：`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --filter DockAcceptanceTests`（会真的改 `com.apple.dock` 并重启 Dock，跑完自动还原）。**跑之前先 `defaults export com.apple.dock` 备份，中途别手动改 Dock**（会报假失败）。
+- **Dock 回写 `GUID` 是异步的**：apply 返回后立刻读还是 `nil`，轮询 200 ms 内出现 → 判据必须配轮询。
+- **Dock 重启一次 `mod-count` 就 +1、`recent-apps` 也会变**（不在白名单、我们从不写）→ 验收判据是「差异只能落在白名单键或 `{mod-count, recent-apps, trash-full}` 上」。
+- **`plutil -p` + `diff` 比对长数组会错位产生假差异**：判断「成员/顺序」抽标签序列比，判断「值」用结构化比较。

@@ -1,0 +1,222 @@
+import Foundation
+
+/// Dock 偏好读写的能力抽象。测试替身用它模拟「Dock 有没有真的吃下写入」。
+protocol DockPreferenceAccessing: Sendable {
+    func readDomain() -> [String: PlistValue]
+    @discardableResult func writeWhitelisted(_ entries: [String: PlistValue]) -> Int
+}
+
+struct RealDockPreferences: DockPreferenceAccessing {
+    func readDomain() -> [String: PlistValue] { DockPreferences.readDomain() }
+    @discardableResult
+    func writeWhitelisted(_ entries: [String: PlistValue]) -> Int {
+        DockPreferences.writeWhitelisted(entries)
+    }
+}
+
+/// 把一套 `DockConfig` 推到真实 Dock 的流水线（计划 §3.4）。
+///
+/// 顺序固定为：**内容相同则短路 → 备份 → 读全量域 → 只覆盖白名单键 → 单次原子写 →
+/// 触发重载 → 读回校验，不一致重试一次**。
+///
+/// 两条铁律：绝不整域替换；绝不写当前域里不存在的键。
+@MainActor
+final class DockController {
+
+    struct Outcome: Sendable, Equatable {
+        enum Result: String, Sendable {
+            /// 真的写了并重启了 Dock。
+            case applied
+            /// 与当前已应用内容一致，**完全没碰 Dock**（不重启、不闪烁）。
+            case skippedIdentical
+            /// 写了但校验不过，或读不到偏好域。
+            case failed
+        }
+
+        var result: Result
+        var reason: String
+        var reload: ReloadOutcome?
+        /// 实际写入的键数。
+        var writtenKeys: Int
+        /// 校验尝试次数（1 = 一次过，2 = 重试过一次）。
+        var verifyAttempts: Int
+        var elapsed: TimeInterval
+        /// 因为当前域里没有而**被跳过的外观键**。
+        var skippedKeys: Set<String>
+        /// 非致命问题的说明（例如备份失败）。
+        var note: String?
+        /// 本次应用内容的指纹。`.applied` 时用于写进会话标记（强杀自愈的判据）。
+        var fingerprint: String
+
+        var succeeded: Bool { result == .applied || result == .skippedIdentical }
+
+        /// 给日志/界面用的一句话。
+        var summary: String {
+            var text = "\(result.rawValue)：\(reason)"
+            if let reload { text += "；\(reload.description)" }
+            if result == .applied { text += "；写入 \(writtenKeys) 个键" }
+            if verifyAttempts > 1 { text += "；校验重试 \(verifyAttempts) 次" }
+            text += String(format: "；总耗时 %.0f ms", elapsed * 1000)
+            if let note { text += "；注意：\(note)" }
+            return text
+        }
+    }
+
+    private let preferences: any DockPreferenceAccessing
+    private let reloader: DockReloader
+    private let backup: @MainActor () throws -> Void
+    /// 应用结果回调。由 `AppState` 在构造后接上（构造时还拿不到 `self`）。
+    var onOutcome: @MainActor (Outcome) -> Void
+
+    /// 最近一次成功应用的配置指纹。用于「内容相同则短路」。
+    private(set) var appliedFingerprint: String?
+
+    /// 待应用的目标。连击时只保留最后一个（计划 §3.4 第 7 条）。
+    private var pending: (config: DockConfig, reason: String, force: Bool, strategy: ReloadStrategy)?
+    private var drainTask: Task<Void, Never>?
+
+    init(
+        preferences: any DockPreferenceAccessing = RealDockPreferences(),
+        reloader: DockReloader = DockReloader(),
+        backup: @escaping @MainActor () throws -> Void = { try BaselineStore().rotateBackup() },
+        onOutcome: @escaping @MainActor (Outcome) -> Void = { _ in }
+    ) {
+        self.preferences = preferences
+        self.reloader = reloader
+        self.backup = backup
+        self.onOutcome = onOutcome
+    }
+    /// 当前 Dock 域里存在、因而可以安全写入的白名单键。
+    func presentWhitelistedKeys() -> Set<String> {
+        Set(preferences.readDomain().keys).intersection(DockPreferences.whitelistedKeys)
+    }
+
+    /// 读当前真实的 Dock 全量域。
+    ///
+    /// 所有需要"看现在 Dock 长什么样"的地方都必须走这里，**不要直接调 `DockPreferences.readDomain()`** ——
+    /// 那样会绕过注入点，测试里就会读到真实系统的偏好域。
+    func readDomain() -> [String: PlistValue] {
+        preferences.readDomain()
+    }
+
+    /// 把当前真实的 Dock 读成一套配置。域读不到时返回 nil。
+    func captureLiveConfig() -> DockConfig? {
+        let domain = preferences.readDomain()
+        guard !domain.isEmpty else { return nil }
+        return DockConfig.read(from: domain)
+    }
+
+    /// 请求应用。连击时只对**最终落点**执行一次；应用进行中又有新目标，本轮结束立即补跑。
+    func request(_ config: DockConfig, reason: String, strategy: ReloadStrategy, force: Bool = false) {
+        pending = (config, reason, force, strategy)
+        guard drainTask == nil else { return }
+        drainTask = Task { [weak self] in await self?.drain() }
+    }
+
+    /// 等到当前所有待办跑完。测试与「立即应用」按钮用。
+    ///
+    /// `drain()` 在 `pending` 清空后、置 `drainTask = nil` 之前没有 `await`，
+    /// 所以这里每轮 `await` 完再看 `drainTask` 是可靠的。
+    func waitForIdle() async {
+        while let task = drainTask {
+            await task.value
+        }
+    }
+
+    private func drain() async {
+        while let next = pending {
+            pending = nil
+            let outcome = await apply(next.config, reason: next.reason, strategy: next.strategy, force: next.force)
+            onOutcome(outcome)
+        }
+        // 这里到 drainTask = nil 之间没有 await，所以不会有「新请求看到 drainTask 非空而不启动」的窗口。
+        drainTask = nil
+    }
+
+    /// 应用一套配置。
+    func apply(
+        _ config: DockConfig,
+        reason: String,
+        strategy: ReloadStrategy = .auto,
+        force: Bool = false
+    ) async -> Outcome {
+        let started = Date()
+        func elapsed() -> TimeInterval { Date().timeIntervalSince(started) }
+
+        // 1. 内容相同 → 短路。两个桌面共用同一份 Dock 时，切桌面零开销、零闪烁。
+        if !force, config.fingerprint == appliedFingerprint {
+            return Outcome(result: .skippedIdentical, reason: reason, reload: nil, writtenKeys: 0,
+                           verifyAttempts: 0, elapsed: elapsed(), skippedKeys: [],
+                           fingerprint: config.fingerprint)
+        }
+
+        // 2. 备份当前全量域。失败不阻断（基准快照才是最后一道防线），但要把话说明白。
+        var note: String?
+        do {
+            try backup()
+        } catch {
+            note = "写入前的备份失败：\(error.localizedDescription)（基准快照仍在，可一键还原）"
+        }
+
+        // 3. 读全量域 → 只覆盖白名单键 → 单次原子写。
+        let domain = preferences.readDomain()
+        guard !domain.isEmpty else {
+            return Outcome(result: .failed, reason: "\(reason)（读不到 com.apple.dock 偏好域）", reload: nil,
+                           writtenKeys: 0, verifyAttempts: 0, elapsed: elapsed(), skippedKeys: [], note: note,
+                           fingerprint: config.fingerprint)
+        }
+
+        let present = Set(domain.keys)
+        let entries = Self.entries(for: config, restrictedTo: present)
+        let skipped = config.appearance.unavailableKeys(in: present)
+        let comparableKeys = Set(entries.keys)
+
+        // 4. 写 → 重载 → 读回校验；不一致重试一次（SIGTERM 的清理窗口竞态，见 docs/spikes.md）。
+        var verifyAttempts = 0
+        var reload: ReloadOutcome?
+        var verified = false
+        for attempt in 1...2 {
+            verifyAttempts = attempt
+            preferences.writeWhitelisted(entries)
+            reload = await reloader.reload(strategy: strategy)
+            verified = verify(config, comparableKeys: comparableKeys)
+            if verified { break }
+        }
+
+        if verified { appliedFingerprint = config.fingerprint }
+
+        return Outcome(
+            result: verified ? .applied : .failed,
+            reason: reason,
+            reload: reload,
+            writtenKeys: entries.count,
+            verifyAttempts: verifyAttempts,
+            elapsed: elapsed(),
+            skippedKeys: skipped,
+            note: note,
+            fingerprint: config.fingerprint
+        )
+    }
+
+    /// 把配置摊成要写入的键值对。**只写 `present` 里存在的键**。
+    static func entries(for config: DockConfig, restrictedTo present: Set<String>) -> [String: PlistValue] {
+        var entries: [String: PlistValue] = [:]
+        if present.contains("persistent-apps") {
+            entries["persistent-apps"] = .array(config.pinnedApps.map { .dictionary($0.raw) })
+        }
+        if present.contains("persistent-others") {
+            entries["persistent-others"] = .array(config.otherItems.map { .dictionary($0.raw) })
+        }
+        entries.merge(config.appearance.domainEntries(restrictedTo: present)) { _, new in new }
+        return entries
+    }
+
+    /// 读回白名单键比对。
+    ///
+    /// 只比 `comparableKeys`（实际写进去的那些键）—— 本机缺失的外观键没被写，
+    /// 若算进比对会变成假阴性。
+    private func verify(_ config: DockConfig, comparableKeys: Set<String>) -> Bool {
+        let live = DockConfig.read(from: preferences.readDomain())
+        return live.fingerprint(restrictedTo: comparableKeys) == config.fingerprint(restrictedTo: comparableKeys)
+    }
+}

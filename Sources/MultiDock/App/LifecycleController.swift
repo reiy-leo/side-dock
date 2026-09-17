@@ -10,13 +10,14 @@ import Foundation
 final class LifecycleController {
 
     private let state: AppState
-    private let baselineStore = BaselineStore()
+    private let baselineStore: BaselineStore
     private var marker: BaselineStore.SessionMarker?
-    /// 退出时的还原动作。P2/P4 会把它接到 `DockController` 上。
+    /// 退出时的还原动作。`AppDelegate` 把它接到 `AppState.restoreToBaseline()`。
     var restoreHandler: (@MainActor () async -> Void)?
 
-    init(state: AppState) {
+    init(state: AppState, baselineStore: BaselineStore = BaselineStore()) {
         self.state = state
+        self.baselineStore = baselineStore
     }
 
     func applicationDidFinishLaunching() {
@@ -56,10 +57,23 @@ final class LifecycleController {
     /// 等还原完成后再由 `finishTermination()` 真正退出。
     ///
     /// 计划 §3.3：**绝不在还原未完成前就退出进程**，否则用户会看到「退出后 Dock 还是错的」。
+    ///
+    /// **只还原我们自己改过的东西**：`appliedFingerprint` 为 nil 表示本次运行从未写过 Dock。
+    /// 那种情况下绝不能去"还原" —— 用户可能在运行期间手动拖了图标，
+    /// 无条件写回基准会把他的改动一起抹掉，那就不是无痕，是破坏。
     func shouldTerminate() -> Bool {
-        guard state.settings.restoreOnQuit, let restore = restoreHandler else {
-            // 没有还原动作（P1）或用户关掉了还原 → 直接放行。
-            state.append(.info, state.settings.restoreOnQuit ? "无需还原，直接退出" : "已关闭退出还原，直接退出")
+        guard state.settings.restoreOnQuit else {
+            state.append(.info, "已关闭退出还原，直接退出")
+            clearMarkerAndFinish()
+            return true
+        }
+        guard sessionChangedDock else {
+            state.append(.info, "本次运行没有改动过 Dock，无需还原")
+            clearMarkerAndFinish()
+            return true
+        }
+        guard let restore = restoreHandler else {
+            state.append(.warning, "改过 Dock 但还原动作未接线，直接退出")
             clearMarkerAndFinish()
             return true
         }
@@ -79,6 +93,9 @@ final class LifecycleController {
         }
         return false
     }
+
+    /// 本次运行是否真的写过 Dock。判据是会话标记里的指纹。
+    var sessionChangedDock: Bool { marker?.appliedFingerprint != nil }
 
     private func clearMarkerAndFinish() {
         baselineStore.clearSessionMarker()

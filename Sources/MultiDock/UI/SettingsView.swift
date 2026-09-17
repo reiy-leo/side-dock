@@ -26,6 +26,41 @@ private struct GeneralTab: View {
 
     var body: some View {
         Form {
+            Section("默认 Dock") {
+                DockStripEditor(
+                    config: defaultDockBinding,
+                    availableKeys: state.availableWhitelistedKeys,
+                    captureLive: { state.captureLiveDockConfig() }
+                ) { reason in
+                    state.dockConfigEdited(reason: reason)
+                }
+                Text("访达与启动台固定在图标条最前面。访达在系统偏好里根本没有对应条目（P0 实测），所以不需要也不能改；启动台由程序保证存在。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section("应用") {
+                HStack(spacing: 8) {
+                    Button("立即应用") { state.applyDefaultDock() }
+                        .disabled(state.settings.defaultDock.pinnedApps.isEmpty)
+                    Button("立即还原到原始 Dock") { state.restoreToBaselineNow() }
+                    Button("把当前 Dock 设为新基准") { state.resetBaselineToCurrent() }
+                    Spacer()
+                }
+                Text(state.lastApplySummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if state.settings.defaultDock.pinnedApps.isEmpty {
+                    Label("默认 Dock 还是空的。点图标条上的「从当前 Dock 抓取」把它读进来，否则「立即应用」会把 Dock 清空（已禁用）。",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
             Section("菜单栏") {
                 Picker("左键单击", selection: clickActionBinding) {
                     ForEach(ClickAction.allCases, id: \.self) { action in
@@ -68,16 +103,26 @@ private struct GeneralTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Section("待实现") {
-                LabeledContent("默认 Dock 编辑条", value: "P2")
-                LabeledContent("立即还原到原始 Dock", value: "P2")
-                LabeledContent("mru-spaces 开关", value: "P4")
-                Text("P1 阶段不会写入任何 Dock 设置，所以这些按钮还不存在。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if !state.unavailableAppearanceKeys.isEmpty {
+                Section("本机不支持") {
+                    Text(state.unavailableAppearanceKeys.sorted().joined(separator: "、"))
+                        .font(.caption.monospaced())
+                    Text("这些键在当前 macOS 的 com.apple.dock 里不存在，写进去不会生效，因此不做成开关。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var defaultDockBinding: Binding<DockConfig> {
+        Binding(
+            get: { state.settings.defaultDock },
+            // 只改内存：拖拽排序过程中会连续触发，落盘统一由 `dockConfigEdited` 做一次。
+            set: { state.setDefaultDock($0) }
+        )
     }
 
     private var clickActionBinding: Binding<ClickAction> {

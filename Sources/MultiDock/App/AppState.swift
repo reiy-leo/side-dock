@@ -61,16 +61,39 @@ final class AppState {
     /// 切换桌面的中上部提示。由 `AppDelegate` 注入 —— `AppState` 不碰 AppKit 窗口。
     private(set) var toastPresenter: ToastPresenter?
 
-    private let configStore = ConfigStore()
-    private let baselineStore = BaselineStore()
+    /// Dock 应用流水线（读全量域 → 只覆盖白名单键 → 原子写 → 重启 Dock → 校验）。
+    let dockController: DockController
+    /// 最近一次应用结果的一句话摘要，设置页直接显示。
+    private(set) var lastApplySummary = "尚未应用过任何 Dock 设置"
+    /// 本次运行是否真的改过真实 Dock。无痕原则靠它判断退出时要不要还原。
+    private(set) var hasAppliedDockConfig = false
+    /// 当前 Dock 域里**不存在**、因而写不进去的外观键。UI 据此禁用对应控件，不做假开关。
+    private(set) var unavailableAppearanceKeys: Set<String> = []
+    /// 当前 Dock 域里存在、可安全写入的白名单键。**缓存**，避免每次渲染都读一遍偏好域。
+    private(set) var availableWhitelistedKeys: Set<String> = []
+
+    /// 由 `AppDelegate` 接到 `LifecycleController.noteDockApplied`，把"改过 Dock"记进会话标记。
+    var onDockApplied: (@MainActor (String) -> Void)?
+
+    private let configStore: ConfigStore
+    private let baselineStore: BaselineStore
     private let maxLogEntries = 400
 
-    init() {
+    /// 依赖全部可注入：`DockController` 与两个 Store 都能换成测试替身，
+    /// 这样「立即应用 / 还原」这条路径不必真的动用户的 Dock 也能测。
+    init(
+        dockController: DockController = DockController(),
+        configStore: ConfigStore = ConfigStore(),
+        baselineStore: BaselineStore = BaselineStore()
+    ) {
         let provider = SpaceProviderFactory.make()
         spaceProviderAvailable = provider.isAvailable
         spaceProviderWarning = provider.unavailableReason
         observer = SpaceObserver(provider: provider)
         switcher = SpaceSwitcher(observer: observer)
+        self.dockController = dockController
+        self.configStore = configStore
+        self.baselineStore = baselineStore
         observer.onActiveSpaceChanged = { [weak self] space in
             guard let self else { return }
             if let space {
@@ -80,6 +103,8 @@ final class AppState {
             }
             self.toastPresenter?.handleActiveSpaceChanged(space)
         }
+        // 必须在最后：闭包要捕获 `self`，而所有存储属性得先初始化完。
+        dockController.onOutcome = { [weak self] outcome in self?.handleDockOutcome(outcome) }
     }
 
     func attachToastPresenter(_ presenter: ToastPresenter) {
@@ -152,6 +177,7 @@ final class AppState {
         }
         bindings = normalized
         append(.info, "配置已载入：\(bindings.count) 条桌面绑定")
+        refreshDockCapabilities()
     }
 
     func persistConfiguration() {
@@ -196,6 +222,145 @@ final class AppState {
     func updateSettings(_ transform: (inout AppSettings) -> Void) {
         transform(&settings)
         persistConfiguration()
+    }
+
+    // MARK: - Dock 应用（计划 §3.4 / §3.5）
+
+    /// 重新探测「当前 Dock 域里有哪些白名单键」。决定 UI 上哪些外观控件可用。
+    func refreshDockCapabilities() {
+        let present = dockController.presentWhitelistedKeys()
+        availableWhitelistedKeys = present
+        unavailableAppearanceKeys = settings.defaultDock.appearance.unavailableKeys(in: present)
+        if !unavailableAppearanceKeys.isEmpty {
+            append(.warning, "本机 Dock 域里没有这些键，对应设置将不可用："
+                + unavailableAppearanceKeys.sorted().joined(separator: "、"))
+        }
+    }
+
+    /// 编辑器专用：只改内存，不落盘。
+    ///
+    /// 拖拽排序的每一次 `dropEntered` 都会走到这里；如果顺手落盘，拖过一个图标就写一次
+    /// `config.json`。落盘统一由 `dockConfigEdited` 在一次编辑结束时做一次。
+    func setDefaultDock(_ config: DockConfig) {
+        settings.defaultDock = config
+    }
+
+    /// 「立即应用」：把默认 Dock 推到真实 Dock。
+    func applyDefaultDock() {
+        applyDock(settings.defaultDock, reason: "手动应用默认 Dock")
+    }
+
+    /// 应用一套配置。连击会被合并，只对最终落点执行一次。
+    func applyDock(_ config: DockConfig, reason: String) {
+        guard !config.pinnedApps.isEmpty else {
+            append(.warning, "默认 Dock 还是空的，先点「从当前 Dock 抓取」再应用 —— 否则会把 Dock 清空")
+            return
+        }
+        append(.info, "准备应用 Dock（\(reason)）：\(config.pinnedApps.count) 个图标，重载方式 \(settings.reloadStrategy.displayName)")
+        dockController.request(config, reason: reason, strategy: settings.reloadStrategy)
+    }
+
+    /// 把此刻真实的 Dock 读成配置（编辑器里的「从当前 Dock 抓取」）。
+    ///
+    /// 走 `dockController` 而不是直接读静态的 `DockPreferences`，否则会绕过注入点 ——
+    /// 测试里就会读到真实系统的偏好域。
+    func captureLiveDockConfig() -> DockConfig? {
+        guard let live = dockController.captureLiveConfig() else {
+            append(.error, "读不到 com.apple.dock，无法抓取")
+            return nil
+        }
+        return live
+    }
+
+    func captureCurrentDockAsDefault() {
+        guard let live = captureLiveDockConfig() else { return }
+        updateSettings { $0.defaultDock = live }
+        refreshDockCapabilities()
+        append(.info, "已从当前 Dock 抓取：\(live.pinnedApps.count) 个图标、\(live.otherItems.count) 个其他项")
+    }
+
+    /// 编辑器每次改动后调用。受「编辑后立即应用」开关控制。
+    func dockConfigEdited(reason: String) {
+        persistConfiguration()
+        append(.info, "默认 Dock 已修改：\(reason)")
+        guard settings.autoApplyOnEdit else {
+            append(.info, "「编辑后立即应用」已关闭，改动只存在本地配置里")
+            return
+        }
+        applyDock(settings.defaultDock, reason: reason)
+    }
+
+    /// 「立即还原到原始 Dock」。退出还原（P4）也走同一条路径。
+    func restoreToBaselineNow() {
+        Task { await self.restoreToBaseline() }
+    }
+
+    @discardableResult
+    func restoreToBaseline() async -> DockController.Outcome? {
+        let baseline = baselineStore.readBaseline()
+        guard !baseline.isEmpty else {
+            append(.error, "找不到基准快照（\(baselineStore.baselineURL.path)），无法还原")
+            return nil
+        }
+        let config = DockConfig.read(from: baseline)
+
+        // 已经与基准一致就什么都不做 —— 省掉一次没必要的 Dock 重启（退出时会明显拖慢）。
+        if liveMatchesBaseline(baseline) {
+            append(.info, "当前 Dock 已与基准一致，跳过还原（不重启 Dock）")
+            return DockController.Outcome(
+                result: .skippedIdentical, reason: "还原到原始 Dock", reload: nil, writtenKeys: 0,
+                verifyAttempts: 0, elapsed: 0, skippedKeys: [], fingerprint: config.fingerprint
+            )
+        }
+
+        append(.info, "开始还原到原始 Dock：\(config.pinnedApps.count) 个图标")
+        let outcome = await dockController.apply(
+            config,
+            reason: "还原到原始 Dock",
+            strategy: settings.reloadStrategy,
+            force: true
+        )
+        return outcome
+    }
+
+    /// 当前真实 Dock 的白名单键是否已经等于基准。
+    ///
+    /// 只比白名单键：`mod-count` / `recent-apps` 是 Dock 自己的计数器，
+    /// 每次重启都会变，拿它们比会永远判定"不一致"。
+    private func liveMatchesBaseline(_ baseline: [String: PlistValue]) -> Bool {
+        let live = dockController.readDomain()
+        guard !live.isEmpty else { return false }
+        let keys = DockPreferences.whitelistedKeys
+        return live.filter { keys.contains($0.key) } == baseline.filter { keys.contains($0.key) }
+    }
+
+    /// 「把当前 Dock 设为新基准」。
+    func resetBaselineToCurrent() {
+        do {
+            try baselineStore.resetBaselineToCurrent()
+            append(.info, "已把当前 Dock 设为新基准")
+        } catch {
+            append(.error, "更新基准失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func handleDockOutcome(_ outcome: DockController.Outcome) {
+        lastApplySummary = outcome.summary
+        switch outcome.result {
+        case .applied:
+            append(.info, "Dock 应用成功：\(outcome.summary)")
+            if !outcome.skippedKeys.isEmpty {
+                append(.warning, "这些键本机 Dock 域里没有，已跳过："
+                    + outcome.skippedKeys.sorted().joined(separator: "、"))
+            }
+            hasAppliedDockConfig = true
+            onDockApplied?(outcome.fingerprint)
+            refreshDockCapabilities()
+        case .skippedIdentical:
+            append(.info, "Dock 内容与当前一致，未写入也未重启（\(outcome.reason)）")
+        case .failed:
+            append(.error, "Dock 应用失败：\(outcome.summary)")
+        }
     }
 
     // MARK: - 桌面命名（计划 §3.10）

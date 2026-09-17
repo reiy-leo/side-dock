@@ -161,6 +161,32 @@ diff <(plutil -p /tmp/dock-before-finder-removal.plist) <(plutil -p /tmp/dock-af
 
 ---
 
+## 实验 4（P2 落地复测，2026-09-18）：写入白名单键 + Dock 是否真的读进去
+
+P0 只验到了"信号能让 Dock 重启、`GUID` 会被补全"。P2 把写路径真的接起来后，又复测了一轮**端到端**行为。全部由 `Tests/MultiDockTests/DockAcceptanceTests.swift` 自动执行（默认跳过，`MULTIDOCK_DOCK_ACCEPTANCE=1` 开启），跑完自动把操作前的全量域写回去。
+
+**做法**：读全量域 → 构造一套不同的配置（`tilesize` 36→52、翻转 `magnification`、追加一个**不带 `GUID`** 的 Calculator 条目）→ 写偏好 + `kill -HUP` → 读回校验 → 与操作前 diff → 还原 → 再 diff。
+
+| 观测项 | 结果 |
+| --- | --- |
+| SIGHUP 耗时 | **125–138 ms**（与 P0 的 101 ms 同一量级），`verifyAttempts == 1`（不需要重试） |
+| 变化的键 | **只有 `["magnification", "persistent-apps", "tilesize"]`** —— 白名单外的键（`mru-spaces` / `wvous-*` / `mod-count` / `recent-apps` …）一个都没动 ✅ |
+| Dock 是否真的读进去了 | **是**。写入时故意不给 `GUID`，Dock 重启后给补上了（实测 `i:1414651200` / `i:2713705933` / `i:1414651200`，每次不同） |
+| **`GUID` 回写的时机** | **异步**。`apply` 返回后立刻读还是 `nil`，轮询 200 ms 内出现。**判据必须配轮询**，否则会误判成"写入没生效"（第一轮验收就是这么误报的） |
+| 还原后 | 图标顺序逐项回到原样、白名单键逐键一致、键集合一致（34 键）。**仅剩 `["mod-count", "recent-apps"]`** |
+| **Dock 自己会改的键** | 重启一次 Dock，`mod-count` 就 +1；`recent-apps` 也会变。这两个不在白名单里、我们从不写 → 验收时"还原后仍有差异"是**正常的**。判据放宽成：差异只能落在白名单键或 `{mod-count, recent-apps, trash-full}` 上 |
+| 本机白名单键可用性 | **可用**：`persistent-apps` `persistent-others` `orientation` `tilesize` `magnification` `largesize` `autohide` `mineffect` `minimize-to-application`。**域里不存在**：`show-process-indicators`。`autohide-delay` / `autohide-time-modifier` 域里也没有，且读回来是 nil → 压根不进写入集合。→ **"只写域里已有的键"这条规则就够了**，不需要额外黑名单 |
+| `.app` 的 URL 形式 | 真实域用**带尾斜杠**的目录 URL：`file:///System/Applications/Launchpad.app/`。`URL(fileURLWithPath:).absoluteString` **不带**尾斜杠 → 必须自己补 |
+| 用户 App vs 启动台的 tile 形状 | 用户 App：`file-type=41`、`dock-extra=true`。启动台：`file-type=169`、`dock-extra=false`、`bundle-identifier=com.apple.launchpad.launcher` |
+| 进程查找兜底 | 非 `.app` 进程（`swift test` 的 xctest runner）里 `NSRunningApplication.runningApplications(withBundleIdentifier:)` 可能查不到 Dock → `pgrep -x Dock` 兜底可用 |
+
+**踩到的两个验证陷阱（写验收脚本时必须避开）**：
+
+1. **`plutil -p` + `diff` 比对长数组会错位**：数组元素行数不同会导致后面整体错位，产生**假差异**。判断"成员/顺序变了"要抽出标签序列单独比；判断"值变了"要用结构化比较（`PlistValue` 相等）。
+2. **验收窗口期内别手动改 Dock**：实测有一次跑到一半 Dock 被外部改动（`persistent-others` 从 4 项变 1 项），"还原后仍有差异"报了假失败。
+
+---
+
 ## 对 `docs/PLAN.md` 的修订清单
 
 | 位置 | 原内容 | 修订为 |
@@ -168,7 +194,9 @@ diff <(plutil -p /tmp/dock-before-finder-removal.plist) <(plutil -p /tmp/dock-af
 | §1 环境事实表 | `ManagedSpaceUUID` | `uuid`（另附 `Current Space` 可直取当前空间） |
 | §3.1 | 通知为主 + 1 s 轮询兜底 | **轮询为主（300 ms）+ 通知为辅**；预应用升级为必需 |
 | §3.5 | A/B 可能零闪烁；C 闪 0.3–1 s | A 彻底无效；B 实为重启但仅 ~100 ms 不可用；**主路径 = B**，C 兜底（~395 ms） |
+| §3.6 | 合成 tile 用 `dock-extra:0` | 用户 App 用 `true`、启动台用 `false`（按真实域）；`_CFURLString` 必须带尾斜杠 |
 | §4 P0 行 | 三实验并列 | 已完成，结论见本文 |
+| §4 P2 行 | 待做 | ✅ 已完成（见本文实验 4 与 AGENTS.md §8 第 5 次记录） |
 | §6 | 桌面"位置"含义待确认 | 仍未确认（与本文件无关，见 AGENTS.md §6） |
 
 ---
