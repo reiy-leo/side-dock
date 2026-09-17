@@ -121,7 +121,7 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | 图标条规则 | `Dock/DockStripRules.swift` | 启动台必须在首位（已有则原样保留，不覆盖 `GUID`/`book`）、Finder 只是幻影、从 `.app` 造条目、取图标 |
 | Dock 偏好 | `Dock/DockPreferences.swift` | 白名单 + 全量域读 + 原子写；**写路径已接线** |
 | Dock 重载 | `Dock/DockReloader.swift` | `DockProcessControlling` 协议 + 真实实现；SIGHUP 主路径 → SIGTERM → `launchctl kickstart` 三级降级；**重启节流错开**（`minimumSpacing`）；**发信号前的安全闸门**（见 §4 的 `-1` 陷阱） |
-| 应用流水线 | `Dock/DockController.swift` | 指纹短路 → 备份 → 读全量域 → 只覆盖白名单键 → 原子写 → 重启 → 读回校验（**不一致重试一次**）；`request()` 带防抖合并；`comparableFingerprint` / `adoptLiveDockAsApplied` / `isApplying` |
+| 应用流水线 | `Dock/DockController.swift` | **双重短路**（内容与上次写下去的一致 / **真实 Dock 已经就是这份内容**）→ 备份 → 读全量域 → 只覆盖白名单键 → 原子写 → 重启 → 读回校验（**不一致重试一次**）；`request()` 带防抖合并；`comparableFingerprint` / `adoptLiveDockAsApplied` / `isApplying` |
 | 手动改动回存 | `Dock/DockWatcher.swift` | 轮询真实域的可比指纹，识别用户手动改动 → 回存到当前桌面的绑定（受开关控制）；**纯逻辑 + 注入式读写**，可脱离真实 Dock 单测 |
 | 回存撤销栈 | `Dock/DockEditHistory.swift` | 回存前的旧配置暂存（**内存**，每目标 5 层），供电桌面页/通用页的「撤销自动回存」。刻意不落盘，理由见 §3 的 P5 第 6 条 |
 | 全屏过滤回归脚本 | `scripts/check-fullscreen-filter.swift` | 把本进程自己的窗口切成全屏 → SkyLight 多出 `type=4` 空间 → 真机验证过滤。**零权限** |
@@ -138,7 +138,7 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | toast 验收工具 | `scripts/check-toast-window.sh` | 用 `CGWindowListCopyWindowInfo` 读窗口元数据（零权限），`--watch` 报告出现/消失时刻 |
 | P0 实验脚本 | `scripts/spike-*.{sh,swift}` | 重载策略 / 切桌面 / 停机时长 / 探测（含显示器 UUID 映射） |
 | 打包脚本 | `scripts/build-app.sh` | 编译 → 组装 `.app` → ad-hoc 签名 |
-| 测试 | `Tests/MultiDockTests/` | **258 个测试，全绿**（其中 4 个真实 Dock 验收默认跳过，需显式开启） |
+| 测试 | `Tests/MultiDockTests/` | **263 个测试，全绿**（其中 5 个真实 Dock 验收默认跳过，需显式开启） |
 | 设计文档 | `docs/PLAN.md` | 已按 P0 结论修订 |
 | 实验结论 | `docs/spikes.md` | 5 个实验的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现**） |
 
@@ -188,6 +188,7 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 7. **`mru-spaces` 是白名单之外的唯一写入例外**，只给它一个窄方法（`DockPreferences.writeMRUSpaces(_:)`），**不开放**通用的"写某个键"口子。写完之后它**不在** `DockController.apply` 的管辖范围内，必须单独 `dockController.reloadOnly()` 重启一次 Dock 才生效。
 8. **登录启动的状态属于系统**（`SMAppService` / LaunchAgent plist），**不存进 `config.json`** —— 本地再存一份迟早和系统不一致。非 `.app` 环境（`swift test`）里 `SMAppService.mainApp` 拿不到有效句柄，所以 `LoginItem.isAvailable` 先看 bundle，不可用就如实显示原因。
 9. **注销/关机这条路系统不给等待时间**，只能尽力：先把债务写进标记，再发起一次还原并等它跑完；没跑完的由下次启动自愈接手。**不要**改成"同步阻塞等还原"，那会拖住关机。
+10. **短路有两条，缺一不可**（P4 收尾时真机验收挖出来的 bug，见 §6.3 D24）。第 1 条比的是「**我们上次写下去的那份**」（`appliedFingerprint`），第 1b 条比的是「**真实 Dock 现在长什么样**」（`liveAlreadyMatches`）。只有第 1 条时，一旦发生过**外部改动**（用户手拖、别的 App 改、或 `DockWatcher` 刚回存的那份）它就过期了，再应用一份与真实 Dock 完全相同的配置会**白写一遍 + 白重启一次 Dock**。1b 的判据**必须复用 `verify` 的同一套比较**，这样"跳过"与"写下去之后立刻验过"严格等价，不会漏写。短路时调 `adoptLiveDockAsApplied()` —— 它同时把 `appliedComparableFingerprint` 填上，也就是把 `DockWatcher` 的回存闸门打开；**它刻意不设 `appliedAt`**（不是我们写的，不该被当成"我们自己刚写完"）。
 
 ### 已完成：P5（收尾）✅ 2026-09-18
 
@@ -280,6 +281,7 @@ P5 的三条都已落地（README ✅、全屏过滤真机回归 ✅、多显示
 | Dock 进程守护 | `/System/Library/LaunchAgents/com.apple.Dock.plist` 为 `KeepAlive = {AfterInitialDemand:1, SuccessfulExit:0}` → 必须信号致死才会被拉起；**优雅退出（exit 0）不会重启，用户会当场失去 Dock** |
 | **Dock 是否应用了写入** | 判据：写入的 tile 不带 `GUID`，Dock 真正读取并应用后会**补上 `GUID`**。实测正负两种情形都验证过。**回写是异步的**：P2 验收里 apply 返回后立刻读还是 `nil`，轮询 200 ms 内就出现了 → 判据要配轮询，别读完就断言 |
 | **只写白名单键：已实测成立** | P2 验收（2026-09-18）：apply 一次（改 `tilesize` + `magnification` + 加一个 Calculator 条目）后与操作前全量域 diff，**变化只有 `magnification` / `persistent-apps` / `tilesize`**，白名单外的键一个都没动 |
+| **别的进程写的 Dock 偏好，本进程立刻读得到** | 2026-09-18 实测：`/usr/bin/defaults write com.apple.dock tilesize -float 72` 之后，`CFPreferencesCopyMultiple` 立刻读到 72.0（无需轮询、无需等 Dock 重启）。这条让「用户手拖图标」这件事**可以脚本化复现** —— `DockWatcher` 的判据是"可比指纹变了、且不等于我们写下去的那份"，而用户拖动本来就是 Dock 进程写同一个域，两种来源在偏好域层面**无法区分也不需要区分**。所以 `DockAcceptanceTests.testExternalDockChangeIsCapturedBackToActiveDesktop` 用 `defaults write` + 真实 `DockReloader().reload()` 就等价于一次真人拖动，A4 从"只能手测"变成自动化回归 |
 | **写外观键真的生效** | `tilesize` 36 → 52、`magnification` 翻转，写入后域里的值就是新值，且 Dock 重启（PID 变化）。`persistent-apps` 的新条目被补上 `GUID`（实测 `i:1414651200` 等，每次不同）→ Dock 确实按新偏好重建了 Dock |
 | **本机白名单键的可用性（逐键实测）** | **可用**：`persistent-apps` `persistent-others` `orientation` `tilesize` `magnification` `largesize` `autohide` `mineffect` `minimize-to-application`。**不存在**：`show-process-indicators`（域里没有）。`autohide-delay` / `autohide-time-modifier` 域里也没有，且 `DockAppearance.read` 读回来是 nil → 压根不进写入集合。结论：**只写"域里已有的键"这条规则就够了**，不需要额外黑名单 |
 | **Dock 自己会改的键** | 重启一次 Dock，`mod-count` 就 +1；`recent-apps` 也会变。这两个**不在白名单里、我们从不写**，所以验收时"还原后仍有差异"是正常的。判据是：**差异只能落在白名单键或 `{mod-count, recent-apps, trash-full}` 上** |
@@ -391,7 +393,7 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | A1 | **改名输入框没被点过**（本机无屏幕录制、菜单栏自动隐藏，无法脚本点击 UI） | 万一 SwiftUI 绑定写错，改完名字没生效 | 请手动：设置 → 桌面 → 改个名字 → 回车 → 切桌面看 toast。逻辑侧已由 `config.json` 注入 + 单测覆盖 |
 | A2 | **「立即应用」「立即还原到原始 Dock」按钮没被点过** | 按钮到 `AppState` 之间只有一行 SwiftUI action | 请手动点一次。逻辑侧由 `AppStateDockTests`（43 个用例）+ `DockAcceptanceTests` 覆盖 |
 | A3 | **图标条的拖拽（排序 / 拖出移除 / 从访达拖 `.app` 进来）没被真人拖过** | `onDrag` / `dropDestination` 的真机手感与边界未验证 | 请手动拖一次。排序逻辑由 `DockStripRulesTests` + `AppStateDockTests` 覆盖 |
-| A4 | **P3 验收里"在真实 Dock 手动拖入一个图标，切走再切回仍在"**（拖拽是纯 UI 操作，脚本化要辅助功能权限，与硬约束冲突） | 这条是 `DockWatcher` **回存路径的唯一真实检验** | 请手动：拖一个图标进 Dock → 切到另一个桌面 → 切回来，看图标还在不在 |
+| A4 | **P3 验收里"在真实 Dock 手动拖入一个图标，切走再切回仍在"**（真人拖拽是纯 UI 操作，脚本化要辅助功能权限，与硬约束冲突） | 这条是 `DockWatcher` **回存路径的唯一真实检验** | ✅ **逻辑侧已自动化（2026-09-18）**：`DockAcceptanceTests.testExternalDockChangeIsCapturedBackToActiveDesktop` 用 `defaults write` + 真实 `DockReloader().reload()` 复现"外部改动"，走**真实 2 秒轮询**（不手动 `tick()`），两种落点（默认 Dock / 逐桌面 override）都覆盖，并断言回存期间 **Dock PID 不变**。真人拖一次仍建议做（验证拖拽 UI 本身），但已不再是唯一检验 |
 | A5 | **「连切 5 次只显示最终名字」只做了单测**，没做真机连击 | 真机是否闪烁未实测 | 单测 `testRapidSwitchKeepsOnlyLatestTextAndHidesOnce` 覆盖调度逻辑；真机需手动快速点菜单栏 |
 | **B. 待做的功能（已排期）** | | | |
 | B5 | **多显示器仍未真机实测**（P5 唯一剩下的）：映射键、插拔后自动刷新、toast 的 `displayUUID → NSScreen` 定位都实现了，但本机只有一台显示器 | 插外接显示器后映射可能串 | **只能靠用户插一台外接屏实测**。调试面板已加「显示器数量」与每个桌面的 `displayUUID` 前 8 位，核对时用 |
@@ -435,6 +437,7 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | D21 | ~~全屏过滤只有单测~~ | 每次进全屏可能误切 Dock | ✅ P5 真机回归通过（自己造全屏空间，零权限） |
 | D22 | ~~切桌面想要"左右滑动"的动画~~ | 点菜单栏切桌面是硬切 | ✅ **已定性为"不做"（2026-09-18）**：程序化切空间实测 0–6 ms；四条可能的路全断（粘滞状态位 / 写后读不回的会话开关 / 签名未知会段错误的 `SLSWillSwitchSpaces` / 合成事件被拦）。**零权限 + 无痕下无解。别再试** —— 详见 §4 与 `docs/spikes.md` 实验 7 |
 | D23 | ~~菜单栏只能"切下一个"，往回切要开菜单~~ | 切过头只能绕菜单 | ✅ **已解决（2026-09-18）**：`⇧+左键 = 切上一个桌面`，与"下一个"共用同一条预应用链路（`switcher.target(.previous)`），两端循环；下拉菜单同时给「上一个桌面」+ 等价提示。单测 `testPreviousDesktopPreAppliesItsOwnDock` |
+| D24 | ~~逐桌面 Dock 的桌面在**回存**时会白重启一次 Dock~~ | 用户手拖图标进 Dock → 回存 → Dock 闪一下（约 50 ms），而逐桌面 Dock 正是本 App 的常态用法 | ✅ **已解决（2026-09-18）**：`DockController.apply` 原来只有一条短路，比的是「我们上次写下去的那份」（`appliedFingerprint`）—— 发生过外部改动它就**过期**了，于是"应用一份与真实 Dock 完全相同的配置"会白写一遍 + 白重启一次。实测 `PID 68667 → 68672`；**默认 Dock 那条路不中招**（回存只写配置、不应用），所以只有 override 中招。修法：加短路第 1b 条 `liveAlreadyMatches`，判据**复用 `verify` 的同一套比较**（跳过 ≡ 写了立刻验过）。修后实测 `68995 → 68995`。回归：`DockControllerTests` 4 条（`testSkipsWhenLiveDockAlreadyMatchesDespiteStaleFingerprint` / `testSkipAdoptsLiveDockSoWriteBackGateOpens` / `testDoesNotSkipWhenLiveDockDiffersFromConfig` / `testForceBypassesLiveMatchShortCircuit`）。**教训：只靠单测发现不了** —— 旧单测里 `appliedFingerprint` 与真实域永远同步，两个对象各自自洽 |
 
 ---
 
@@ -458,6 +461,60 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-09-18（第 11 次）— 把 A4 从"只能手测"变成自动化回归，**顺带挖出并修掉一个真机 bug**
+
+**做了什么**（用户：「请继续执行任务」）：
+
+**① A4 自动化：用 `defaults write` 复现"用户手拖图标"**
+
+A4 一直挂在"只能手测"里，理由是"真人拖拽要辅助功能权限，与硬约束冲突"。这个理由站不住 ——
+`DockWatcher` 的判据是「**可比指纹变了、且不等于我们写下去的那份**」，而用户拖动本来就是 **Dock 进程写 `com.apple.dock`**。
+所以只要**另一个进程**去写同一个域，在偏好域层面就**无法区分也不需要区分**。
+
+实测确认（新增 §4 环境事实一行）：`/usr/bin/defaults write com.apple.dock tilesize -float 72` 之后
+`CFPreferencesCopyMultiple` **立刻**读到 72.0。于是新增
+`DockAcceptanceTests.testExternalDockChangeIsCapturedBackToActiveDesktop`：真实 `DockController`（临时目录的
+`ConfigStore`/`BaselineStore`）+ 真实 `DockReloader` + 走**真实 2 秒轮询**（不手动 `tick()`，这才是真机行为），
+两种落点都覆盖 —— 默认 Dock、逐桌面 override。
+
+**② 由此挖出一个真机 bug（D24）：逐桌面 Dock 的桌面在回存时会白重启一次**
+
+`DockController.apply` 原来只有一条短路，比的是「**我们上次写下去的那份**」（`appliedFingerprint`）。
+一旦发生过**外部改动**它就**过期**了 —— 此时回存（`setOverride` → 应用）要写的内容与真实 Dock **一模一样**，
+却照样白写一遍 + 白重启一次 Dock：
+
+| 落点 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 默认 Dock | `68655 → 68655` ✅ | `68984 → 68984` ✅ |
+| **该桌面的 override** | `68667 → 68672` ❌（约 50 ms 闪烁） | `68995 → 68995` ✅ |
+
+**默认 Dock 那条路不中招**（回存只写配置、不应用），所以只有 override 中招 —— 而逐桌面 Dock 恰恰是本 App 的常态用法，
+也就是说用户每次手拖图标进 Dock 都会看到一次闪烁。
+
+修法：短路加**第 1b 条** `liveAlreadyMatches(config)`，判据**复用 `verify` 的同一套比较**
+（只比"我们真要写的那些键"），所以「跳过」与「写下去之后立刻验过」**严格等价**，不会漏写。
+短路时调 `adoptLiveDockAsApplied()`：顺带把 `appliedComparableFingerprint` 填上（= 打开 `DockWatcher` 的回存闸门），
+**且刻意不设 `appliedAt`**（不是我们写的）。
+
+回归 4 条：`testSkipsWhenLiveDockAlreadyMatchesDespiteStaleFingerprint`（正例）、
+`testSkipAdoptsLiveDockSoWriteBackGateOpens`（闸门）、`testDoesNotSkipWhenLiveDockDiffersFromConfig`（反例守卫）、
+`testForceBypassesLiveMatchShortCircuit`（`force` 同时绕过 1 与 1b）。
+
+⚠️ **教训：这个 bug 只靠单测发现不了。** 旧单测里 `appliedFingerprint` 与真实域永远同步，两个对象各自自洽；
+只有"真机连着跑 + 外部改动"才暴露。同理，**我第一版验收断言写错了**：我在 `setOverride` 返回后立刻读 PID，
+而它触发的应用走 `request()` **异步排队** —— 于是"没有白重启"这个结论**假成立**。加 `await waitForIdle()` +
+400 ms 沉降之后，真 bug 才现形。
+
+**验收证据**：
+
+- `swift build --disable-sandbox` → `Build complete!`，**零警告**。
+- `swift test --disable-sandbox` → **263 个测试，5 跳过，0 失败**（258 → 263）。
+- 真机验收全量重跑（`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`）
+  → **5 条全过**，含新的回存用例；每条用例结束都 `还原后差异键：[]`。
+- 用户 Dock 状态：验收自带还原，跑完确认无残留差异。手动备份留在 `/tmp/dock-backup-before-capture-test.plist`。
+
+**未解决的事**：无新增。B5（多显示器真机）与 A1–A3/A5（手测）仍等用户；A4 已从"唯一检验"降级为"建议补一次"。
 
 ### 2026-09-18（第 10 次）— `⇧+左键` 切上一个桌面；查清"切桌面动画"为什么做不到
 

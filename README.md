@@ -12,7 +12,7 @@ macOS 多桌面（Space）下，为每个桌面使用**不同的原生 Dock** �
 
 ## 当前状态
 
-**P0（实验）～ P5（收尾）已完成并实测通过**，258 个单元测试全绿。
+**P0（实验）～ P5（收尾）已完成并实测通过**，263 个单元测试全绿。
 
 现在能做的：
 
@@ -32,7 +32,7 @@ macOS 多桌面（Space）下，为每个桌面使用**不同的原生 Dock** �
 
 ```bash
 swift build -c release --disable-sandbox   # 编译（--disable-sandbox 在本机是必须的，见下）
-swift test --disable-sandbox               # 258 个单元测试
+swift test --disable-sandbox               # 263 个单元测试
 ./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
 open build/MultiDock.app                   # 运行
 ```

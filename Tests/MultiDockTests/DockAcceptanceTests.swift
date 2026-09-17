@@ -353,6 +353,197 @@ final class DockAcceptanceTests: XCTestCase {
         """)
     }
 
+    // MARK: - P5+ 验收：外部改动真实 Dock → 识别并回存（覆盖 `AGENTS.md` §6.3 的 A4）
+
+    /// 覆盖 `AGENTS.md` §6.3 的 **A4** —— 那条一直挂着"要手动拖一个图标进 Dock 才验得了"。
+    ///
+    /// **为什么不必手拖**：`DockWatcher` 的判据是"可比指纹变了、且不等于我们写下去的那份"
+    /// （见 `DockWatcher.tick()`）。它**分不出**改动来自用户拖拽还是别的进程写偏好 ——
+    /// 而且真实用户拖拽同样是 **Dock 进程**去写域的，所以"另一个进程改域 + 重启 Dock"
+    /// 在 watcher 眼里与手拖完全等价。
+    ///
+    /// **这条测试真正想验的东西**：单测里的假偏好域**没有 `GUID` / `book` / `file-mod-date`
+    /// 这些 Dock 会回写的字段**，而真实域有。所以"回存下来的配置到底等不等于真实 Dock"
+    /// 只有真实域能验 —— 不等的话，用户"切走再切回"时他的改动就丢了。
+    ///
+    /// ⚠️ 会真的改 `com.apple.dock`、真的重启 Dock；默认跳过，
+    /// `MULTIDOCK_DOCK_ACCEPTANCE=1` 才跑。
+    func testExternalDockChangeIsCapturedBackToActiveDesktop() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment[Self.enableFlag] == "1",
+            "会真的改 Dock 并重启；设 \(Self.enableFlag)=1 才跑"
+        )
+
+        let before = DockPreferences.readDomain()
+        XCTAssertFalse(before.isEmpty, "读不到 com.apple.dock，验收无意义")
+        try Self.dump(before, named: "capture-before")
+
+        var report: [String] = []
+        do {
+            // 两条落点都要验：桌面**有**独立 Dock（回存进该桌面的 override）与**没有**（回存进默认 Dock）。
+            // 前者才是这个 App 的常态用法（卖点就是逐桌面 Dock），所以不能只验后者。
+            report.append(try await runCaptureScenario(before: before, seedOverride: false))
+            report.append(try await runCaptureScenario(before: before, seedOverride: true))
+        } catch {
+            await Self.writeBack(before, label: "异常还原")
+            throw error
+        }
+
+        let restored = await Self.writeBack(before, label: "回存验收结束还原")
+        try Self.dump(restored, named: "capture-after-restore")
+
+        let illegal = Self.differences(between: before, and: restored)
+            .subtracting(DockPreferences.whitelistedKeys)
+            .subtracting(Self.dockSelfMutatingKeys)
+        XCTAssertTrue(illegal.isEmpty, "还原后白名单外的键仍有差异：\(illegal.sorted())")
+        XCTAssertEqual(Set(before.keys), Set(restored.keys), "键集合必须完全一致")
+        print(report.joined(separator: "\n"))
+        print("[回存验收] 还原后差异键：\(Self.differences(between: before, and: restored).sorted())")
+    }
+
+    /// 跑一次"外部改动 → 回存"场景，返回一行报告。
+    ///
+    /// - Parameter seedOverride: `true` = 先给当前桌面建一份独立 Dock（回存应落在该桌面的 override 上）；
+    ///   `false` = 不建（回存应落在默认 Dock 上）。
+    private func runCaptureScenario(
+        before: [String: PlistValue],
+        seedOverride: Bool
+    ) async throws -> String {
+        // 用**临时目录**的 Store：绝不碰用户真实的 config.json / baseline.plist / session.state。
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("multidock-capture-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        // 真实 DockController（会真的写 Dock），假 provider（让"当前桌面"确定可控）。
+        let controller = DockController(backup: {})
+        let spaces = FakeSpaceProvider.desktops(count: 1)
+        let provider = FakeSpaceProvider(desktops: spaces, activeSpaceID: spaces[0].id64)
+
+        let state = AppState(
+            dockController: controller,
+            configStore: ConfigStore(fileURL: scratch.appendingPathComponent("config.json")),
+            baselineStore: BaselineStore(
+                baselineURL: scratch.appendingPathComponent("baseline.plist"),
+                markerURL: scratch.appendingPathComponent("session.state")
+            ),
+            provider: provider
+        )
+        state.start()
+        defer { state.stop() }
+
+        // 当前桌面必须已经识别出来 —— 回存落点靠它决定（有 override → 该桌面；否则 → 默认 Dock）。
+        _ = await Self.wait("活动桌面被识别") { state.activeSpace != nil }
+        let space = try XCTUnwrap(state.activeSpace, "没识别出活动桌面，回存落点无从谈起")
+        XCTAssertNotNil(controller.appliedComparableFingerprint,
+                        "启动时的 adoptLiveDockAsApplied 应已记下「我们写下去的那份」——"
+                        + "watcher 没有它就不会回存（这是有意的保护）")
+
+        if seedOverride {
+            // 造 override 要写一份**与现状不同**的配置，否则内容相同会被指纹短路、Dock 根本不重启。
+            var seed = DockConfig.read(from: before)
+            seed.appearance.tilesize = (before["tilesize"]?.doubleValue ?? 52) == 44 ? 60 : 44
+            state.setOverride(seed, for: space, reason: "回存验收：先建一份独立 Dock")
+            await controller.waitForIdle()
+            XCTAssertTrue(state.hasOverride(for: space), "夹具没建出 override")
+        } else {
+            XCTAssertFalse(state.hasOverride(for: space), "本场景不该有 override")
+        }
+
+        // ---- 外部改动：换一个进程改域，再重启 Dock 让它规范化回写 ----
+        let originalTilesize = DockPreferences.readDomain()["tilesize"]?.doubleValue ?? 52
+        let externalTilesize: Double = originalTilesize == 72 ? 56 : 72
+
+        try Self.runDefaultsWrite(key: "tilesize", value: String(externalTilesize))
+
+        // 关键前提取证：**我们进程读得到别的进程写的值吗**。
+        // 真实用户拖拽也是 Dock 进程写域，所以这条不通的话 watcher 在真实场景里根本看不见改动。
+        let visible = await Self.wait("跨进程写入对我们可见", timeout: .seconds(5)) {
+            DockPreferences.readDomain()["tilesize"]?.doubleValue == externalTilesize
+        }
+        let readBack = DockPreferences.readDomain()["tilesize"]?.doubleValue
+        XCTAssertTrue(visible,
+                      "另一个进程写的 tilesize 在我们进程里读不到（读到的是 "
+                      + (readBack.map { String(describing: $0) } ?? "nil")
+                      + "）—— 这说明 DockWatcher 在真实场景里看不见用户改动")
+
+        // 这一枪是我们自己开的（外部改动 + 让 Dock 规范化），**之后不该再有任何重启**。
+        let reload = await DockReloader().reload(strategy: .auto)
+        let pidAfterReload = try XCTUnwrap(RealDockProcessControl().dockPID(), "拿不到 Dock PID")
+        let detectedBefore = state.dockWatcher?.detectedCount ?? 0
+
+        // ---- 等真实的 2 s 轮询把它认出来（不手动 tick，验的就是真实轮询） ----
+        let landed = await Self.wait("DockWatcher 识别并回存", timeout: .seconds(25)) {
+            state.binding(for: space)?.override?.appearance.tilesize == externalTilesize
+                || state.settings.defaultDock.appearance.tilesize == externalTilesize
+        }
+        let detected = (state.dockWatcher?.detectedCount ?? 0) - detectedBefore
+        let landedIn = state.hasOverride(for: space) ? "该桌面的 override" : "默认 Dock"
+        let capturedConfig = state.effectiveConfig(for: space)
+
+        // ⚠️ **必须等排队中的应用跑完再读 PID**。`setOverride` 是**同步**更新 binding 的，
+        // 而它触发的应用走 `request()` 异步排队 —— 不等就会在应用落地前读 PID，
+        // 于是"没有白重启"这个结论会**假成立**（我第一版就踩了这个坑）。
+        await controller.waitForIdle()
+        try? await Task.sleep(for: .milliseconds(400))
+        let pidAfterCapture = try XCTUnwrap(RealDockProcessControl().dockPID(), "拿不到 Dock PID")
+
+        XCTAssertTrue(landed, "DockWatcher 没把外部改动回存（detectedCount 增量 \(detected)）")
+        XCTAssertGreaterThanOrEqual(detected, 1, "detectedCount 应该至少 +1")
+        XCTAssertEqual(capturedConfig.appearance.tilesize, externalTilesize,
+                       "回存下来的 tilesize 不对（落点：\(landedIn)）")
+
+        // ---- 决定性断言 1：回存下来的配置必须**等于真实 Dock** ----
+        // 这是 A4 真正关心的事：不等的话，用户切走再切回就把自己的改动丢了。
+        let matches = await Self.wait("回存内容与真实 Dock 一致", timeout: .seconds(10)) {
+            guard let live = controller.currentComparableFingerprint() else { return false }
+            return controller.comparableFingerprint(of: capturedConfig) == live
+        }
+        XCTAssertTrue(matches, "回存下来的配置与真实 Dock 对不上 —— 切走再切回会丢用户的改动")
+
+        // ---- 决定性断言 2：回存**不该**白重启一次 Dock ----
+        // 真实 Dock 已经是这份内容了。此刻还去写 + 重启，用户会看到一次毫无理由的闪烁。
+        XCTAssertEqual(pidAfterCapture, pidAfterReload,
+                       "回存过程白重启了一次 Dock（PID \(pidAfterReload) → \(pidAfterCapture)）")
+
+        print("[回存验收] 外部改动已落盘（tilesize → \(externalTilesize)），\(reload.description)")
+        return "[回存验收] 落点=\(landedIn)　识别=\(landed)　detectedCount +\(detected)　"
+            + "回存 tilesize=\(capturedConfig.appearance.tilesize)　"
+            + "回存期间 Dock PID \(pidAfterReload) → \(pidAfterCapture)（应相同）"
+    }
+
+    /// 在**另一个进程**里用 `/usr/bin/defaults` 改 `com.apple.dock`。
+    /// 刻意不走 `DockPreferences` —— 要的就是"外部改动"。
+    private static func runDefaultsWrite(key: String, value: String) throws {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+        task.arguments = ["write", "com.apple.dock", key, "-float", value]
+        let pipe = Pipe()
+        task.standardError = pipe
+        try task.run()
+        task.waitUntilExit()
+        let message = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        XCTAssertEqual(task.terminationStatus, 0,
+                       "外部 defaults write 失败（\(task.terminationStatus)）：\(message)")
+    }
+
+    /// 轮询等一个条件成立。返回它有没有在超时前成立。
+    ///
+    /// 刻意**不手动 `tick()` watcher**：这条验收要验的就是"真实 2 s 轮询能不能认出来"。
+    private static func wait(
+        _ label: String,
+        timeout: Duration = .seconds(10),
+        _ condition: () -> Bool
+    ) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        if !condition() { print("[回存验收] 超时未满足：\(label)") }
+        return false
+    }
+
     /// 写入 + 校验 + 差异核对。
     private func runApplyPhase(before: [String: PlistValue]) async throws {
         // ---- 1. 构造一套与现状不同的配置 ----

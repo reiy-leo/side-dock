@@ -206,7 +206,11 @@ struct AppSettings: Codable {
 ### 3.4 应用流水线（DockController）
 
 1. 目标配置 = `binding.override ?? defaultConfig`。
-2. **内容相同即短路**：归一化指纹与"当前已应用"一致 → 直接返回，**完全不重启 Dock**。两个桌面共用同一份 Dock 时，切桌面零开销、零闪烁。
+2. **内容相同即短路（两条，缺一不可）**：① 归一化指纹与"当前已应用"一致；② **真实 Dock 已经就是这份内容**（读回口径逐键相同）。任一命中 → 直接返回，**不写、不备份、不重启 Dock**。两个桌面共用同一份 Dock 时，切桌面零开销、零闪烁。
+   - 只有 ① 是不够的：它比的是"**我们上次写下去的那份**"，一旦发生过**外部改动**（用户手拖图标、别的 App 改、或 `DockWatcher` 刚回存的那份）它就**过期**了，再应用一份与真实 Dock 完全相同的配置会白写一遍 + 白重启一次 Dock。
+   - ② 的判据**必须复用写入校验（第 6 条）的同一套比较** —— 这样"跳过"与"写下去之后立刻验过"**严格等价**，不会出现"以为不用写、其实该写"的漏写。
+   - 短路时同时把"此刻真实 Dock"记成已应用状态（`adoptLiveDockAsApplied()`），顺带打开 `DockWatcher` 的回存闸门；**但不设 `appliedAt`** —— 那不是我们写的。
+   - 实测代价：逐桌面 Dock 的桌面在回存时原来会白重启一次（`PID 68667 → 68672`，约 50 ms 闪烁），补上 ② 之后为 `68995 → 68995`。详见 `AGENTS.md` §6.3 D24。
 3. 备份当前 `com.apple.dock` 全量域到 `backups/`。
 4. 读当前**全量**域 → 用配置覆盖白名单键 → 其余键（热角、启动台等）原样保留 → `CFPreferencesSetMultiple(..., kCFPreferencesCurrentUser, kCFPreferencesAnyHost)` + `CFPreferencesAppSynchronize`。单次原子写，不用 `defaults` 逐条拼。
 5. 触发 Dock 重载（见 3.5）。
@@ -507,6 +511,7 @@ struct AppSettings: Codable {
 | `mru-spaces = 1`（本机会命中） | 桌面顺序被系统重排，"下一个"不符合直觉 | 设置页显式开关，用户主动关闭；不静默修改 |
 | 写坏 Dock 配置 | 用户 Dock 损坏 | 首次写前全量基准 + 每轮备份；只覆盖白名单键；单次原子写；一键还原；README 给出 `defaults import` 还原步骤 |
 | 与用户在真实 Dock 上的手动改动互相覆盖 | 改动被吞 | 3 秒保护窗口 + 归一化指纹 + 自动回存 + 历史版本 + 可关闭 |
+| **短路只比"我们上次写下去的那份"，外部改动后判据过期** | 逐桌面 Dock 的桌面**回存**时白写一遍 + 白重启一次 Dock（约 50 ms 闪烁），而这是本 App 的常态用法 | ✅ 加短路第 2 条"真实 Dock 已经就是这份内容"（判据复用写入校验的同一套比较）。真机实测 `68667 → 68672` 修成 `68995 → 68995`。见 §3.4 第 2 条与 `AGENTS.md` §6.3 D24 |
 | 全屏 App 空间混入 | 每次全屏都切 Dock | `type != 0` 过滤。**P5 已真机回归**：把自己的窗口切成全屏造出真实 `type=4` 空间（零权限），实测过滤成立，见 §4 P5 行与 `scripts/check-fullscreen-filter.swift` |
 | **toast 抢焦点** | 用户切过去正要打字，字打进 toast | `canBecomeKey` / `canBecomeMain` = false，用 `orderFrontRegardless()` 显示 |
 | **toast 挡住点击** | 1 秒内点不到下面的东西 | `ignoresMouseEvents = true` |

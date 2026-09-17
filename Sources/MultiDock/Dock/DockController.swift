@@ -225,6 +225,26 @@ final class DockController {
                            fingerprint: config.fingerprint)
         }
 
+        // 1b. **真实 Dock 已经是这份内容** → 同样不写、不备份、不重启，只把它记成"已应用"。
+        //
+        // 为什么必须单独有这一条：上面那条比的是「我们上次写下去的那份」（`appliedFingerprint`），
+        // 一旦发生过**外部改动**（用户手拖图标、别的 App 改、或 `DockWatcher` 刚回存的那份），
+        // 它就**过期**了。此时再应用一份与真实 Dock 完全相同的配置，会白写一遍 + 白重启一次 Dock。
+        //
+        // 实测（`DockAcceptanceTests.testExternalDockChangeIsCapturedBackToActiveDesktop`）：
+        // 桌面**有独立 Dock** 时回存会白重启一次（PID 68667 → 68672，约 50 ms 闪烁）；
+        // 没有独立 Dock 时不会（回存只写配置、不应用）—— 所以只有 override 那条路中招，
+        // 而逐桌面 Dock 恰恰是本 App 的常态用法。
+        //
+        // 判据复用 `verify` 的同一套比较，所以「跳过」与「写下去之后立刻验过」**严格等价**，
+        // 不会漏掉真正需要的写入。
+        if !force, liveAlreadyMatches(config) {
+            adoptLiveDockAsApplied()
+            return Outcome(result: .skippedIdentical, reason: reason, reload: nil, writtenKeys: 0,
+                           verifyAttempts: 0, elapsed: elapsed(), skippedKeys: [],
+                           fingerprint: config.fingerprint)
+        }
+
         // 2. 备份当前全量域。失败不阻断（基准快照才是最后一道防线），但要把话说明白。
         var note: String?
         do {
@@ -297,5 +317,21 @@ final class DockController {
     private func verify(_ config: DockConfig, comparableKeys: Set<String>) -> Bool {
         let live = DockConfig.read(from: preferences.readDomain())
         return live.fingerprint(restrictedTo: comparableKeys) == config.fingerprint(restrictedTo: comparableKeys)
+    }
+
+    /// 真实 Dock 是否**已经**等于这份配置（在"读回口径"下）。
+    ///
+    /// 与 `verify` 是**同一套比较**，只是把域一次读进来、不再读第二遍。
+    /// 口径一致很关键：否则"跳过"与"写了也会立刻验过"就会不等价，
+    /// 可能出现"以为不用写、其实该写"的漏写。
+    private func liveAlreadyMatches(_ config: DockConfig) -> Bool {
+        let domain = preferences.readDomain()
+        guard !domain.isEmpty else { return false }
+        let present = Set(domain.keys)
+        // 只比"我们真要写的那些键"——本机缺失的外观键两边都不参与，不会造成假不等。
+        let comparableKeys = Set(Self.entries(for: config, restrictedTo: present).keys)
+        let live = DockConfig.read(from: domain)
+        return live.fingerprint(restrictedTo: comparableKeys)
+            == config.fingerprint(restrictedTo: comparableKeys)
     }
 }

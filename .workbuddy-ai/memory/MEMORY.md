@@ -50,6 +50,9 @@ macOS 多桌面工具，为每个 Space 绑定一套**原生 Dock** 配置。个
 - **自愈欠账必须跨会话存活**：`SessionMarker.needsSelfHeal` 用**可选字段**（旧的 `session.state` 还能解码）；`beginSession()` 把上次的欠账继承进新标记；成功应用一次后清掉。
 - **还原失败要保留标记、并把会话置为"非活跃"**：`needsSelfHeal = true` + `pid = 0`。`pid = 0` 是关键 —— `detectInterruptedSession()` 用 `kill(pid, 0)` 判断"是否还有活着的实例"，只有 `pid == 0` 才会跳过该检查。
 - **退出还原前必须排空待办**：`await state.prepareForTermination()` = 停 `DockWatcher` + 停 `DockPresenceMonitor` + `await waitForSelfHeal()` + `await dockController.waitForIdle()`。不排空的话排队中的 apply 会落在还原**之后**，把 Dock 又弄脏。
+- **`DockController.apply` 的短路有两条，缺一不可**：① 内容与 `appliedFingerprint` 相同；② **真实 Dock 已经就是这份内容**（`liveAlreadyMatches`，判据**复用 `verify` 的同一套比较** → 「跳过」与「写了立刻验过」严格等价）。只有 ① 时，一旦发生过**外部改动**（用户手拖 / 别的 App 改 / 回存）它就**过期**，于是应用一份与真实 Dock 完全相同的配置会**白写 + 白重启 Dock**（实测逐桌面 override 回存时 `PID 68667 → 68672`，约 50 ms 闪烁；默认 Dock 那条路不中招）。短路时调 `adoptLiveDockAsApplied()` 顺带打开 `DockWatcher` 回存闸门，**且刻意不设 `appliedAt`**。
+- **别的进程写的 Dock 偏好，本进程立刻读得到**：`defaults write com.apple.dock tilesize -float 72` 后 `CFPreferencesCopyMultiple` 立刻读到 72.0。所以「用户手拖图标」**可以脚本化复现** —— `DockWatcher` 判据是"可比指纹变了、且不等于我们写的那份"，而用户拖动本来就是 Dock 进程写同一个域，两种来源在偏好域层面无法区分也不需要区分。A4 因此从手测变成自动化回归。
+- **测"某个操作有没有副作用"必须等异步链路排空**：`setOverride` 是**同步**改 binding 的，但它触发的应用走 `request()` **异步排队**；不等就断言会**假成立**（我第一版就这么踩了）。要 `await controller.waitForIdle()` + 400 ms 沉降再读 Dock PID。
 - **备份还原只写白名单键**，绝不整域替换（否则会连用户的热角、Launchpad 网格一起回退）。
 - **`mru-spaces` 是白名单之外的唯一写入例外**：只给它一个认这一个键的专用方法（不是通用写入器），且它不在 `apply` 管辖里 → 另配 `reloadOnly()`。
 - **自愈提示用 `ToastPresenter.announce(_:)`（无条件弹）**，不受"显示切换提示"开关管；普通切换提示走 `show()`（受开关管）。
@@ -84,4 +87,4 @@ macOS 15.7.9 (24G830) / x86_64 / 单显示器 / Swift 6.2.4。换机器需重新
 - **"存一份历史版本"不一定要落盘**：落盘一堆没有恢复入口的文件是花架子。回存撤销做成内存栈 + UI 按钮即可，长期保命靠 `baseline.plist` 与 `backups/`。
 - **`@discardableResult func f() -> Int` 在 Void 闭包里会报 `conflicting arguments to generic parameter 'T'`**（`NotificationCenter` 的 observer 闭包就是 Void）→ 直接让方法返回 Void。
 - **测试失败不一定是测试错，先看是不是产品 bug。** P4 里那条 `Dock 不可用 1030 ms` 就是真 bug（节流判据错了）；但另一批失败确实是夹具前提写错（"没有 baseline 文件"永远走不到自愈，因为首次运行会先抓新基准 → 要写一份**损坏的** baseline 才到达）。
-- **P4 后测试数 239**（P3 时 195）。真实 Dock 验收 4 条：`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`。
+- **测试数 263**（P4 时 239、P5 时 258），其中 5 个真实 Dock 验收默认跳过。真实 Dock 验收：`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`（跑前先 `defaults export com.apple.dock` 备份）。

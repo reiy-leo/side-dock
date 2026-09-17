@@ -222,6 +222,80 @@ final class DockControllerTests: XCTestCase {
         XCTAssertEqual(second.result, .applied, "只改外观也必须重新应用")
     }
 
+    /// 短路第 1b 条：**真实 Dock 已经就是这份内容**时必须跳过，哪怕 `appliedFingerprint` 是空的。
+    ///
+    /// 这是 P4 后真机验收挖出来的 bug（`DockAcceptanceTests.testExternalDockChangeIsCapturedBackToActiveDesktop`）：
+    /// 旧的短路只比「我们上次写下去的那份」，一旦发生过外部改动（用户手拖、别的 App 改、回存）
+    /// 它就过期了 —— 此时再应用一份与真实 Dock 完全相同的配置，会白写一遍 + 白重启一次 Dock。
+    /// 实测桌面**有独立 Dock** 时回存会闪一下（PID 68667 → 68672，约 50 ms），而逐桌面 Dock 正是本 App 的常态用法。
+    func testSkipsWhenLiveDockAlreadyMatchesDespiteStaleFingerprint() async {
+        let prefs = FakePreferences(domain: baseDomain())
+        let config = makeConfig()
+
+        // 先把域写成 config 的样子，然后**丢掉这个控制器** —— 模拟"新建的控制器 / 别的组件"。
+        let writer = makeController(preferences: prefs)
+        let written = await writer.apply(config, reason: "先把它写下去")
+        XCTAssertEqual(written.result, .applied)
+
+        let process = FakeDockProcess()
+        let fresh = makeController(preferences: prefs, process: process)
+        XCTAssertNil(fresh.appliedFingerprint, "新控制器的指纹必须是空的，否则本用例根本没走到 1b")
+
+        let writesBefore = prefs.writes
+        let outcome = await fresh.apply(config, reason: "内容与真实 Dock 相同")
+
+        XCTAssertEqual(outcome.result, .skippedIdentical)
+        XCTAssertEqual(prefs.writes, writesBefore, "真实 Dock 已经是这份内容，一次都不该写")
+        XCTAssertEqual(process.signals.count, 0, "必须不重启 Dock（不能闪屏）")
+        XCTAssertEqual(outcome.writtenKeys, 0)
+    }
+
+    /// 1b 跳过后要把"此刻真实 Dock"记成已应用 —— 否则 `DockWatcher` 的回存闸门
+    /// （`appliedComparableFingerprint != nil`）一直是关着的，用户手拖图标不会被回存。
+    func testSkipAdoptsLiveDockSoWriteBackGateOpens() async {
+        let prefs = FakePreferences(domain: baseDomain())
+        let config = makeConfig()
+        let writer = makeController(preferences: prefs)
+        _ = await writer.apply(config, reason: "先把它写下去")
+
+        let fresh = makeController(preferences: prefs)
+        XCTAssertNil(fresh.appliedComparableFingerprint, "新控制器还没采纳过任何状态")
+
+        let outcome = await fresh.apply(config, reason: "内容与真实 Dock 相同")
+
+        XCTAssertEqual(outcome.result, .skippedIdentical)
+        XCTAssertEqual(fresh.appliedComparableFingerprint, fresh.currentComparableFingerprint(),
+                       "跳过后必须采纳真实 Dock 的指纹，否则回存闸门打不开")
+    }
+
+    /// 反向守卫：真实域与目标**不一致**时必须真的写、真的重启 —— 1b 不能把该写的也吞掉。
+    func testDoesNotSkipWhenLiveDockDiffersFromConfig() async {
+        let prefs = FakePreferences(domain: baseDomain())   // 域里 tilesize = 36
+        let process = FakeDockProcess()
+        let controller = makeController(preferences: prefs, process: process)
+
+        let outcome = await controller.apply(makeConfig(tilesize: 64), reason: "域里是 36")
+
+        XCTAssertEqual(outcome.result, .applied)
+        XCTAssertEqual(prefs.writes, 1)
+        XCTAssertEqual(process.signals.count, 1, "内容确实不同，必须真的重启 Dock")
+    }
+
+    /// `force` 必须同时绕过第 1 条与第 1b 条 —— 「立即应用」按钮不能被短路吃掉。
+    func testForceBypassesLiveMatchShortCircuit() async {
+        let prefs = FakePreferences(domain: baseDomain())
+        let config = makeConfig()
+        let writer = makeController(preferences: prefs)
+        _ = await writer.apply(config, reason: "先把它写下去")
+
+        let process = FakeDockProcess()
+        let fresh = makeController(preferences: prefs, process: process)
+        let outcome = await fresh.apply(config, reason: "强制", force: true)
+
+        XCTAssertEqual(outcome.result, .applied)
+        XCTAssertEqual(process.signals.count, 1, "force 必须真的重启 Dock")
+    }
+
     // MARK: - 只写白名单
 
     func testOnlyWhitelistedKeysAreEverHandedToTheWriter() async {
