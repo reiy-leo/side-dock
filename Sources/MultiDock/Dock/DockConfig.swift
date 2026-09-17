@@ -311,6 +311,8 @@ struct DesktopBinding: Codable, Hashable, Sendable {
     }
 }
 
+/// 菜单栏**左键**单击的行为。`⇧`+左键 = 切到上一个桌面是固定行为，不受这个设置影响
+/// （但选了 `.openMenu` 时 `⇧`+左键也一并打开菜单，见 `MenuBarController`）。
 enum ClickAction: String, Codable, Sendable, CaseIterable {
     /// 左键单击 = 切到下一个桌面（默认）。
     case nextDesktop

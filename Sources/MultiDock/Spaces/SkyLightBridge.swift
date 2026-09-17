@@ -77,7 +77,8 @@ final class SkyLightBridge: @unchecked Sendable {
         return array.takeRetainedValue() as? [[String: Any]] ?? []
     }
 
-    /// 主动切换某显示器上的当前空间。P0 实测可用，约 20 ms 生效，带系统动画。
+    /// 主动切换某显示器上的当前空间。实测可用，**0–6 ms 生效 —— 瞬时硬切，没有过渡动画**
+    /// （想加动画的路都走死了，见 `docs/spikes.md` 实验 7，别再试）。
     func setCurrentSpace(displayUUID: String, spaceID: SpaceID) {
         managedDisplaySetCurrentSpaceFn(connectionID, displayUUID as CFString, spaceID)
     }

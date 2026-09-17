@@ -8,7 +8,7 @@ import Observation
 /// 程序化切桌面时 `NSWorkspaceActiveSpaceDidChangeNotification` 根本不触发
 /// （对照实验已排除环境因素），所以：
 ///
-/// - **主：300 ms 轮询**。切桌面本身只要 20 ms，1 s 的检测延迟会明显滞后；
+/// - **主：300 ms 轮询**。切桌面本身只要 0–6 ms，1 s 的检测延迟会明显滞后；
 ///   一次 `CGSGetActiveSpace` + `CGSCopyManagedDisplaySpaces` 是纯内存调用，开销可忽略。
 /// - **辅：通知**。仅在**用户主动切换**时可能触发，用作降低延迟的快速通道。
 ///

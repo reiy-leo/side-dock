@@ -52,7 +52,7 @@ SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.s
 
 ## 1. 这是什么
 
-macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** 配置，切换桌面时自动把 Dock 切换成对应配置。菜单栏常驻一个图标，单击即切到下一个桌面。
+macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** 配置，切换桌面时自动把 Dock 切换成对应配置。菜单栏常驻一个图标，单击即切到下一个桌面，`⇧`+单击切上一个。
 
 - 用户：个人自用，本地运行，**不做公证、不上 Mac App Store、不签名**（ad-hoc 签名即可）。
 - 语言：界面中文，代码与标识符英文。
@@ -163,7 +163,7 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 
 **实现要点（改动时别踩）**：
 
-1. **预应用 = "同一拍发起"，不是"切空间前完成重启"**。`switchToNextDesktop()` / `switchTo(_:)` 先 `switcher.target(_:)` 算目标 → `applyConfigForDesktop(target)` → 再 `switcher.switchTo(target)`。**切空间前完成重启物理上做不到**：重启约 101 ms > `setCurrentSpace` 约 20 ms。真实保证是"不等 300 ms 轮询"。别按字面去"修正"这个顺序。
+1. **预应用 = "同一拍发起"，不是"切空间前完成重启"**。`switchToNextDesktop()` / `switchToPreviousDesktop()` / `switchTo(_:)` 先 `switcher.target(_:)` 算目标 → `applyConfigForDesktop(target)` → 再 `switcher.switchTo(target)`。**切空间前完成重启物理上做不到**：重启约 101 ms > `setCurrentSpace` 实测 0–6 ms。真实保证是"不等 300 ms 轮询"。别按字面去"修正"这个顺序。
 2. **`DockReloader.minimumSpacing`（默认 1 s）不能去掉**。实测距上次重启不足约 1 s 时再重启，Dock 要 **约 1070 ms** 才归位；间隔满 1 s 只要约 70 ms。等待期间 Dock **可用**，所以"等"严格优于"立刻重启"。实测把 Dock 不可用时长从约 1030 ms 压到 **45–90 ms**。`ReloadOutcome.elapsed` 只算不可用时间，`spacingWait` 单独记。
 3. **`RealDockProcessControl.signal(_:_:)` 的安全闸门不能去掉**。`NSRunningApplication` 在 Dock 重启窗口里会返回 `processIdentifier == -1`（**实测复现**），而 `kill(-1, SIGTERM)` 会杀掉**当前用户的所有进程**。三道防线：`dockPID()` 过滤 `> 0`、`signal()` 拒绝 `pid <= 0` 且用 `proc_name` 确认进程名、`waitForRestart` 只接受 `pid > 0`。测试在 `DockProcessSafetyTests`（全部用**信号 0** 断言，闸门坏了是测试失败而不是打死测试进程）。
 4. **查 Dock PID 不要用 `pgrep` 子进程**（单次约 110 ms）。用 `proc_listpids` + `proc_name`（**0.02 ms**）。`DockProcessSafetyTests` 有测试守平均耗时 < 20 ms。
@@ -728,6 +728,7 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 
 **做了什么**：
 - **P0 三个实验全部实测完成**，结论写入 `docs/spikes.md`。三条结论推翻了 `PLAN.md` 的原始假设：① Dock **没有热重载**（post 通知完全无效），主路径定为 `kill -HUP`（约 101 ms 不可用），SIGTERM + kickstart 兜底（约 395 ms）；② 主动切桌面 **可用（20 ms）但不触发空间变化通知** → 事件源反转为 300 ms 轮询为主；③ **Finder 在 plist 中无任何表示** → 钉住无需代码。
+  - ⚠️ **本条的"20 ms"已被证伪**（2026-09-18，第 10 次会话）：那是 P0 采样粒度的粗值，用 500 µs 粒度重测是 **0–6 ms**，且**没有动画**。上面保留原文是为了不改写历史；**以 §4 与 `docs/spikes.md` 实验 7 为准**。
 - **P1 实现完成**：新增 14 个源文件（`App/` `Spaces/` `Dock/` `Store/` `UI/`）+ 4 个测试文件 + 4 个 P0 实验脚本；测试目标已加进 `Package.swift`，**37 个测试全绿**，全新构建**零警告**。
 - 同步修订了 `docs/PLAN.md`（§1 键名、§2 文件树、§3.1 事件源、§3.2 模型、§3.5 重载策略、§4 P0/P1 行、§5 风险表、§7 差异）、重写 `AGENTS.md`、更新 `README.md`。
 

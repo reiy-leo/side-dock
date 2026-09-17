@@ -3,7 +3,7 @@ import AppKit
 /// 程序入口。
 ///
 /// 直接用 `NSApplication` 而不是 SwiftUI 的 `App` + `MenuBarExtra`：
-/// 硬约束要求「左键单击 = 切下一个桌面，右键 / ⌥+左键 = 下拉菜单」，
+/// 硬约束要求「左键单击 = 切下一个桌面，⇧+左键 = 切上一个桌面，右键 / ⌥+左键 = 下拉菜单」，
 /// 而 `MenuBarExtra` 无法区分左右键。详见 `UI/MenuBarController.swift`。
 ///
 /// 设置窗口与调试面板仍然是 SwiftUI，通过 `NSHostingController` 承载。

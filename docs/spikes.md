@@ -13,7 +13,7 @@
 
 1. **不存在热重载**。写偏好后无论 post 什么通知，Dock 都不会重新读取——必须重启 Dock 进程。
 2. **重启很快**：SIGHUP 后 Dock 仅约 **101 ms** 不可用；SIGTERM 约 **395 ms**（Dock 收到 TERM 会先做约 255 ms 清理再退出）。→ **主路径定为 SIGHUP**，SIGTERM + kickstart 作兜底。
-3. **程序化切桌面可用且极快（20 ms），但不触发 `NSWorkspaceActiveSpaceDidChangeNotification`**。→ SpaceObserver 必须以**轮询为主**，通知只能当优化。
+3. **程序化切桌面可用且极快（P0 粗测 20 ms，后经实验 7 精测为 0–6 ms），但不触发 `NSWorkspaceActiveSpaceDidChangeNotification`**。→ SpaceObserver 必须以**轮询为主**，通知只能当优化。
 4. **切桌面的"左右滑动动画"做不到**（实验 7）：程序化切空间是硬切（0–6 ms），SkyLight 不暴露带过渡的入口；唯一像入口的会话级开关**写后读不回**、碰了就破无痕原则；`SLSWillSwitchSpaces` 签名未知、猜错直接段错误。**零权限 + 无痕下无解，不要再试。**
 
 ---
@@ -84,9 +84,9 @@ A 级测了两种通知，**都无效**：
 | 项 | 实测 |
 | --- | --- |
 | `CGSManagedDisplaySetCurrentSpace(cid, displayUUID, spaceID)` | **可用**，活动 space 真的从 id64=6 变到 7 |
-| 生效耗时 | **20 ms**（首次采样即已切换） |
+| 生效耗时 | **20 ms**（首次采样即已切换）—— 这是**当时的采样粒度**，不是真实耗时。实验 7 用 500 µs 粒度重测得到 **6 / 0 / 0 ms** |
 | 切回原桌面 | 正常 |
-| 切换动画 | 有系统自带动画；**无动画时长控制符号**（`CGSSetWorkspaceAnimationDuration` 等均不存在，与 AGENTS.md 记录一致） |
+| 切换动画 | ⚠️ **本行原写"有系统自带动画"，2026-09-18 复核证伪** —— 是**瞬时硬切，没有动画**，见实验 7。不过"无动画时长控制符号"这半句是对的（`CGSSetWorkspaceAnimationDuration` 等均不存在） |
 | **`NSWorkspaceActiveSpaceDidChangeNotification`** | **未触发，0 次**（观察窗口 2.5 s，程序化切换） |
 
 ### 通知为 0 是真实结论，不是环境问题
@@ -100,7 +100,7 @@ A 级测了两种通知，**都无效**：
 > **§3.1 的事件源主次必须反转：轮询为主（建议 300 ms），通知为辅（若用户主动切换时确实会触发，则可作为"快速通道"降低延迟）。**
 
 - 计划原文写「`NSWorkspaceActiveSpaceDidChangeNotification`（主）+ 1 秒轮询（兜底）」，**对程序化切换完全不成立**，必须改。
-- 轮询间隔从 1 s 收紧到 **300 ms**：因为切桌面本身只要 20 ms，1 s 的检测延迟会让"切桌面 → Dock 更新"明显滞后。300 ms 轮询的开销可忽略（一次 `CGSGetActiveSpace` + `CGSCopyManagedDisplaySpaces` 是纯内存调用）。
+- 轮询间隔从 1 s 收紧到 **300 ms**：因为切桌面本身只要 0–6 ms，1 s 的检测延迟会让"切桌面 → Dock 更新"明显滞后。300 ms 轮询的开销可忽略（一次 `CGSGetActiveSpace` + `CGSCopyManagedDisplaySpaces` 是纯内存调用）。
 - **我们自己发起的切换必须走"预应用"**（先改 Dock 再切空间，见 §3.4 第 8 条）——现在这条从"优化"升级为**必需**，因为切换后我们收不到任何通知。
 - **待用户确认的开放项**：用户手动切桌面时通知是否触发。验证方法（P1 验收时顺便做）：
   ```bash
@@ -483,7 +483,7 @@ SkyLight  0x…  SLSWindowServerClientWillSwitchSpaces + 139
 | §4 P2 行 | 待做 | ✅ 已完成（见本文实验 4 与 AGENTS.md §8 第 5 次记录） |
 | §4 P3 行 | 待做 | ✅ 已完成（见本文实验 5 与 AGENTS.md §8 第 6 次记录） |
 | §3.5 | SIGHUP 约 101 ms 不可用 | 补上**重启节流**：距上次重启不足约 1 s 时再重启要 **约 1070 ms**；`DockReloader.minimumSpacing` 错开它，实测把 Dock 不可用时长压回 **45–90 ms** |
-| §3.4 第 8 条 | "先 apply 再切空间" | 措辞修正为"**发起**应用与切空间同一拍，不等轮询"。切空间前完成重启物理上做不到（重启 101 ms > 切空间 20 ms），见 PLAN §3.4 的 P3 实现记录 |
+| §3.4 第 8 条 | "先 apply 再切空间" | 措辞修正为"**发起**应用与切空间同一拍，不等轮询"。切空间前完成重启物理上做不到（重启 101 ms > 切空间 0–6 ms），见 PLAN §3.4 的 P3 实现记录 |
 | §6 | 桌面"位置"含义待确认 | ✅ 已确认：Dock 屏幕位置 + 大小（2026-09-18） |
 | §3.5 / §3.9 | 节流窗口靠 `DockReloader.lastRestartAt`（内存记忆）错开 | 改成按 **Dock 进程年龄**（`proc_pidinfo(PROC_PIDTBSDINFO)`）推算，拿不到年龄才退回内存记忆。理由：launchd 的节流**按服务**算，别人的重启我们看不见。见本文实验 6 |
 | §4 P4 行 | 待做 | ✅ 已完成（见本文实验 6 与 AGENTS.md §8 第 7 次记录）。**只有第 ③ 条"注销/重启后 Dock 为 baseline"未实测**（要真注销一次机器） |

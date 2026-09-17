@@ -4,7 +4,7 @@
 
 菜单栏常驻一个图标，管理多桌面下的原生 Dock：
 
-- **菜单栏**：单击图标 → 切到下一个桌面（循环）；右键 / ⌥+左键 → 下拉菜单，列出所有桌面（点选即切换）、进设置、退出。
+- **菜单栏**：单击图标 → 切到下一个桌面（循环）；`⇧`+单击 → 切到上一个桌面（循环）；右键 / ⌥+左键 → 下拉菜单，列出所有桌面（点选即切换）、进设置、退出。
 - **设置 → 通用**：编辑「默认 Dock」——拖入/拖出应用、拖拽排序，Finder 与 Launchpad 固定不可移除；默认 Dock 的大小与位置。
 - **设置 → 桌面**：列出所有桌面，每个桌面单独设置 Dock 位置/大小与 Dock 中的应用（同样可拖入拖出），或选择沿用默认 Dock；**每个桌面还可以起一个名字，最长 10 个字符**（仅存本地，见 §3.10）。
 - **切换桌面提示（toast）**：切换到另一个桌面时，在屏幕**中上部**浮出一条提示显示该桌面的名字，**1 秒后自动消失**。不抢焦点、不挡点击、不需要任何权限（见 §3.10）。
@@ -24,7 +24,7 @@
 | 系统 / 工具链 | macOS 15.7.9 (24G830)，x86_64，单显示器；Xcode 26.3、Swift 6.2.4 |
 | 空间切换通知 | `NSWorkspaceActiveSpaceDidChangeNotification` 是**公开 API**（AppKit 10.6 起，`NSWorkspace.h:339`）。**但 P0 实测：程序化切桌面时它不触发**（对照实验已排除环境因素）→ 见 §3.1 |
 | 枚举桌面 | `dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight")` 成功，`CGSCopyManagedDisplaySpaces` / `CGSGetActiveSpace` / `CGSMainConnectionID` 可用。实测返回 2 个桌面，各有**跨重启稳定的 UUID**、`id64`、`type=0`，`Spaces` 数组顺序即左右顺序 |
-| **主动切桌面** | `CGSManagedDisplaySetCurrentSpace` **符号存在**（`CGSManagedDisplayGetCurrentSpace` 也在）→ 菜单栏"切下一个桌面"可实现。**尚无动画时长控制符号**（`CGSSetWorkspaceAnimationDuration` 等都不存在），切换会带系统自带的滑动动画 |
+| **主动切桌面** | `CGSManagedDisplaySetCurrentSpace` **符号存在**（`CGSManagedDisplayGetCurrentSpace` 也在）→ 菜单栏"切下一个桌面"可实现。**实测 0–6 ms 生效 —— 瞬时硬切，没有过渡动画**。⚠️ 这里原先写的是"约 20 ms、带系统自带的滑动动画"，**2026-09-18 复核证伪**：那 20 ms 是 P0 用 1 s 轮询粒度测出来的粗值。想加动画的四条路全走死，见 `docs/spikes.md` 实验 7 |
 | 桌面命名 | 空间字典的键是 `uuid` / `ManagedSpaceID` / `id64` / `type` / `WindowManagerInfo`（P0 实测，**不是** `ManagedSpaceUUID`），**没有名称字段** → macOS 15 无桌面名接口，App 内的桌面命名只能存在本地，不会写回系统。display 字典另有 `Current Space` 键可直取当前空间 |
 | **显示器 UUID 能否映射到 `NSScreen`** | ✅ **能，且完全一致**（2026-09-18 实测）：`CGDisplayCreateUUIDFromDisplayID(NSScreen.deviceDescription["NSScreenNumber"])` 得到 `AB24BB32-C5EC-D10A-6F9D-F01F35552F60`，与 SkyLight 的 `Display Identifier` 逐字符相同 → 由空间所在的 `displayUUID` 可以精确定位到显示器，toast 能显示在正确的屏幕上。探测脚本：`scripts/spike-probe.swift` |
 | 屏幕几何（toast 定位用） | 主屏 `frame` = (0, 0, 1920, 1200)，`visibleFrame` = (0, 53, 1920, 1147)（Dock 在底部且未自动隐藏，底部让出 53 pt）。toast 定位用 `visibleFrame`，天然避开菜单栏与 Dock |
@@ -218,7 +218,7 @@ struct AppSettings: Codable {
 >
 > 原文"先 apply 再切空间"容易被读成"切空间之前 Dock 已经重启完"，**那物理上做不到**：
 > 一次应用要先写偏好、再重启 Dock，而 Dock 重启本身约 **101 ms**（SIGHUP，P0 实测），
-> 比 `CGSManagedDisplaySetCurrentSpace` 返回（约 20 ms）慢。任何实现都无法在切空间前完成重启。
+> 比 `CGSManagedDisplaySetCurrentSpace` 返回（实测 0–6 ms）慢一个量级。任何实现都无法在切空间前完成重启。
 >
 > 第 8 条真正要保证的是：**发起**应用与切空间在同一拍，**不等 300 ms 轮询**发现变化才动。
 > 代码里 `AppState.switchToNextDesktop()` / `switchTo(_:)` 先调 `switcher.target(_:)` 算出目标、
@@ -463,13 +463,14 @@ struct AppSettings: Codable {
 
 | 阶段 | 内容 | 验收标准 |
 | --- | --- | --- |
-| **P0 实验（✅ 已完成 2026-09-18）** | ① Dock 重载 A/B/C 实测 ② `CGSManagedDisplaySetCurrentSpace` 实测 ③ Finder 表示方式 | ✅ 产出 `docs/spikes.md`。**结论**：① 无热重载，主路径 = SIGHUP（约 101 ms 不可用）② 切桌面可用（20 ms）但不触发通知 → 事件源改为轮询为主 ③ Finder 无需处理 |
+| **P0 实验（✅ 已完成 2026-09-18）** | ① Dock 重载 A/B/C 实测 ② `CGSManagedDisplaySetCurrentSpace` 实测 ③ Finder 表示方式 | ✅ 产出 `docs/spikes.md`。**结论**：① 无热重载，主路径 = SIGHUP（约 101 ms 不可用）② 切桌面可用（**当时测为 20 ms，后经实验 7 精测修正为 0–6 ms；无动画**）但不触发通知 → 事件源改为轮询为主 ③ Finder 无需处理 |
 | **P1 骨架 + 识别 + 菜单栏（✅ 已完成 2026-09-18）** | SwiftPM 包、`build-app.sh`、SkyLightBridge、SpaceObserver、SpaceSwitcher、菜单栏下拉与单击切换、调试面板、基准快照 + 会话标记骨架。**不改任何 Dock 设置** | ✅ 全部达成：`swift build` / `swift test`（37 个测试全绿）/ `build-app.sh` 通过；**切桌面 10 次全部被记录、spaceUUID 全对、无漏报无重复**；菜单栏图标已创建（layer 25）；全屏空间不触发切换（单元测试覆盖）；`baseline.plist` 与运行时 `com.apple.dock` **34 键逐键相同**；运行前后 Dock 除 `recent-apps`/`mod-count`（系统自管，已在排除清单）外无任何差异 |
 | **P2 编辑条 + 应用（✅ 已完成 2026-09-18）** | DockPreferences 读写、ConfigStore、备份轮转、`DockReloader`、`DockController`、`DockStripRules`、`DockStripEditor`、通用 Tab、手动「立即应用」、**「立即还原到原始 Dock」按钮** | ✅ **全部达成**（`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --filter DockAcceptanceTests`，真实 Dock）：apply 后与操作前全量域 diff，**变化的键只有 `["magnification","persistent-apps","tilesize"]`**（全部在白名单内，白名单外的键一个没动）；**Dock 给新写入的条目补上了 `GUID`（`i:1414651200`）** → 写入真的被读进去并重建了 Dock；还原后图标顺序逐项回到原样、白名单键逐键一致、键集合一致（34 键），**仅剩 `["mod-count","recent-apps"]`**（Dock 自己的计数器）。SIGHUP **125–138 ms**。Finder/Launchpad 无法被拖出（编辑条里没有拖拽手柄 + `DockStripRules` 保证启动台在首位）。**142 个测试全绿、零警告** |
 | **P2.5 桌面命名 + 切换 toast（不写 Dock）✅ 已完成 2026-09-18** | `DesktopNaming`（归一化 + 显示名解析 + 改名规则）、`AppState.displayName(for:)` 并替换所有调用点、桌面页改名输入框、`ToastPresenter`（纯逻辑）、`DesktopNameToastWindow`（AppKit 窗口）、设置开关、调试面板「测试 toast」、`scripts/check-toast-window.sh` | ✅ 全部达成：**70 个测试全绿**、零警告；`check-toast-window.sh --watch` 实测窗口 `layer=25 alpha=1.00 x=916 y=80 w=87 h=39`（中心 959.5 = 主屏 midX 960，距可见区顶部 80 pt），出现到消失 **983 / 987 ms**；日志 `toast 显示` → `toast 隐藏` 间隔 **1.014–1.098 s**；改 12 字名字 → 加载后截到 10 字并原样显示在 toast 里（`toast 显示「一二三四五六七八九十」`）；无名字的桌面回落「桌面 1」；空绑定行被自动清理；**切 4 次桌面（含 4 次 toast）前后 `defaults read com.apple.dock` 逐键相同** |
 | **P3 桌面页 + 自动切换（✅ 已完成 2026-09-18）** | 桌面 Tab 的 Dock 部分（绑定与 override）、切换时自动应用、防抖合并、内容相同跳过、预应用、自动回存 | ✅ **全部达成**（`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --filter DockAcceptanceTests`，真实 Dock）：两个桌面两套配置**来回切 20 次全部成功**，每次真实域的 `tilesize`/`magnification` 都等于目标那份；**Dock 不可用时长 45–90 ms**（最坏 90 ms，见 `spikes.md` 实验 5 的节流修复）；两桌面配置相同时 `.skippedIdentical` + `reload == nil` + `mod-count` 不变（确实没重启 Dock）；`DockWatcher` **误判 0 次**；还原后差异键 **`[]`**、图标顺序逐项一致、键集合一致（34 键）。**195 个测试全绿、零警告** |
 | **P4 无痕与自愈（✅ 已完成 2026-09-18，③ 待用户注销实测）** | 退出还原全链路（菜单退出 / Cmd+Q / 注销关机）、退出前等待重载完成、`session.state` 残留检测、登录启动、Dock 未归位兜底、备份恢复 UI、`mru-spaces` 开关 | ① ✅ 还原链路由 P2 验收 + `testSuccessfulRestoreClearsMarker` 覆盖（逐键等于 baseline）。② ✅ `testSelfHealIsIdempotentAcrossThreeLaunches`（真实 Dock）：连开三次 → `[已自动还原, 已与原始状态一致, 已与原始状态一致]`，`mod-count` 三次都是 22569（第 2、3 次没有白重启 Dock），每轮之后白名单键都等于基准。③ ⚠️ **未实测**（要真注销/重启一次机器）：代码路径是"先写债务标记 + 尽力还原，没跑完的由下次启动自愈接手"。④ ✅ `testKillingDockRecoversWithinThreeSeconds`（真实 Dock）：`SIGKILL` 后 **1072 ms** 归位（上限 3 s），恢复后白名单键与键集合都与杀之前一致。⑤ ✅ 同 ②。**239 个测试全绿、零警告** |
 | **P5 收尾（✅ 已完成 2026-09-18，仅多显示器实测待用户插屏）** | README（含完全卸载与还原步骤）、多显示器与热插拔加固、全屏过滤回归、编辑条竖排、孤儿绑定、回存撤销 | ① ✅ README 整篇重写：完全卸载三步（退出还原 → 关登录项 → 删数据目录）+ `defaults import baseline.plist` 的整域还原（并写明它会把热角一起回退）。② ✅ **全屏过滤真机回归通过**：`scripts/check-fullscreen-filter.swift` 把自己的窗口切成全屏 → 造出真实 `type=4` 空间（id64=537），实测它没被算进用户桌面、活动空间不再命中任何用户桌面、退出后一切复原；MultiDock 日志同步记录「活动空间不是用户桌面…不触发切换」，且从全屏退回**没有**弹 toast。③ ✅ 多显示器加固：插拔外接屏（接 `NSApplication.didChangeScreenParametersNotification`）自动重读桌面列表，调试面板显示显示器数量与各桌面 `displayUUID` 前 8 位；**真机实测仍需用户插屏**（本机单显示器）。④ ✅ 编辑条竖排。⑤ ✅ 孤儿绑定只提示、不自动删（拔外接屏会误伤）。⑥ ✅ 回存撤销栈（内存，刻意不落盘）。**257 个测试全绿、零警告** |
+| **P5+ 菜单栏交互补完（✅ 已完成 2026-09-18）** | `⇧`+左键切上一个桌面；把"切桌面动画"查清并定性为不做 | ① ✅ `AppState.switchToPreviousDesktop()` 与 `switchToNextDesktop()` 完全对称（同一条预应用链路、两端循环）；下拉菜单加「上一个桌面」+ 等价提示；`clickAction == .openMenu` 时 `⇧`+左键一并走菜单。单测 `testPreviousDesktopPreAppliesItsOwnDock`。② ✅ **动画：不做**。四条路全走死（瞬时硬切 0–6 ms / 粘滞状态位 / 会话开关写后读不回 / `SLSWillSwitchSpaces` 段错误 / 合成事件被拦），见 `docs/spikes.md` 实验 7。③ ✅ 新增 `scripts/spike-symbols.swift`（从 dyld 共享缓存枚举私有框架符号）。**258 个测试全绿、零警告** |
 
 ---
 
@@ -477,7 +478,7 @@ struct AppSettings: Codable {
 
 | 风险 | 影响 | 对策 |
 | --- | --- | --- |
-| 主动切桌面的私有 API 失效 | 菜单栏切换不可用 | ✅ P0 已验证可用（20 ms）。仍保留 `SpaceProvider`/`SpaceSwitcher` 协议隔离，失效时降级为"仅跟随 + 手动改 Dock"并在 UI 报警 |
+| 主动切桌面的私有 API 失效 | 菜单栏切换不可用 | ✅ P0 已验证可用（**0–6 ms**，无动画）。仍保留 `SpaceProvider`/`SpaceSwitcher` 协议隔离，失效时降级为"仅跟随 + 手动改 Dock"并在 UI 报警 |
 | **切桌面后收不到空间变化通知** | 跟随滞后或漏更新 | ✅ P0 已确认（程序化切换不触发通知）→ 事件源改为 **300 ms 轮询为主**；自己发起的切换一律**预应用**，不等通知 |
 | 无热重载，切桌面必然重启 Dock | 切桌面 Dock 闪一下 | ✅ P0 实测仅 **约 101 ms**（SIGHUP）。内容相同直接跳过；连击合并；预应用；UI/README 明示"约 0.1 秒" |
 | **launchd 的重启节流**：距上次重启不足约 1 s 时再重启，Dock 要 **约 1070 ms** 才归位（`spikes.md` 实验 5） | 连续切桌面时 Dock 消失一秒多 | ✅ 已实现 `DockReloader.minimumSpacing`（默认 1 s）：先等满窗口再重启，**等待期间 Dock 可用**。实测把 Dock 不可用时长压到 **45–90 ms**；`ReloadOutcome` 把 `elapsed`（不可用）与 `spacingWait`（可用等待）分开记 |
@@ -546,7 +547,7 @@ struct AppSettings: Codable {
 
 ## 7. 与上一版的差异
 
-1. 增加了**主动切换桌面**（菜单栏单击循环、菜单点选），依赖 `CGSManagedDisplaySetCurrentSpace`。**P0 已实测：可用，20 ms 生效，但不触发空间变化通知**（详见 `docs/spikes.md`）。
+1. 增加了**主动切换桌面**（菜单栏单击循环 / `⇧`+单击反向、菜单点选），依赖 `CGSManagedDisplaySetCurrentSpace`。**P0 已实测：可用，但不触发空间变化通知**（详见 `docs/spikes.md`；切换耗时后经实验 7 精测修正为 **0–6 ms，无动画**）。
 2. UI 从"配置列表"改为**按桌面的可视化 Dock 编辑器**（通用页 = 默认 Dock，桌面页 = 各桌面 Dock），面向桌面而非抽象配置。
 3. 增加了 Finder / Launchpad 固定、从 Finder 拖入拖出、Dock 大小与位置的图形化编辑。
 4. `mru-spaces` 由"完全不碰"改为"设置页显式开关"，因为它会直接破坏循环切换的直觉。

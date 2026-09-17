@@ -2,9 +2,9 @@ import AppKit
 
 /// 菜单栏图标与下拉菜单。
 ///
-/// **为什么不用 `MenuBarExtra`**：硬约束要求「左键单击 = 切到下一个桌面，右键 / ⌥+左键 = 下拉菜单」，
-/// 而 `MenuBarExtra` 的点击一律被它自己吃掉、无法区分左右键。所以这里用 `NSStatusItem`
-/// 直接控制 `sendAction(on:)`，菜单内容仍是纯 AppKit（无需 SwiftUI 的场景系统）。
+/// **为什么不用 `MenuBarExtra`**：硬约束要求「左键单击 = 切到下一个桌面，⇧+左键 = 切到上一个桌面，
+/// 右键 / ⌥+左键 = 下拉菜单」，而 `MenuBarExtra` 的点击一律被它自己吃掉、无法区分左右键。
+/// 所以这里用 `NSStatusItem` 直接控制 `sendAction(on:)`，菜单内容仍是纯 AppKit。
 @MainActor
 final class MenuBarController: NSObject, NSMenuDelegate {
 

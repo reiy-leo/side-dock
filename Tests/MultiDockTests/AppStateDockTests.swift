@@ -568,8 +568,8 @@ final class AppStateDockTests: XCTestCase {
         //
         // 注意**不能**断言"写入发生在 setCurrentSpace 之前"：一次应用要先写偏好、
         // 再重启 Dock，而 Dock 重启本身就要约 101 ms（P0 实测），比 `setCurrentSpace`
-        // 返回（约 20 ms）慢。所以"切空间之前完成重启"物理上做不到。
-        // 真正该保证的是：**发起**应用与切空间在同一拍，不等轮询；重启与切换动画重叠。
+        // 返回（实测 0–6 ms）慢一个量级。所以"切空间之前完成重启"物理上做不到。
+        // 真正该保证的是：**发起**应用与切空间在同一拍，不等轮询。
         let events = Box<[String]>([])
         let spaces = FakeSpaceProvider.desktops(count: 2)
         let provider = FakeSpaceProvider(
