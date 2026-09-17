@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var state: AppState!
     private var lifecycle: LifecycleController!
     private var menuBar: MenuBarController!
+    private var toastWindow: DesktopNameToastWindow!
 
     private var debugWindow: NSWindow?
     private var settingsWindow: NSWindow?
@@ -19,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let state = AppState()
         self.state = state
+        attachToast(to: state)
 
         lifecycle = LifecycleController(state: state)
         menuBar = MenuBarController(state: state)
@@ -28,6 +30,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         lifecycle.applicationDidFinishLaunching()
         observePowerOff()
+    }
+
+    /// toast 的接线：窗口在这里建，调度逻辑在 `ToastPresenter`，状态与命名解析仍归 `AppState`。
+    /// 必须在 `state.start()`（观察器启动）之前接上，否则首次桌面变化会漏掉。
+    private func attachToast(to state: AppState) {
+        let window = DesktopNameToastWindow()
+        toastWindow = window
+        state.attachToastPresenter(
+            ToastPresenter(
+                presenter: window,
+                displayName: { [weak state] space in
+                    state?.displayName(for: space) ?? space.displayName
+                },
+                isEnabled: { [weak state] in
+                    state?.settings.showToastOnDesktopSwitch ?? true
+                },
+                log: { [weak state] message in
+                    state?.append(.info, message)
+                }
+            )
+        )
     }
 
     func applicationWillTerminate(_ notification: Notification) {

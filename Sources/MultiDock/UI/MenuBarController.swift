@@ -105,8 +105,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             menu.addItem(empty)
         } else {
             for space in state.desktops {
-                let title = space.customTitle
-                let item = NSMenuItem(title: title, action: #selector(selectDesktop(_:)), keyEquivalent: "")
+                // 走 AppState 的解析入口：有自定义名用自定义名，否则「桌面 N」。
+                let item = NSMenuItem(
+                    title: state.displayName(for: space),
+                    action: #selector(selectDesktop(_:)),
+                    keyEquivalent: ""
+                )
                 item.target = self
                 item.representedObject = space
                 item.state = (space.id == state.activeSpace?.id) ? .on : .off
@@ -154,11 +158,4 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func openDebugPanel() { onOpenDebugPanel?() }
     @objc private func openSettings() { onOpenSettings?() }
     @objc private func quit() { onQuit?() }
-}
-
-private extension DesktopSpace {
-    /// 菜单里显示「桌面 2 · 自定义名」。
-    var customTitle: String {
-        "\(displayName)   \(spaceUUID.prefix(8))…"
-    }
 }

@@ -280,4 +280,29 @@ struct AppSettings: Codable, Hashable, Sendable {
     var autoCaptureUserEdits = true
     /// 重载方式。
     var reloadStrategy: ReloadStrategy = .auto
+    /// 切换桌面时在屏幕中上部弹 1 秒的桌面名提示（`docs/PLAN.md` §3.10）。
+    var showToastOnDesktopSwitch = true
+
+    enum CodingKeys: String, CodingKey {
+        case restoreOnQuit, clickAction, autoApplyOnEdit, autoCaptureUserEdits, reloadStrategy
+        case showToastOnDesktopSwitch
+    }
+
+    init() {}
+
+    /// 手写解码，**每个字段都用 `decodeIfPresent` 兜默认值**。
+    ///
+    /// 必须这么做：合成的 `init(from:)` 遇到旧配置文件里缺的新键会直接抛错，
+    /// 而 `ConfigStore.load()` 失败时返回的是**整份默认配置** —— 用户已有的设置会被静默清空。
+    /// 以后每加一个字段，都在这里补一行。
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        restoreOnQuit = try container.decodeIfPresent(Bool.self, forKey: .restoreOnQuit) ?? true
+        clickAction = try container.decodeIfPresent(ClickAction.self, forKey: .clickAction) ?? .nextDesktop
+        autoApplyOnEdit = try container.decodeIfPresent(Bool.self, forKey: .autoApplyOnEdit) ?? true
+        autoCaptureUserEdits = try container.decodeIfPresent(Bool.self, forKey: .autoCaptureUserEdits) ?? true
+        reloadStrategy = try container.decodeIfPresent(ReloadStrategy.self, forKey: .reloadStrategy) ?? .auto
+        showToastOnDesktopSwitch =
+            try container.decodeIfPresent(Bool.self, forKey: .showToastOnDesktopSwitch) ?? true
+    }
 }

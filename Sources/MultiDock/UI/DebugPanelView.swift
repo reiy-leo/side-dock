@@ -43,13 +43,20 @@ struct DebugPanelView: View {
                 }
                 row("桌面数量", "\(state.desktops.count)")
                 if let active = state.activeSpace {
-                    row("活动桌面", "\(active.displayName)（序号 \(active.ordinal)）")
+                    row("活动桌面", "\(state.displayName(for: active))（序号 \(active.ordinal)）")
                     row("spaceUUID", active.spaceUUID, mono: true)
                     row("id64", "\(active.id64)", mono: true)
                     row("type", "\(active.type)（0 = 用户桌面）", mono: true)
                     row("displayUUID", active.displayUUID, mono: true)
                 } else {
                     row("活动桌面", "不属于任何用户桌面（可能在全屏 App 空间）", tint: .orange)
+                }
+                HStack(spacing: 8) {
+                    Button("测试 toast") { state.showTestToast() }
+                    Text("在桌面所在显示器的中上部显示当前桌面名，1 秒后自动消失（不受「上一个桌面」条件限制）。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if let stale = state.interruptedSession {
                     row("残留会话标记", "PID \(stale.pid)，开始于 \(stale.startedAt.formatted())",
@@ -74,7 +81,7 @@ struct DebugPanelView: View {
                             Text(space.id == state.activeSpace?.id ? "▶" : " ")
                                 .font(.body.monospaced())
                                 .foregroundStyle(.tint)
-                            Text(space.displayName)
+                            Text(state.displayName(for: space))
                                 .frame(width: 60, alignment: .leading)
                             Text(space.spaceUUID)
                                 .font(.caption.monospaced())
@@ -98,7 +105,7 @@ struct DebugPanelView: View {
                 row("基准快照", state.baselinePath, mono: true)
                 row("配置文件", state.configPath, mono: true)
                 row("日志文件", state.logPath, mono: true)
-                Text("P1 阶段不会写入任何 Dock 设置；基准快照是首次运行时对 com.apple.dock 全量域的只读备份。")
+                Text("P2.5 阶段仍不会写入任何 Dock 设置；基准快照是首次运行时对 com.apple.dock 全量域的只读备份。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

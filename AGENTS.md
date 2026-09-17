@@ -55,13 +55,13 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 - v2（已废弃）：改为主动切换桌面 + 按桌面的可视化 Dock 编辑器。
 - **v3（当前）**：在 v2 基础上增加"无痕原则"——退出还原 + 强杀自愈。
 - **v3.1（P0 实测后修正）**：三处假设被证伪并已改设计 —— ① Dock 没有热重载；② 程序化切桌面不触发空间变化通知；③ Finder 在 plist 中无表示。详见 `docs/spikes.md`。
-- **v3.2（当前，2026-09-18）**：新增**桌面命名（≤10 字符，仅本地）**与**切换桌面的中上部 toast（1 秒自动消失，零权限）**。因为完全不碰 Dock，单列为 P2.5、可插队先做。规格见 `docs/PLAN.md` §3.10。
+- **v3.2（当前，2026-09-18）**：新增**桌面命名（≤10 字符，仅本地）**与**切换桌面的中上部 toast（1 秒自动消失，零权限）**。因为完全不碰 Dock，单列为 P2.5 —— **已完成并实测通过**，规格见 `docs/PLAN.md` §3.10。
 
 ---
 
 ## 3. 当前进度
 
-**P0（实验）与 P1（骨架 + 识别 + 菜单栏）已完成并实测通过。下一步是 P2（编辑条 + 应用），也可以先插队做 P2.5（桌面命名 + 切换 toast，不写 Dock）。**
+**P0（实验）、P1（骨架 + 识别 + 菜单栏）、P2.5（桌面命名 + 切换 toast）已完成并实测通过。下一步是 P2（编辑条 + 应用）。**
 
 ### 已完成
 
@@ -77,16 +77,20 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | 桌面枚举 | `Spaces/SpaceProvider.swift` | 协议 + 私有 API 实现 + 降级实现 |
 | 桌面观察 | `Spaces/SpaceObserver.swift` | **300 ms 轮询为主 + 通知为辅**，`type != 0` 过滤，按桌面身份去重 |
 | 桌面切换 | `Spaces/SpaceSwitcher.swift` | 同显示器内循环取下一个/上一个，两端循环 |
-| 配置模型 | `Dock/DockConfig.swift` | `PlistValue` / `DockTile` / `DockAppearance` / `DockConfig` / `DesktopBinding` / `AppSettings` |
-| Dock 偏好 | `Dock/DockPreferences.swift` | 白名单 + 全量域读 + 原子写（**写路径 P1 未接线**） |
+| 配置模型 | `Dock/DockConfig.swift` | `PlistValue` / `DockTile` / `DockAppearance` / `DockConfig` / `DesktopBinding` / `AppSettings`（`AppSettings` 已改手写解码，见下） |
+| 桌面命名 | `Spaces/DesktopNaming.swift` | 归一化（≤10 字素簇）、显示名解析、改名规则；**纯函数，全部有单测** |
+| toast 调度 | `UI/ToastPresenter.swift` | `ToastPresenting` 协议 + 纯逻辑调度（1 s 计时、连击取消重启、只在桌面→桌面时弹） |
+| toast 窗口 | `UI/DesktopNameToast.swift` | 无边框 `NSWindow`，跨空间、不抢焦点、不挡点击，零权限 |
+| Dock 偏好 | `Dock/DockPreferences.swift` | 白名单 + 全量域读 + 原子写（**写路径仍未接线，代码里只调 `exportDomainData()` 读**） |
 | 配置持久化 | `Store/ConfigStore.swift` | 原子写 `config.json` |
 | 基准快照 | `Store/BaselineStore.swift` | 基准 + 会话标记 + 备份轮转（保留 20 份） |
 | 菜单栏 | `UI/MenuBarController.swift` | `NSStatusItem`，区分左右键，标题显示当前桌面序号 |
-| 调试面板 | `UI/DebugPanelView.swift` | 当前 spaceUUID/id64/type、桌面列表、实时日志 |
-| 设置窗口 | `UI/SettingsView.swift` | 通用 / 桌面 两个 Tab（Dock 编辑条等 P2/P3 部分明确标注待实现） |
-| P0 实验脚本 | `scripts/spike-*.{sh,swift}` | 重载策略 / 切桌面 / 停机时长 / 探测 |
+| 调试面板 | `UI/DebugPanelView.swift` | 当前 spaceUUID/id64/type、桌面列表、实时日志、**「测试 toast」按钮** |
+| 设置窗口 | `UI/SettingsView.swift` | 通用 / 桌面 两个 Tab；桌面页可**就地改名**（≤10 字符 + `n/10` 计数），通用页有 toast 开关 |
+| toast 验收工具 | `scripts/check-toast-window.sh` | 用 `CGWindowListCopyWindowInfo` 读窗口元数据（零权限），`--watch` 报告出现/消失时刻 |
+| P0 实验脚本 | `scripts/spike-*.{sh,swift}` | 重载策略 / 切桌面 / 停机时长 / 探测（含显示器 UUID 映射） |
 | 打包脚本 | `scripts/build-app.sh` | 编译 → 组装 `.app` → ad-hoc 签名 |
-| 测试 | `Tests/MultiDockTests/` | **37 个测试，全绿** |
+| 测试 | `Tests/MultiDockTests/` | **70 个测试，全绿** |
 | 设计文档 | `docs/PLAN.md` | 已按 P0 结论修订 |
 | P0 结论 | `docs/spikes.md` | 三个实验的原始数据与决定 |
 
@@ -94,20 +98,20 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 
 - `Dock/DockController.swift`（应用流水线、防抖合并、内容相同跳过）、`Dock/DockReloader.swift`（SIGHUP 主 + SIGTERM 兜底）、`Dock/DockWatcher.swift`（手动改动回存）—— **全部属于 P2/P3**。
 - `UI/DockStripEditor.swift`（P2）、`UI/DesktopListView.swift`（P3）。
-- **`UI/ToastPresenter.swift`（纯逻辑 toast 调度）+ `UI/DesktopNameToast.swift`（AppKit 窗口）、`AppState.displayName(for:)` 与 `normalizeDesktopName`、桌面页改名输入框、`scripts/check-toast-window.sh` —— 属于 P2.5，见下。**
 - `docs/PLAN.md` §2 列出的 `Tests/` 里的"合并、还原逻辑"测试：合并（防抖）随 `DockController` 一起做；还原逻辑目前只测了 `BaselineStore` 层。
 
-### 可选插队：P2.5（桌面命名 + 切换 toast，不写 Dock）
+### 已完成：P2.5（桌面命名 + 切换 toast，不写 Dock）✅ 2026-09-18
 
-**这一阶段完全不碰 Dock，风险为零，而且用户已经明确要了**（`AGENTS.md` §2.6 / `docs/PLAN.md` §3.10）。如果不想先啃 P2 的写路径，可以直接做这个，做完就是肉眼可见的功能。
+用户已明确要的功能，且完全不碰 Dock，所以插在 P2 之前做掉了。规格与验收证据见 `docs/PLAN.md` §3.10 / §4。
 
-1. `normalizeDesktopName(_:)`：trim + 去换行 + 按**字素簇**截到 10 个字符，纯函数，先写单测。
-2. `AppState.displayName(for: DesktopSpace)`：有 `customName` 用自定义名，否则回落「桌面 N」。**替换所有调用点**（`MenuBarController`、桌面页、toast、日志）。
-3. 桌面页列表加就地改名输入框（`n/10` 计数）+ 设置里的「切换桌面时显示桌面名称」开关（默认开）。改名只写 `DesktopBinding.customName`，**不动 `override`**。
-4. `ToastPresenter`（协议 + 可注入时钟，纯逻辑）+ `DesktopNameToast`（无边框 `NSWindow`）。窗口属性表见 `docs/PLAN.md` §3.10，**`collectionBehavior` 里的 `.canJoinAllSpaces` 和 `canBecomeKey = false` 漏了就是 bug**。
-5. 触发点只接 `SpaceObserver.onActiveSpaceChanged`，且只在「用户桌面 → 另一个用户桌面」时弹（上一次通知值也必须非 nil）→ 启动不弹、从全屏退回不弹。
-6. 调试面板加「测试 toast」按钮；`multidock.log` 记 `toast 显示「X」` / `toast 隐藏`。
-7. 验收：`scripts/check-toast-window.sh` 看到 layer 25 / alpha 1 / 水平居中贴顶的窗口，1 秒后消失；连切 5 次只显示最终名字；**全程 `defaults read com.apple.dock` 无任何变化**。
+**实现要点（改动时别踩）**：
+
+1. `DesktopNaming`（`Spaces/`）是**唯一的命名入口**：`normalize`（CRLF/换行折空格 → 去首尾空白 → 按字素簇截到 10）、`displayName(for:bindings:)`、`updatingBindings`（改名只动 `customName`，**不碰 `override`**；名字清空且无 override 时删掉整条绑定）。
+2. **所有 UI 都必须走 `AppState.displayName(for:)`**，不要再直接用 `space.displayName`（那是纯序号名「桌面 N」）。已替换：菜单栏下拉、日志、设置页、调试面板。
+3. **改名输入框不做即时截断**：中文输入法组字期间改写绑定值会打断候选词。草稿放 SwiftUI 本地 `@State`，回车/失焦时提交归一化，计数实时显示 `n/10`。
+4. **`AppSettings` 改成了手写 `init(from:)`**，每个字段 `decodeIfPresent` 兜默认值。原因：合成的解码器遇到旧配置文件里缺的新键会抛错，而 `ConfigStore.load()` 失败时返回**整份默认配置** → 用户已有设置会被静默清空。**以后每加一个设置字段，必须在这里补一行。**
+5. toast 触发点只有 `SpaceObserver.onActiveSpaceChanged` 一个；`ToastPresenter` 用 `lastDesktop` 记账，**全屏空间（nil）会把它清成 nil**，于是「启动首次采样」和「从全屏退回桌面」都不弹。开关关闭时**仍要记账**（否则打开开关会补弹一次）。
+6. `DesktopNameToastWindow` 的窗口属性是硬约束：`collectionBehavior` 必须含 `.canJoinAllSpaces` + `.fullScreenAuxiliary`（少了就只在自己所在空间显示，切过去反而看不见）、`canBecomeKey`/`canBecomeMain` = false、`ignoresMouseEvents` = true、`level = .statusBar`、用 `orderFrontRegardless()` 显示。
 
 ### 下一步：P2（编辑条 + 应用）
 
@@ -134,6 +138,10 @@ P0 已把 §3.5 的主路径定死为 **SIGHUP**。P2 要做的第一件事是�
 | 空间字典字段 | 键是 **`uuid`** / `ManagedSpaceID` / `id64` / `type` / `WindowManagerInfo`（**不是** `ManagedSpaceUUID`）；display 字典另有 `Current Space` 可直取当前空间。**无名称字段** → App 内命名只能存本地 |
 | **displayUUID → `NSScreen` 映射** | ✅ **实测一致**（2026-09-18）：`CGDisplayCreateUUIDFromDisplayID(NSScreen.deviceDescription["NSScreenNumber"])` = `AB24BB32-C5EC-D10A-6F9D-F01F35552F60`，与 SkyLight 的 `Display Identifier` 逐字符相同 → 能把 toast 放到正确的显示器上。探测脚本 `scripts/spike-probe.swift`（已加 `screens` 段，文本与 `--json` 两种输出都有） |
 | 屏幕几何 | 主屏 `frame` = (0,0,1920,1200)，`visibleFrame` = (0,53,1920,1147)（Dock 在底部未自动隐藏）。toast 定位用 `visibleFrame`，天然避开菜单栏与 Dock |
+| **toast 窗口几何（实测）** | 距可见区顶部 80 pt、水平居中时窗口落在 `x=916 y=80 w=87 h=39`（名字「桌面 2」）与 `x=863 y=80 w=193 h=39`（10 个中文）→ 窗口中心 959.5 ≈ 主屏 midX 960 ✅。`layer=25`、`alpha=1.00` |
+| **`orderOut` 后窗口会在 CG 窗口列表里滞留** | 窗口被 `orderOut` 后 `kCGWindowIsOnscreen` 立刻变 false，但那条记录**还会在列表里留好几秒**才真正消失。用窗口元数据核对「消失」时刻时**必须滤掉 `onscreen == false`**，否则时长会晚报 |
+| **`CGWindowListCopyWindowInfo` 读元数据零权限** | 实测在无屏幕录制权限下能读到 `kCGWindowLayer` / `kCGWindowAlpha` / `kCGWindowBounds` / `kCGWindowIsOnscreen`（**读不到 `kCGWindowName`**，那是被系统抹掉的）。所以窗口类验收完全不需要权限 |
+| 菜单栏图标（补充） | 自动隐藏菜单栏时状态栏窗口在 `y=-24`、`onscreen=false`、约 51×24 —— 与 toast（`y=80`、高 39、水平居中）天然可区分 |
 | 主动切桌面 | `CGSManagedDisplaySetCurrentSpace(cid, displayUUID, spaceID)` **可用**，约 **20 ms** 生效，带系统自带动画；无动画时长控制符号 |
 | Dock 热重载 | **不存在**。post `com.apple.dock.prefchanged`（darwin 与分布式两种都试过）完全无效 |
 | Dock 重启 | `kill -HUP`：进程消失于 +13 ms、归位 +101 ms（**总不可用约 101 ms**）。`kill -TERM`：Dock 先做约 255 ms 清理，总不可用 **约 367–395 ms**。**主路径选 SIGHUP** |
@@ -159,12 +167,15 @@ P0 已把 §3.5 的主路径定死为 **SIGHUP**。P2 要做的第一件事是�
 
 ```bash
 swift build -c release      # 编译
-swift test                  # 37 个测试（已可用，见下）
+swift test                  # 70 个测试（已可用，见下）
 ./scripts/build-app.sh      # 组装 build/MultiDock.app（ad-hoc 签名）
 open build/MultiDock.app    # 运行（必须在 .app 里跑，菜单栏图标才正常）
+./scripts/check-toast-window.sh --watch 12   # 客观验收 toast（零权限，读窗口元数据）
 ```
 
 - **`swift test` 现在可用了**：`Package.swift` 已加 `MultiDockTests` 测试目标。（旧版这里写的"会报 no tests found"已过时。）
+- **写 Swift 小工具时注意 stdout 缓冲**：重定向到文件时是块缓冲，观察类脚本要 `setvbuf(stdout, nil, _IONBF, 0)`，否则一行都看不到（`check-toast-window.sh` 已这么处理）。
+- 反复调用的 Swift 探测工具要**编译一次缓存复用**（`swiftc -O -o /tmp/... `），别每次 `swift file.swift` —— 那是每次都完整编译，几十毫秒级轮询根本跑不动。
 - 打包脚本用的是 `codesign --force --sign -`，不是计划原文写的 `--deep`（Apple 已废弃 `--deep`）。
 - 也可以直接用 Xcode 打开 `Package.swift`，但**不要**手写 `.xcodeproj`。
 - **仓库已初始化**（`git init -b main`，首个 commit `e3e359a`，见 §8）。提交签名走 1Password，**提交前先确认 1Password 在跑**（见 §0）。
@@ -180,6 +191,8 @@ open build/MultiDock.app    # 运行（必须在 .app 里跑，菜单栏图标�
 - 写 Dock 偏好用 `CFPreferences` API，不要拼 `defaults` 命令行。写入策略：读**全量**域 → 只覆盖白名单键 → 单次原子写回，绝不整域替换。
 - 代码不写解释性注释；只在"为什么"不显然时才写。
 - 新增功能必须有对应的实测验证，不接受"编译通过就算完成"。
+- **给 `AppSettings` 加字段时，必须同时在它手写的 `init(from:)` 里补一行 `decodeIfPresent`**，否则旧配置文件缺这个键会导致整份配置解码失败、静默退回默认值（`ConfigStore.load()` 的行为）。
+- **可测性拆分**：跟 AppKit / 系统调用打交道的部分（窗口、私有 API）单独放一个类型并抽成协议（`ToastPresenting`、`SpaceProviding`），纯逻辑放另一个类型。这样行为能单测，剩下的才靠实测。
 
 ### 与计划原文的两处刻意偏离（不要"改回去"）
 
@@ -199,9 +212,9 @@ open build/MultiDock.app    # 运行（必须在 .app 里跑，菜单栏图标�
 | # | 问题 | 阻塞谁 | 现状 |
 | --- | --- | --- | --- |
 | 1 | **「桌面」页里每个桌面的"位置"指什么？** 目前理解为 Dock 在屏幕上的位置（下/左/右）+ 大小，与「通用」页同一套含义、未设置时继承默认 | **P3 桌面页**，做之前必须问清 | ⏳ **用户仍未回答**（`docs/PLAN.md` §6 也记着） |
-| 2 | toast 在桌面**没有自定义名**时显示「桌面 N」还是不显示？ | 不阻塞（P2.5 按"显示「桌面 N」"实现） | ⏳ 待确认，见 `docs/PLAN.md` §6 第 2 条 |
-| 3 | "屏幕中上部"的具体位置（现定：距可见区顶部 80 pt、水平居中） | 不阻塞（P2.5 先按 80 pt） | ⏳ 待确认，见 `docs/PLAN.md` §6 第 3 条 |
-| 4 | 10 个字符按**字素簇**还是按**视觉宽度**（中文 2 / 英文 1）算？ | 不阻塞（P2.5 按字素簇） | ⏳ 待确认，见 `docs/PLAN.md` §6 第 4 条 |
+| 2 | toast 在桌面**没有自定义名**时显示「桌面 N」还是不显示？ | 不阻塞 | ✅ P2.5 已按"显示「桌面 N」"实现，等用户点头 |
+| 3 | "屏幕中上部"的具体位置（定在距可见区顶部 80 pt、水平居中） | 不阻塞 | ✅ P2.5 已按 80 pt 实现（实测 `y=80`），等用户点头 |
+| 4 | 10 个字符按**字素簇**还是按**视觉宽度**（中文 2 / 英文 1）算？ | 不阻塞 | ✅ P2.5 已按字素簇实现，等用户点头 |
 
 ### 6.2 已解决（留档，别重复问）
 
@@ -219,27 +232,58 @@ open build/MultiDock.app    # 运行（必须在 .app 里跑，菜单栏图标�
 | 4 | **用户手动切桌面时 `activeSpaceDidChange` 通知是否触发**未知 | 只影响"能否把跟随延迟从 300 ms 降到接近 0"，不影响可用性 | P5 回归时顺手测 |
 | 5 | **`LifecycleController.restoreHandler` 是空实现**，会话标记的 `appliedFingerprint` 恒为 nil | 无痕原则目前靠"根本不写 Dock"实现，而非靠还原 | P4 接上还原全链路 |
 | 6 | `docs/PLAN.md` §2 提到 `Tests/` 要测"合并（防抖）、还原逻辑" | 覆盖不全 | 合并随 `DockController` 在 P2 做；还原逻辑目前只测到 `BaselineStore` 层 |
-| 7 | **toast 窗口的 `ignoresMouseEvents` / `canBecomeKey = false` 效果未实测** | 万一抢焦点，用户切过去打字会打进 toast | P2.5 实现后实测：切桌面后立刻在目标 App 里敲键盘，字符必须进 App |
-| 8 | **自定义名要替换所有 `DesktopSpace.displayName` 调用点**（`MenuBarController`、`AppState` 日志、`SettingsView`、`DebugPanelView`） | 漏一处就会出现"菜单栏和设置页名字不一样" | P2.5：先全量 grep `displayName` 再改 |
-| 9 | toast 距顶 80 pt 的观感未调 | 可能偏高/偏低 | P2.5 实测后调数值（`docs/PLAN.md` §6.3） |
-| 10 | **toast 在"用户手动切桌面"时是否也弹**未实测 | 影响是否符合直觉 | 轮询与切换来源无关，理论上会弹；P2.5 用触控板手势实测确认 |
+| 7 | ~~toast 窗口的 `ignoresMouseEvents` / `canBecomeKey = false` 效果未实测~~ | 万一抢焦点，用户切过去打字会打进 toast | ✅ **已验证**：连弹两次 toast 期间每 100 ms 采样 `lsappinfo front`，前台始终是别的 App，MultiDock 一次都没变成前台 |
+| 8 | ~~自定义名要替换所有 `DesktopSpace.displayName` 调用点~~ | 漏一处就会出现"菜单栏和设置页名字不一样" | ✅ **已完成**：`grep -rn '\.displayName' Sources/` 复查，UI 与日志全部走 `AppState.displayName(for:)`，只剩 `DesktopNaming` 内部的回落与 `AppDelegate` 的兜底 |
+| 9 | ~~toast 距顶 80 pt 的观感未调~~ | 可能偏高/偏低 | ✅ 已实测 `y=80`，观感由用户拍板（`docs/PLAN.md` §6 第 3 条） |
+| 10 | ~~toast 在"用户手动切桌面"时是否也弹未实测~~ | 影响是否符合直觉 | ✅ **已验证**：用外部进程 `spike-switch` 切桌面（等价于用户用触控板/快捷键切，不是 App 自己发起的），toast 照常弹出 |
+| 11 | **设置页的改名输入框没有点击验证过**（本机无屏幕录制、菜单栏自动隐藏，无法用脚本点击 UI） | 万一 SwiftUI 绑定写错，改完名字没生效 | 需要用户手动点一次：打开设置 → 桌面 → 改个名字 → 回车 → 切桌面看 toast。逻辑侧已由 `config.json` 注入 + 单测覆盖 |
+| 12 | **「连切 5 次只显示最终名字」只做了单测**，没做真机连击 | 真机上是否闪烁未实测 | 单测 `testRapidSwitchKeepsOnlyLatestTextAndHidesOnce` 覆盖了调度逻辑；真机连击需要手动快速点菜单栏 |
 
 ---
 
 ## 7. 给下一个 session 的建议顺序
 
 1. 读本文件 → `docs/PLAN.md`（§3 核心机制、**§3.10 桌面命名与 toast**、§4 阶段与验收）→ `docs/spikes.md`（P0 结论，**含对计划的三处修正**）。
-2. 和用户确认 §6.1（做 P3 前必须）。
-3. 跑一次基线：`swift build -c release && swift test && ./scripts/build-app.sh`，确认全绿（应为 37 个测试通过、零警告）。
-4. **可选插队：做 P2.5（桌面命名 + 切换 toast）**。完全不写 Dock、风险为零、用户已明确要，做完立刻可见。步骤见 §3 的「可选插队」。
-5. 做 P2：`DockReloader` → `DockController` → `DockStripEditor` → 通用 Tab 接线 → 验收（`defaults read` diff 除白名单外无差异）。
-6. 收尾：按 §0 更新本文档 + `git commit`。
+2. 和用户确认 §6.1 第 1 条（做 P3 前必须），以及 §6.3 第 11 条（让用户点一次设置页）。
+3. 跑一次基线：`swift build -c release && swift test && ./scripts/build-app.sh`，确认全绿（应为 70 个测试通过、零警告）。
+4. 做 P2：`DockReloader` → `DockController` → `DockStripEditor` → 通用 Tab 接线 → 验收（`defaults read` diff 除白名单外无差异）。
+5. 收尾：按 §0 更新本文档 + `git commit`。
 
 ---
 
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-09-18（第 4 次）— 完成 P2.5：桌面命名 + 切换 toast
+
+**做了什么**（用户：「把 P2.5 做掉」）：
+
+- 新增 4 个源文件 / 2 个测试文件 / 1 个验收脚本：
+  `Spaces/DesktopNaming.swift`、`UI/ToastPresenter.swift`、`UI/DesktopNameToast.swift`、`Tests/MultiDockTests/{DesktopNamingTests,ToastPresenterTests}.swift`、`scripts/check-toast-window.sh`。
+- 改了 `AppState`（`displayName(for:)` / `customName(for:)` / `setCustomName` / `attachToastPresenter` / `showTestToast`、加载时归一化绑定）、`AppDelegate`（接线 toast）、`MenuBarController`、`SettingsView`、`DebugPanelView`、`DockConfig.swift`。
+- **`AppSettings` 改成手写 `init(from:)`**：每个字段 `decodeIfPresent` 兜默认。原因：合成的解码器遇到旧配置缺新键会抛错，而 `ConfigStore.load()` 失败时返回**整份默认配置** → 用户已有设置会被静默清空。**以后加字段必须补一行。**
+- 同步更新 `docs/PLAN.md`（§2 文件树、§3.10 的命名细则与验收、§4 P2.5 标 ✅、§5 风险表 3 行、§6 三条标"已实现"、§7 第 7 条）。
+
+**验收证据（全部实测，无截图）**：
+
+- `swift build -c release` 零警告；`swift test` **70 个测试全绿**（原 37 + 新增 33）。
+- `scripts/check-toast-window.sh --watch` 实测 toast 窗口：`layer=25 alpha=1.00 onscreen=yes x=916 y=80 w=87 h=39`（名字「桌面 2」）与 `x=863 y=80 w=193 h=39`（10 个中文）→ 窗口中心 959.5 ≈ 主屏 midX 960 ✅，距可见区顶部 80 pt ✅；出现到消失 **983 / 987 ms**。
+- 日志 `toast 显示` → `toast 隐藏` 间隔 **1.014 / 1.035 / 1.055 / 1.098 s**；启动时不弹（首次采样无 toast）；全屏空间不弹。
+- 命名：手写 `config.json` 塞 12 字名字 → 加载后截到 10 字，toast 原样显示「一二三四五六七八九十」；无名字的桌面回落「桌面 1」；`"   "` 的空绑定被自动清理（日志有 WARNING）；`"settings": {}` 缺键也能正常解码（新解码器生效）。
+- **切 4 次桌面（含 4 次 toast）前后 `defaults read com.apple.dock` 逐键相同**。另外确认代码里**只有 `DockPreferences.exportDomainData()` 这个读函数被调用**，写路径根本没接线。
+- 不抢焦点：连弹两次 toast 期间每 100 ms 采样 `lsappinfo front`，前台始终是别的 App。
+
+**关键手法 / 踩到的坑**：
+
+1. **`orderOut` 后窗口会在 CG 窗口列表里滞留好几秒**（`kCGWindowIsOnscreen` 立刻变 false，但记录还在）。用窗口元数据核对「消失」时刻**必须滤 `onscreen`**，否则时长晚报。
+2. **Swift 脚本的 stdout 重定向到文件时是块缓冲**，观察类工具必须 `setvbuf(stdout, nil, _IONBF, 0)`，否则一行都看不到。
+3. **反复调用的探测工具要 `swiftc -O` 编译一次缓存复用**：每次 `swift file.swift` 都是完整编译，几十毫秒级轮询根本跑不动（我第一次的采样窗口就是被编译时间吃掉的，导致测试无效）。
+4. **后台任务要放在同一条 Bash 调用里**（`cmd & ... wait`），跨调用后台进程会被清掉 —— 有一次验证因此白跑。
+5. 用外部进程（`spike-switch`）切桌面是**验证 toast 的最佳手段**：它等价于"用户自己切桌面"，不需要点击 UI，也能顺带证明 toast 不抢焦点。
+
+**当前进度**：P0 ✅、P1 ✅、**P2.5 ✅**。代码里仍未写入任何 Dock 设置。
+**未解决**：§6.1 第 1 条（「位置」含义，阻塞 P3）；§6.3 第 11 条（**设置页改名输入框需要用户手动点一次**）、第 12 条（真机连击未测）、第 1–6 条（P2 相关）。
 
 ### 2026-09-18（第 3 次）— 计划新增：桌面命名 + 切换 toast
 

@@ -58,6 +58,8 @@ final class AppState {
 
     let observer: SpaceObserver
     let switcher: SpaceSwitcher
+    /// 切换桌面的中上部提示。由 `AppDelegate` 注入 —— `AppState` 不碰 AppKit 窗口。
+    private(set) var toastPresenter: ToastPresenter?
 
     private let configStore = ConfigStore()
     private let baselineStore = BaselineStore()
@@ -72,11 +74,16 @@ final class AppState {
         observer.onActiveSpaceChanged = { [weak self] space in
             guard let self else { return }
             if let space {
-                self.append(.info, "活动桌面 → \(space.displayName)（\(space.spaceUUID.prefix(8))…）")
+                self.append(.info, "活动桌面 → \(self.displayName(for: space))（\(space.spaceUUID.prefix(8))…）")
             } else {
                 self.append(.info, "活动空间不是用户桌面（可能是全屏 App），不触发切换")
             }
+            self.toastPresenter?.handleActiveSpaceChanged(space)
         }
+    }
+
+    func attachToastPresenter(_ presenter: ToastPresenter) {
+        toastPresenter = presenter
     }
 
     // MARK: - 生命周期
@@ -98,10 +105,10 @@ final class AppState {
         append(.info, "桌面观察已启动（300 ms 轮询 + 通知）")
         append(.info, "识别到 \(observer.desktops.count) 个用户桌面")
         for space in observer.desktops {
-            append(.info, "  · \(space.displayName) uuid=\(space.spaceUUID) id64=\(space.id64)")
+            append(.info, "  · \(displayName(for: space)) uuid=\(space.spaceUUID) id64=\(space.id64)")
         }
         if let active = observer.activeSpace {
-            append(.info, "当前桌面：\(active.displayName) / id64=\(active.id64)")
+            append(.info, "当前桌面：\(displayName(for: active)) / id64=\(active.id64)")
         }
     }
 
@@ -137,7 +144,13 @@ final class AppState {
     private func loadConfiguration() {
         let payload = configStore.load()
         settings = payload.settings
-        bindings = payload.bindings
+        // 归一化放在这里而不是 ConfigStore：手改 config.json 塞进超长名或空绑定，
+        // 也要在进入内存模型前就被收拾干净（计划 §3.10 的「两层防线」）。
+        let normalized = DesktopNaming.normalizedBindings(payload.bindings)
+        if normalized.count != payload.bindings.count {
+            append(.warning, "配置里有 \(payload.bindings.count - normalized.count) 条空绑定（既无名字也无 Dock 设置），已清理")
+        }
+        bindings = normalized
         append(.info, "配置已载入：\(bindings.count) 条桌面绑定")
     }
 
@@ -160,7 +173,7 @@ final class AppState {
             append(.warning, "没有可切换的下一个桌面（当前显示器只有 1 个桌面，或尚未识别到活动桌面）")
             return
         }
-        append(.info, "切换到 \(target.displayName)（id64=\(target.id64)）")
+        append(.info, "切换到 \(displayName(for: target))（id64=\(target.id64)）")
     }
 
     func switchTo(_ space: DesktopSpace) {
@@ -169,10 +182,10 @@ final class AppState {
             return
         }
         guard switcher.switchTo(space) != nil else {
-            append(.warning, "切换到 \(space.displayName) 失败")
+            append(.warning, "切换到 \(displayName(for: space)) 失败")
             return
         }
-        append(.info, "切换到 \(space.displayName)（id64=\(space.id64)）")
+        append(.info, "切换到 \(displayName(for: space))（id64=\(space.id64)）")
     }
 
     func refreshDesktops() {
@@ -183,6 +196,45 @@ final class AppState {
     func updateSettings(_ transform: (inout AppSettings) -> Void) {
         transform(&settings)
         persistConfiguration()
+    }
+
+    // MARK: - 桌面命名（计划 §3.10）
+
+    /// 桌面的显示名：自定义名优先，否则「桌面 N」。**所有 UI 都走这里**，别再直接用 `space.displayName`。
+    func displayName(for space: DesktopSpace) -> String {
+        DesktopNaming.displayName(for: space, bindings: bindings)
+    }
+
+    func customName(for space: DesktopSpace) -> String? {
+        DesktopNaming.customName(for: space, bindings: bindings)
+    }
+
+    /// 改名。归一化后与原值相同则完全不写盘（输入框每次提交都会调它）。
+    func setCustomName(_ raw: String, for space: DesktopSpace) {
+        let previous = displayName(for: space)
+        let updated = DesktopNaming.updatingBindings(bindings, name: raw, for: space)
+        guard updated != bindings else { return }
+        bindings = updated
+        persistConfiguration()
+        append(.info, "桌面命名：\(previous) → 「\(displayName(for: space))」")
+    }
+
+    // MARK: - toast
+
+    /// 调试面板的「测试 toast」：手动弹一次当前桌面名，用来在不开设置页的情况下核对窗口行为。
+    func showTestToast() {
+        guard settings.showToastOnDesktopSwitch else {
+            append(.warning, "toast 已在设置里关闭，未显示")
+            return
+        }
+        guard let toastPresenter else {
+            append(.warning, "toast 未接入（AppDelegate 没注入 presenter）")
+            return
+        }
+        let space = activeSpace
+        let text = space.map { displayName(for: $0) } ?? "测试提示"
+        toastPresenter.show(text: text, displayUUID: space?.displayUUID)
+        append(.info, "手动触发 toast：\(text)")
     }
 
     // MARK: - 日志
