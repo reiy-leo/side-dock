@@ -74,5 +74,9 @@ macOS 15.7.9 (24G830) / x86_64 / 单显示器 / Swift 6.2.4。换机器需重新
 - **测 Dock 重启耗时别用 `pgrep` 轮询**：单次 110 ms 会把结果整个污染（实测把 70 ms 测成 400 ms）。
 - **嵌套在 `@MainActor` 测试类里的替身类要显式标 `@MainActor`**（嵌套类型不继承外层隔离）。
 - ⚠️ **同一个文件发两个并行的编辑会静默丢掉一个。** 症状是报错指向一个你明明写过的符号（`no member 'x'` / `cannot find 'x' in scope`）。**一个文件一次只改一处。** 本轮又中三次（`injectedPresenceMonitor` 声明、`terminationTask` 赋值、一条断言）。
+- **零权限造出全屏空间的验收手法**：把**本进程自己的一个窗口**切成全屏（`collectionBehavior = .fullScreenPrimary` + `window.toggleFullScreen(nil)`），SkyLight 就会多出一个 `type=4` 的空间 → 可以真机回归"全屏过滤"，不需要辅助功能、不需要真去开一个 App 全屏。脚本 `scripts/check-fullscreen-filter.swift`。同理，任何需要特定空间状态的验证都可以考虑"自己造一个"而不是等它出现。
+- **孤儿绑定绝不能自动清理**：外接显示器被拔掉时，那台显示器上的桌面整体消失，它们的绑定看起来就是孤儿，但插回去还要用。只提示 + 显式清理（二次确认）。
+- **"存一份历史版本"不一定要落盘**：落盘一堆没有恢复入口的文件是花架子。回存撤销做成内存栈 + UI 按钮即可，长期保命靠 `baseline.plist` 与 `backups/`。
+- **`@discardableResult func f() -> Int` 在 Void 闭包里会报 `conflicting arguments to generic parameter 'T'`**（`NotificationCenter` 的 observer 闭包就是 Void）→ 直接让方法返回 Void。
 - **测试失败不一定是测试错，先看是不是产品 bug。** P4 里那条 `Dock 不可用 1030 ms` 就是真 bug（节流判据错了）；但另一批失败确实是夹具前提写错（"没有 baseline 文件"永远走不到自愈，因为首次运行会先抓新基准 → 要写一份**损坏的** baseline 才到达）。
 - **P4 后测试数 239**（P3 时 195）。真实 Dock 验收 4 条：`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`。
