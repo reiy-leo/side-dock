@@ -6,7 +6,8 @@
 
 - **菜单栏**：单击图标 → 切到下一个桌面（循环）；右键 / ⌥+左键 → 下拉菜单，列出所有桌面（点选即切换）、进设置、退出。
 - **设置 → 通用**：编辑「默认 Dock」——拖入/拖出应用、拖拽排序，Finder 与 Launchpad 固定不可移除；默认 Dock 的大小与位置。
-- **设置 → 桌面**：列出所有桌面，每个桌面单独设置 Dock 位置/大小与 Dock 中的应用（同样可拖入拖出），或选择沿用默认 Dock。
+- **设置 → 桌面**：列出所有桌面，每个桌面单独设置 Dock 位置/大小与 Dock 中的应用（同样可拖入拖出），或选择沿用默认 Dock；**每个桌面还可以起一个名字，最长 10 个字符**（仅存本地，见 §3.10）。
+- **切换桌面提示（toast）**：切换到另一个桌面时，在屏幕**中上部**浮出一条提示显示该桌面的名字，**1 秒后自动消失**。不抢焦点、不挡点击、不需要任何权限（见 §3.10）。
 
 切换桌面时自动把原生 Dock 更新为该桌面的配置。未单独设置的桌面（含新建桌面）使用默认 Dock。
 
@@ -25,6 +26,8 @@
 | 枚举桌面 | `dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight")` 成功，`CGSCopyManagedDisplaySpaces` / `CGSGetActiveSpace` / `CGSMainConnectionID` 可用。实测返回 2 个桌面，各有**跨重启稳定的 UUID**、`id64`、`type=0`，`Spaces` 数组顺序即左右顺序 |
 | **主动切桌面** | `CGSManagedDisplaySetCurrentSpace` **符号存在**（`CGSManagedDisplayGetCurrentSpace` 也在）→ 菜单栏"切下一个桌面"可实现。**尚无动画时长控制符号**（`CGSSetWorkspaceAnimationDuration` 等都不存在），切换会带系统自带的滑动动画 |
 | 桌面命名 | 空间字典的键是 `uuid` / `ManagedSpaceID` / `id64` / `type` / `WindowManagerInfo`（P0 实测，**不是** `ManagedSpaceUUID`），**没有名称字段** → macOS 15 无桌面名接口，App 内的桌面命名只能存在本地，不会写回系统。display 字典另有 `Current Space` 键可直取当前空间 |
+| **显示器 UUID 能否映射到 `NSScreen`** | ✅ **能，且完全一致**（2026-09-18 实测）：`CGDisplayCreateUUIDFromDisplayID(NSScreen.deviceDescription["NSScreenNumber"])` 得到 `AB24BB32-C5EC-D10A-6F9D-F01F35552F60`，与 SkyLight 的 `Display Identifier` 逐字符相同 → 由空间所在的 `displayUUID` 可以精确定位到显示器，toast 能显示在正确的屏幕上。探测脚本：`scripts/spike-probe.swift` |
+| 屏幕几何（toast 定位用） | 主屏 `frame` = (0, 0, 1920, 1200)，`visibleFrame` = (0, 53, 1920, 1147)（Dock 在底部且未自动隐藏，底部让出 53 pt）。toast 定位用 `visibleFrame`，天然避开菜单栏与 Dock |
 | Dock 偏好域 | `com.apple.dock` 34 个键；`persistent-apps` 15 项（首项是 Launchpad）、`persistent-others` 有「下载」 |
 | **Finder 的表示方式** | `persistent-apps` 里**没有 Finder**，Finder 是 Dock 隐式固定项。Launchpad 则是普通条目 `file:///System/Applications/Launchpad.app/`（`com.apple.launchpad.launcher`），可通过写 plist 增删 |
 | Dock 进程守护 | `KeepAlive = {AfterInitialDemand:1, SuccessfulExit:0}` → **必须让 Dock 以信号致死方式退出**才会被 launchd 拉起；优雅退出（exit 0）不会重启 |
@@ -63,14 +66,17 @@ multi-dock/
 │   ├── UI/MenuBarController.swift      NSStatusItem：桌面列表 + 切换 + 设置入口
 │   ├── UI/SettingsView.swift           通用 / 桌面 两个 Tab
 │   ├── UI/DockStripEditor.swift        Dock 可视化编辑条（拖入拖出排序）
-│   ├── UI/DesktopListView.swift        桌面列表与绑定
-│   └── UI/DebugPanelView.swift         当前 spaceUUID / id64 / type、应用日志
-├── Tests/MultiDockTests/               指纹归一化、白名单写入、循环取下一个、基准/标记/备份
+│   ├── UI/DesktopListView.swift        桌面列表、改名（≤10 字符）与绑定
+│   ├── UI/ToastPresenter.swift         toast 协议 + 纯逻辑调度（1 s 计时、连击取消重启、只弹桌面→桌面）
+│   ├── UI/DesktopNameToast.swift       中上部提示窗口（无边框、不抢焦点、跨空间、零权限）
+│   └── UI/DebugPanelView.swift         当前 spaceUUID / id64 / type、应用日志、测试 toast 按钮
+├── Tests/MultiDockTests/               指纹归一化、白名单写入、循环取下一个、基准/标记/备份、名字归一化、toast 调度
 ├── scripts/build-app.sh                组装 MultiDock.app（Info.plist + ad-hoc 签名）
 ├── scripts/spike-reload.sh             P0 实验：Dock 重载策略 A/B/C
-├── scripts/spike-probe.swift           P0 实验：探测当前桌面 / Dock 进程 / Dock 窗口几何
+├── scripts/spike-probe.swift           P0 实验：探测当前桌面 / Dock 进程 / Dock 窗口几何 / 显示器 UUID 映射
 ├── scripts/spike-switch.swift          P0 实验：主动切桌面 + 通知是否触发
 ├── scripts/spike-dock-downtime.swift   P0 实验：毫秒级测 Dock 停机时长
+├── scripts/check-toast-window.sh       客观验收 toast：用 CGWindowListCopyWindowInfo 读窗口层/透明度/坐标（零权限）
 ├── docs/spikes.md                      P0 结论（含对本文档的三处修正）
 └── README.md                           含"如何完全卸载并还原初始 Dock"
 ```
@@ -237,7 +243,8 @@ struct AppSettings: Codable {
 - 底部：Dock 重载方式说明（P0 结论）、`mru-spaces` 显式开关 + 一句解释（**保持用户主动点击才改**）
 
 **桌面 Tab**
-- 桌面列表：显示器名 + 「桌面 N」+ 自定义名字（可改名）+ 当前绑定状态（默认 Dock / 独立设置）
+- 桌面列表：显示器名 + 名字（**可就地改名，最长 10 个字符**，输入框旁显示 `n/10`；未命名时占位符为「桌面 N」）+ 当前绑定状态（默认 Dock / 独立设置）
+  - 改名只写 `DesktopBinding.customName`，**不动 Dock override**（§3.10）。
 - 选中某桌面后：
   - 「沿用默认 Dock」开关（打开则 override = nil）
   - 关闭时显示该桌面自己的编辑条 + 位置/大小
@@ -246,7 +253,7 @@ struct AppSettings: Codable {
 - 「刷新桌面列表」（显示器插拔后）
 
 **菜单栏下拉**
-- 桌面列表（当前项打勾，点选即切换；显示"桌面 N / 自定义名"）
+- 桌面列表（当前项打勾，点选即切换；显示解析后的名字：自定义名或「桌面 N」）
 - 「下一个桌面」（循环）
 - 「用当前 Dock 重置本桌面配置」
 - 分隔线 → 「设置…」「退出并还原 Dock」
@@ -267,6 +274,51 @@ struct AppSettings: Codable {
 - 启动顺序固定为：**检测残留 session.state → 必要时还原基准 → 应用当前桌面配置 → 建立会话标记**。
 - Dock 重启后 3 秒未归位 → `launchctl kickstart -k` 兜底；仍异常则提示从备份恢复。
 
+### 3.10 桌面命名与切换提示（toast）
+
+#### 命名
+
+- 名字存在 `DesktopBinding.customName`（§3.2 已定义），**只存本地** `config.json`：§1 已实测空间字典里没有名称字段，写不回系统。
+- **上限 10 个字符，按字素簇计数**（`String.count`）——中文算 1 个、`👍🏽` 也算 1 个。理由：用户说的"字符"就是眼里看到的字，不是 UTF-8 字节也不是 UTF-16 码元。
+- **两层防线**：输入框即时截断（并显示 `n/10` 计数）+ **模型层再归一化一次**（去首尾空白、去换行、按字素簇截断）。这样手改 `config.json` 塞进超长名也撑不破设置页和 toast 的布局。
+  - 归一化写成纯函数 `normalizeDesktopName(_:) -> String`，可单测（空串、纯空白、11 个中文、含 emoji、含换行）。
+- **空名字 = 没有自定义名** → 回落到「桌面 N」。
+- **改名不创建 Dock override**：`customName` 与 `override` 互不影响，可以只改名不设 Dock。名字清空**且** `override == nil` 时删掉这条绑定，不留空行。
+- **解析入口统一为 `AppState.displayName(for: DesktopSpace)`**：有自定义名用自定义名，否则回落 `DesktopSpace.displayName`（"桌面 N"）。菜单栏标题、下拉菜单、桌面页列表、toast **全部**改用它；`DesktopSpace.displayName` 降级为纯序号名，只在拿不到配置的地方用。
+
+#### toast
+
+**触发点只有一个：`SpaceObserver.onActiveSpaceChanged`。** 它是单一事实源——轮询每 300 ms 读活动空间，与切换来源无关，所以**用户自己用触控板/快捷键/Mission Control 切桌面也会弹 toast**，不只是 App 发起的切换。App 自己发起的切换在切换后立刻 `observer.refreshNow()`（必要时 50 ms 再补一次）把延迟压到最低，轮询兜底最坏 300 ms。
+
+**只在「用户桌面 → 另一个用户桌面」时弹**：要求上一次通知值也是非 nil 的桌面。这一条同时干掉两个噪音源：① App 刚启动的首次采样；② 从全屏 App 空间退回桌面（`activeSpace` 先变 nil 再变回，会被误判成切桌面）。
+
+- 内容：该桌面的名字（自定义名或「桌面 N」）。
+- 位置：**所在显示器的中上部**——`visibleFrame.maxY - 80`、水平居中。显示器由 `displayUUID` 映射到 `NSScreen`（§1 已实测可行）；映射失败回落 `NSScreen.main`。
+- 停留 **1 秒**自动消失。1 秒内又切桌面 → **取消上一次计时，直接换文字并重新计时**（既不排队弹两条，也不会被旧计时器提前收走）。
+- 计时/去重逻辑放在纯逻辑的 `ToastPresenter`（协议 + 可注入时钟），AppKit 部分单独放 `DesktopNameToast`，这样行为可以单测——和 `SpaceProviding` 隔离私有 API 是同一套路。
+
+**窗口属性（缺一条都会出问题）**：
+
+| 属性 | 值 | 为什么 |
+| --- | --- | --- |
+| `styleMask` | `.borderless` | 不要标题栏 |
+| `isOpaque` / `backgroundColor` | `false` / `.clear` | 圆角胶囊靠自绘，不能用不透明底 |
+| `hasShadow` | `false` | 阴影自绘 |
+| `level` | `.statusBar`（25） | 高于普通窗口，但不压系统弹窗 |
+| `collectionBehavior` | `[.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]` | **少了 `.canJoinAllSpaces` 就只在自己所在的空间显示**——切过去反而看不见，功能等于失效 |
+| `ignoresMouseEvents` | `true` | 绝不挡住点击 |
+| `canBecomeKey` / `canBecomeMain` | `false` | **绝不抢焦点**，否则用户切过去正要打字，字打进 toast |
+| 显示 / 隐藏 | `orderFrontRegardless()` / `orderOut(nil)` | 不用 `makeKeyAndOrderFront`（会抢焦点） |
+
+- **零权限**（硬约束 §2.5）：这就是本 App 自己的一个窗口，不涉及辅助功能、屏幕录制、root。
+- 设置页给一个开关「切换桌面时显示桌面名称」（**默认开**）。不想要的人能关掉。
+
+**验收（本机不能截图，见 `AGENTS.md` §4）**：
+
+1. 纯逻辑单测覆盖：1 秒到期消失、1 秒内连击取消重启、启动首次不弹、全屏返回不弹、无自定义名回落「桌面 N」。
+2. 窗口本身用 **`CGWindowListCopyWindowInfo`** 客观验证（`scripts/check-toast-window.sh`）：MultiDock 的 toast 窗口会出现，`layer == 25`、`alpha == 1`、bounds 水平居中且贴近屏幕顶部；1 秒后该窗口消失。**读窗口元数据不需要屏幕录制权限**（只有抓图 `kCGWindowImage` 才需要）——与 P1 验证菜单栏图标（layer 25）同一手法。
+3. 调试面板加「测试 toast」按钮，手动触发；`multidock.log` 记 `toast 显示「X」` / `toast 隐藏` 两行带时间戳，可直接核对 1 秒。
+
 ---
 
 ## 4. 实施阶段与验收
@@ -276,7 +328,8 @@ struct AppSettings: Codable {
 | **P0 实验（✅ 已完成 2026-09-18）** | ① Dock 重载 A/B/C 实测 ② `CGSManagedDisplaySetCurrentSpace` 实测 ③ Finder 表示方式 | ✅ 产出 `docs/spikes.md`。**结论**：① 无热重载，主路径 = SIGHUP（约 101 ms 不可用）② 切桌面可用（20 ms）但不触发通知 → 事件源改为轮询为主 ③ Finder 无需处理 |
 | **P1 骨架 + 识别 + 菜单栏（✅ 已完成 2026-09-18）** | SwiftPM 包、`build-app.sh`、SkyLightBridge、SpaceObserver、SpaceSwitcher、菜单栏下拉与单击切换、调试面板、基准快照 + 会话标记骨架。**不改任何 Dock 设置** | ✅ 全部达成：`swift build` / `swift test`（37 个测试全绿）/ `build-app.sh` 通过；**切桌面 10 次全部被记录、spaceUUID 全对、无漏报无重复**；菜单栏图标已创建（layer 25）；全屏空间不触发切换（单元测试覆盖）；`baseline.plist` 与运行时 `com.apple.dock` **34 键逐键相同**；运行前后 Dock 除 `recent-apps`/`mod-count`（系统自管，已在排除清单）外无任何差异 |
 | **P2 编辑条 + 应用** | DockPreferences 读写、ConfigStore、备份轮转、`DockStripEditor`、通用 Tab、手动「立即应用」、**「立即还原到原始 Dock」按钮** | 通用页拖入/拖出/排序后点应用，真实 Dock 按预期变化；`defaults read com.apple.dock` 与操作前 diff，**除白名单键外无任何差异**；Finder/Launchpad 无法被拖出；点还原后逐键等于 baseline |
-| **P3 桌面页 + 自动切换** | 桌面 Tab、绑定与 override、切换时自动应用、防抖合并、内容相同跳过、预应用、自动回存 | 桌面 1 与桌面 2 配置不同，来回切 20 次结果稳定（脚本断言）；两桌面配置相同时切换无 Dock 刷新；在真实 Dock 手动拖入一个图标，切走再切回仍在；还原期间不产生误回存 |
+| **P2.5 桌面命名 + 切换 toast（不写 Dock，可插队）** | `normalizeDesktopName`、`AppState.displayName(for:)` 并替换所有调用点、桌面页改名输入框、`ToastPresenter`（纯逻辑）、`DesktopNameToast`（AppKit 窗口）、设置开关、调试面板「测试 toast」 | 改名后菜单栏/下拉/设置页/toast 四处名字一致；手改 `config.json` 塞 20 个字 → 加载后被截到 10 个；`scripts/check-toast-window.sh` 能在切换后看到 layer 25、alpha 1、水平居中且贴顶的窗口，1 秒后消失；连切 5 次桌面只显示最终那个名字、不闪烁；**全程 `defaults read com.apple.dock` 无任何变化**（本阶段不碰 Dock） |
+| **P3 桌面页 + 自动切换** | 桌面 Tab 的 Dock 部分（绑定与 override）、切换时自动应用、防抖合并、内容相同跳过、预应用、自动回存 | 桌面 1 与桌面 2 配置不同，来回切 20 次结果稳定（脚本断言）；两桌面配置相同时切换无 Dock 刷新；在真实 Dock 手动拖入一个图标，切走再切回仍在；还原期间不产生误回存 |
 | **P4 无痕与自愈** | 退出还原全链路（菜单退出 / Cmd+Q / 注销关机）、退出前等待重载完成、`session.state` 残留检测、登录启动、Dock 未归位兜底、备份恢复 UI、`mru-spaces` 开关 | ① 正常退出后 `com.apple.dock` 逐键等于 baseline；② `kill -9` 强杀后重启 App，自动还原 baseline 并给出提示；③ 注销/重启后 Dock 为 baseline；④ 人为杀掉 Dock 后 3 秒内自动恢复；⑤ 连开三次 App 并每次还原，结果稳定幂等 |
 | **P5 收尾** | 多显示器与热插拔、全屏过滤回归、README（含完全卸载与还原步骤） | 插拔外接显示器后映射不串；README 还原步骤实测可让 Dock 回到初始状态 |
 
@@ -298,20 +351,34 @@ struct AppSettings: Codable {
 | 写坏 Dock 配置 | 用户 Dock 损坏 | 首次写前全量基准 + 每轮备份；只覆盖白名单键；单次原子写；一键还原；README 给出 `defaults import` 还原步骤 |
 | 与用户在真实 Dock 上的手动改动互相覆盖 | 改动被吞 | 3 秒保护窗口 + 归一化指纹 + 自动回存 + 历史版本 + 可关闭 |
 | 全屏 App 空间混入 | 每次全屏都切 Dock | `type != 0` 过滤 |
+| **toast 抢焦点** | 用户切过去正要打字，字打进 toast | `canBecomeKey` / `canBecomeMain` = false，用 `orderFrontRegardless()` 显示 |
+| **toast 挡住点击** | 1 秒内点不到下面的东西 | `ignoresMouseEvents = true` |
+| **toast 只在自己所在的空间显示** | 切过去反而看不见，功能像失效 | `collectionBehavior` 必须含 `.canJoinAllSpaces` + `.fullScreenAuxiliary` |
+| 连击切桌面时 toast 串台 / 闪烁 | 显示旧名字，或被旧计时器提前收走 | 单一 `ToastPresenter`：换文字 + 重置计时，绝不并发多个计时器 |
+| 从全屏 App 空间退回桌面误弹 toast | 噪音 | 只在「用户桌面 → 用户桌面」时弹（要求上一次通知值也非 nil） |
+| 名字超长 / 手改 `config.json` 塞超长名 | 设置页与 toast 布局被撑破 | 输入框截断 + 模型层 `normalizeDesktopName` 归一化，两层防线，单测覆盖 |
+| 显示器插拔后 `displayUUID` 映射不到 `NSScreen` | toast 出现在错误的屏幕 | 回落 `NSScreen.main`；P5 多显示器阶段回归 |
 | Dock tile 的 `book` blob 过期 | 图标显示异常 | 比对时剔除该字段；若实测异常，写入时剥离 `book`/`file-mod-date` 让 Dock 重建（备选开关） |
 | 未签名登录项注册失败 | 开机不自动跑 | SMAppService 失败即退回 LaunchAgent |
 | 桌面被系统删除/重排后映射错位 | 配置串桌面 | 以 `spaceUUID` 为键；失效绑定标记为孤儿并在设置页提示"重新绑定/清理" |
 
 ---
 
-## 6. 一处需要你确认的理解
+## 6. 需要你确认的几处理解
 
-> **状态（2026-09-18）：仍未回答。** 这个问题会阻塞 P3（桌面页），做之前必须问清。
+> **状态（2026-09-18）：第 1 条仍未回答。** 它会阻塞 P3（桌面页），做之前必须问清。
+> 第 2–4 条不阻塞，已按下面的理解写进计划（P2.5），不合意随时改。
 > 其余未解决事项见 `AGENTS.md` §6。
 
-「桌面」页里每个桌面的**"位置"**，我理解为 **Dock 在屏幕上的位置（下/左/右）与大小**，与「通用」页的默认 Dock 设置同一套含义；每个桌面未单独设置时继承默认值。
+**1（阻塞 P3）**：「桌面」页里每个桌面的**"位置"**，我理解为 **Dock 在屏幕上的位置（下/左/右）与大小**，与「通用」页的默认 Dock 设置同一套含义；每个桌面未单独设置时继承默认值。
 
 如果你指的是别的意思（例如桌面在列表里的排序、或桌面壁纸相关），告诉我，我改。
+
+**2（不阻塞）**：toast 在桌面**没有自定义名**时显示「桌面 N」，而不是什么都不显示。理由：切换后总有反馈，不会时有时无。如果你只想在起过名的桌面上显示，说一声。
+
+**3（不阻塞）**："屏幕中上部"我实现为 **距显示器可见区顶部 80 pt、水平居中**。觉得太高或太低给个数值即可。
+
+**4（不阻塞）**：10 个字符按**字素簇**计——中文算 1 个、emoji 算 1 个。若你想按**视觉宽度**算（中文 2、英文 1），说一声。
 
 ---
 
@@ -323,3 +390,4 @@ struct AppSettings: Codable {
 4. `mru-spaces` 由"完全不碰"改为"设置页显式开关"，因为它会直接破坏循环切换的直觉。
 5. **新增无痕原则**：基准快照 + 退出还原 + 强杀后的启动自愈，确保 App 不永久改变用户 Dock（默认 Dock 初始化为基准，因此刚装完不做任何事时 Dock 分毫不动）。
 6. **P0 实测后修正了三处设计假设**（详见 `docs/spikes.md`）：① 不存在 Dock 热重载，主路径从"通知/信号热重载"改为"SIGHUP 重启，约 101 ms"；② 程序化切桌面不触发空间变化通知，事件源主次从"通知为主"反转为"300 ms 轮询为主"；③ Finder 在 plist 中无任何表示，钉住无需代码。
+7. **新增桌面命名与切换提示**（§3.10）：桌面页可为每个桌面起名（**≤10 字符**，仅存本地，macOS 15 无系统接口）；切换桌面时在屏幕中上部弹一条 **1 秒**的 toast 显示该名字。实测确认 `displayUUID` 可映射到 `NSScreen`，且整条链路**零系统权限**。这一步不写 Dock，因此单列为 P2.5、可插队先做。

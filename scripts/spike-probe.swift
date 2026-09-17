@@ -1,4 +1,4 @@
-// P0 实验用的探测工具：一次性打印"当前桌面 + Dock 进程 + Dock 窗口几何"。
+// P0 实验用的探测工具：一次性打印"当前桌面 + 显示器 UUID 映射 + Dock 进程 + Dock 窗口几何"。
 // 用法：swift scripts/spike-probe.swift [--json]
 // 目的：给 spike-reload.sh 提供客观的前后对比信号，避免只靠肉眼判断。
 
@@ -70,6 +70,30 @@ func collectDockWindows(dockPID: Int32) -> [DockWindowInfo] {
     return out.sorted { $0.layer < $1.layer }
 }
 
+/// 把 `NSScreen` 映射到 CoreGraphics 的显示器 UUID，用于和 SkyLight 的 `Display Identifier` 对齐。
+/// 目的：toast 要显示在「当前桌面所在的那块屏」上，必须先证明这条映射成立（实测逐字符相同）。
+struct ScreenInfo {
+    var displayID: UInt32
+    var displayUUID: String
+    var frame: CGRect
+    var visibleFrame: CGRect
+    var isMain: Bool
+}
+
+func collectScreens() -> [ScreenInfo] {
+    NSScreen.screens.map { screen in
+        let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+        let uuid = CGDisplayCreateUUIDFromDisplayID(displayID).map { CFUUIDCreateString(nil, $0.takeRetainedValue()) as String }
+        return ScreenInfo(
+            displayID: displayID,
+            displayUUID: uuid ?? "nil",
+            frame: screen.frame,
+            visibleFrame: screen.visibleFrame,
+            isMain: screen == NSScreen.main
+        )
+    }
+}
+
 func collectSpaces() -> (active: String?, list: [SpaceInfo]) {
     guard let api = loadSkyLight() else { return (nil, []) }
     let cid = api.mainConnection()
@@ -100,6 +124,7 @@ func collectSpaces() -> (active: String?, list: [SpaceInfo]) {
 let wantJSON = CommandLine.arguments.contains("--json")
 let dockPID = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first?.processIdentifier ?? -1
 let spaceSnapshot = collectSpaces()
+let screens = collectScreens()
 let dockWindows = collectDockWindows(dockPID: dockPID)
 let timestamp = ISO8601DateFormatter().string(from: Date())
 
@@ -117,6 +142,13 @@ if wantJSON {
     dict["dockPID"] = Int(dockPID)
     dict["activeSpaceUUID"] = spaceSnapshot.active ?? "nil"
     dict["spaces"] = spaceDicts
+    dict["screens"] = screens.map {
+        ["displayID": Int($0.displayID), "displayUUID": $0.displayUUID,
+         "frame": [Double($0.frame.minX), Double($0.frame.minY), Double($0.frame.width), Double($0.frame.height)],
+         "visibleFrame": [Double($0.visibleFrame.minX), Double($0.visibleFrame.minY),
+                          Double($0.visibleFrame.width), Double($0.visibleFrame.height)],
+         "isMain": $0.isMain]
+    }
     dict["dockWindows"] = windowDicts
     let data = try! JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys])
     print(String(data: data, encoding: .utf8)!)
@@ -127,6 +159,11 @@ if wantJSON {
     print("spaces (\(spaceSnapshot.list.count)):")
     for s in spaceSnapshot.list {
         print("  - display=\(s.displayUUID) space=\(s.spaceUUID) id64=\(s.id64) type=\(s.type)")
+    }
+    print("screens (\(screens.count)):")
+    for s in screens {
+        print("  - displayID=\(s.displayID) uuid=\(s.displayUUID) main=\(s.isMain)")
+        print("    frame=\(s.frame) visibleFrame=\(s.visibleFrame)")
     }
     print("dockWindows (\(dockWindows.count)):")
     for w in dockWindows {
