@@ -488,6 +488,24 @@ final class AppState {
         append(.info, "切换到 \(displayName(for: target))（id64=\(target.id64)）")
     }
 
+    /// ⇧ + 左键：切到上一个桌面。与 `switchToNextDesktop` 完全对称（同一条预应用链路）。
+    func switchToPreviousDesktop() {
+        guard spaceProviderAvailable else {
+            append(.error, "桌面切换不可用：\(spaceProviderWarning ?? "未知原因")")
+            return
+        }
+        guard let target = switcher.target(.previous) else {
+            append(.warning, "没有可切换的上一个桌面（当前显示器只有 1 个桌面，或尚未识别到活动桌面）")
+            return
+        }
+        applyConfigForDesktop(target, reason: "预应用：切到 \(displayName(for: target))")
+        guard switcher.switchTo(target) != nil else {
+            append(.warning, "切换到 \(displayName(for: target)) 失败")
+            return
+        }
+        append(.info, "切到上一个桌面：\(displayName(for: target))（id64=\(target.id64)）")
+    }
+
     func switchTo(_ space: DesktopSpace) {
         guard spaceProviderAvailable else {
             append(.error, "桌面切换不可用：\(spaceProviderWarning ?? "未知原因")")

@@ -64,7 +64,7 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 
 1. **无痕原则**：App 绝不永久改变用户的 Dock。首次运行把当时的 `com.apple.dock` 全量存为**基准快照**；退出时还原到该基准；被强杀或崩溃则下次启动检测并还原。安装后不做任何配置时，Dock 必须与安装前完全一致。
 2. **用原生 Dock**：不实现替代品，只改写 Dock 偏好 + 触发重载。
-3. **菜单栏交互**：左键单击 = 切到下一个桌面（循环）；右键 / ⌥+左键 = 下拉菜单（桌面列表 + 设置 + 退出）。左键行为可在设置里改成"打开菜单"。
+3. **菜单栏交互**：左键单击 = 切到下一个桌面（循环）；**⇧+左键 = 切到上一个桌面**；右键 / ⌥+左键 = 下拉菜单（桌面列表 + 上一个/下一个 + 设置 + 退出）。左键行为可在设置里改成"打开菜单"（此时 ⇧+左键也一并打开菜单，不留隐形的第二行为）。**切桌面过程本身没有动画，且做不到** —— 见 §4 与 `docs/spikes.md` 实验 7，别再试。
 4. **设置窗口两个 Tab**：通用（默认 Dock：可拖入拖出的图标条、Finder 与 Launchpad 固定、大小、位置）与桌面（列出所有桌面，每个桌面单独设置 Dock 位置/大小与图标，或沿用默认）。
 5. **不需要任何系统权限**：不用辅助功能、屏幕录制、root。若某方案开始要求这些权限，先回来和用户确认。
 6. **桌面命名 + 切换提示**：设置 → 桌面里可以给每个桌面起名，**最长 10 个字符**（仅存本地，macOS 15 没有系统接口）；**切换桌面后在屏幕中上部弹一条 toast 显示该名字，1 秒后自动消失**。toast 不抢焦点、不挡点击、不需要权限。规格见 `docs/PLAN.md` §3.10。
@@ -138,7 +138,7 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | toast 验收工具 | `scripts/check-toast-window.sh` | 用 `CGWindowListCopyWindowInfo` 读窗口元数据（零权限），`--watch` 报告出现/消失时刻 |
 | P0 实验脚本 | `scripts/spike-*.{sh,swift}` | 重载策略 / 切桌面 / 停机时长 / 探测（含显示器 UUID 映射） |
 | 打包脚本 | `scripts/build-app.sh` | 编译 → 组装 `.app` → ad-hoc 签名 |
-| 测试 | `Tests/MultiDockTests/` | **257 个测试，全绿**（其中 4 个真实 Dock 验收默认跳过，需显式开启） |
+| 测试 | `Tests/MultiDockTests/` | **258 个测试，全绿**（其中 4 个真实 Dock 验收默认跳过，需显式开启） |
 | 设计文档 | `docs/PLAN.md` | 已按 P0 结论修订 |
 | 实验结论 | `docs/spikes.md` | 5 个实验的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现**） |
 
@@ -267,7 +267,9 @@ P5 的三条都已落地（README ✅、全屏过滤真机回归 ✅、多显示
 | **`orderOut` 后窗口会在 CG 窗口列表里滞留** | 窗口被 `orderOut` 后 `kCGWindowIsOnscreen` 立刻变 false，但那条记录**还会在列表里留好几秒**才真正消失。用窗口元数据核对「消失」时刻时**必须滤掉 `onscreen == false`**，否则时长会晚报 |
 | **`CGWindowListCopyWindowInfo` 读元数据零权限** | 实测在无屏幕录制权限下能读到 `kCGWindowLayer` / `kCGWindowAlpha` / `kCGWindowBounds` / `kCGWindowIsOnscreen`（**读不到 `kCGWindowName`**，那是被系统抹掉的）。所以窗口类验收完全不需要权限 |
 | 菜单栏图标（补充） | 自动隐藏菜单栏时状态栏窗口在 `y=-24`、`onscreen=false`、约 51×24 —— 与 toast（`y=80`、高 39、水平居中）天然可区分 |
-| 主动切桌面 | `CGSManagedDisplaySetCurrentSpace(cid, displayUUID, spaceID)` **可用**，约 **20 ms** 生效，带系统自带动画；无动画时长控制符号 |
+| 主动切桌面 | `CGSManagedDisplaySetCurrentSpace(cid, displayUUID, spaceID)` **可用**，**实测 0–6 ms 生效（瞬时提交，没有动画）** |
+| **切桌面没有动画，且做不到**（2026-09-18 复核，`spikes.md` 实验 7） | 程序化切空间是**硬切**：3 轮实测 **6 / 0 / 0 ms**。想加"左右滑动"的四条路全断：① `SLSManagedDisplaySetIsAnimating` 是**粘滞状态位**（置位后 600 ms 内 **101/101** 次采样仍为 true，不会自复位），**且它的返回值是 void ABI 残留寄存器** —— 同一次运行 8 次调用恒为 `-785121165`，换一次运行变成 `-2752379`，**不能当成功标志**；② 会话级开关 `SLSSetSessionSwitchCubeAnimation`（值 `cube`/`transition`/`none`/`""`，对应 `kSLSSessionSwitchTransitionType*`）**只有 set 没有 get**，偏好域里也没有（`CGSessionCopyCurrentDictionary()` 仅 11 个键，全审计/用户/登录态），扫遍 `__TEXT` 5,037,056 字节只有函数名本身 → **改了还原不回去，破无痕原则**；③ `SLSWillSwitchSpaces` 按 `(cid, CFArray)` 试直接 **SIGSEGV**（`array_call_as_integer_list`），签名未知，**别再拿图形会话试错**；④ 合成按键事件被拦（`CGPreflightPostEventAccess()` 返回 true，但**阳性对照合成 `Cmd+Tab` 也不生效**）。真正的过渡在 WindowServer 内部的 `Transition{Slide,Cube,Flip,Blend,Shrink,Spiral,Drop,RadialBlur}Metal`，只服务用户手势 |
+| **枚举私有框架导出符号的方法** | `nm` 在磁盘上找不到 SkyLight（框架在 dyld 共享缓存里，磁盘无实体文件）。要在**进程内**解析：`_dyld_get_image_header` 拿镜像 → 遍历 `LC_SEGMENT_64` 取 `__LINKEDIT`/`__TEXT` → **`LC_SYMTAB.symoff`/`stroff` 是共享缓存内的文件偏移**，必须先经 `__LINKEDIT` 换算成 vmaddr 再取指针，直接当指针用会 SIGSEGV。脚本 `scripts/spike-symbols.swift`，本机 SkyLight 共 **23,474** 个导出符号 |
 | Dock 热重载 | **不存在**。post `com.apple.dock.prefchanged`（darwin 与分布式两种都试过）完全无效 |
 | Dock 重启 | `kill -HUP`：进程消失于 +13 ms、归位 +101 ms（**总不可用约 101 ms**）。`kill -TERM`：Dock 先做约 255 ms 清理，总不可用 **约 367–395 ms**。**主路径选 SIGHUP** |
 | **launchd 的重启节流**（P3 实测，`spikes.md` 实验 5） | 距上一次重启**不足约 1 秒**时再次重启，Dock 要 **约 1070 ms** 才归位；间隔 **≥ 1 秒**只要 **约 70 ms**。阈值在 0.6–1.0 s 之间。`com.apple.Dock.plist` 里**没有** `ThrottleInterval`，是 launchd 的隐式节流。→ `DockReloader.minimumSpacing` 默认 1 s 先等再重启（等待期间 Dock 可用），实测 Dock 不可用时长 **45–90 ms** |
@@ -310,7 +312,7 @@ P5 的三条都已落地（README ✅、全屏过滤真机回归 ✅、多显示
 
 ```bash
 swift build -c release --disable-sandbox   # 编译
-swift test --disable-sandbox               # 257 个测试（含 4 个默认跳过的真实 Dock 验收）
+swift test --disable-sandbox               # 258 个测试（含 4 个默认跳过的真实 Dock 验收）
 ./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
 open build/MultiDock.app                   # 运行（必须在 .app 里跑，菜单栏图标才正常）
 ./scripts/check-toast-window.sh --watch 12 # 客观验收 toast（零权限，读窗口元数据）
@@ -431,13 +433,15 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | D19 | ~~孤儿绑定不清理不提示~~ | 配置越积越多 | ✅ P5 已做横幅 + 显式清理（**不自动删**） |
 | D20 | ~~回存不存历史版本~~ | 误判回存后旧配置找不回 | ✅ P5 做成内存撤销栈 + 「撤销自动回存」，刻意不落盘 |
 | D21 | ~~全屏过滤只有单测~~ | 每次进全屏可能误切 Dock | ✅ P5 真机回归通过（自己造全屏空间，零权限） |
+| D22 | ~~切桌面想要"左右滑动"的动画~~ | 点菜单栏切桌面是硬切 | ✅ **已定性为"不做"（2026-09-18）**：程序化切空间实测 0–6 ms；四条可能的路全断（粘滞状态位 / 写后读不回的会话开关 / 签名未知会段错误的 `SLSWillSwitchSpaces` / 合成事件被拦）。**零权限 + 无痕下无解。别再试** —— 详见 §4 与 `docs/spikes.md` 实验 7 |
+| D23 | ~~菜单栏只能"切下一个"，往回切要开菜单~~ | 切过头只能绕菜单 | ✅ **已解决（2026-09-18）**：`⇧+左键 = 切上一个桌面`，与"下一个"共用同一条预应用链路（`switcher.target(.previous)`），两端循环；下拉菜单同时给「上一个桌面」+ 等价提示。单测 `testPreviousDesktopPreAppliesItsOwnDock` |
 
 ---
 
 ## 7. 给下一个 session 的建议顺序
 
-1. 读本文件 → `docs/PLAN.md`（§3 核心机制、§3.10 桌面命名与 toast、§3.11 无痕与自愈、§4 阶段与验收）→ `docs/spikes.md`（**6 个实验结论，含对计划的多处修正；实验 5 有两个要命发现，实验 6 是节流窗口的判据修正**）。
-2. 跑一次基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，确认全绿（应为 **239 个测试通过、零警告**）。
+1. 读本文件 → `docs/PLAN.md`（§3 核心机制、§3.10 桌面命名与 toast、§3.11 无痕与自愈、§4 阶段与验收）→ `docs/spikes.md`（**7 个实验结论，含对计划的多处修正；实验 5 有两个要命发现，实验 6 是节流窗口的判据修正，实验 7 是一条"别再做"的动画结论**）。
+2. 跑一次基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，确认全绿（应为 **258 个测试通过、零警告**）。
 3. **动 Dock 相关代码前先读 §4 的四条**："launchd 重启节流"、"节流窗口判据"、"`-1` PID 陷阱"、"查 Dock PID 的代价"。踩到节流会让 Dock 消失一秒多；踩到 `-1` 会杀掉用户的全部进程。
 4. 需要动 Dock 的改动，验收用 `MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`；**跑之前先 `defaults export com.apple.dock` 备份，且中途别手动改 Dock**。
 5. 顺手催一下 §6.3 的 A 组（A1–A5 只能人点）：改名、两个按钮、图标条拖拽、**A4 手动拖图标进 Dock 再切走切回**、菜单栏连击。
@@ -454,6 +458,54 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-09-18（第 10 次）— `⇧+左键` 切上一个桌面；查清"切桌面动画"为什么做不到
+
+**做了什么**（用户：「更新计划：点击菜单栏图标需要有左右滑动的动画，当前没有动画效果。shift+点击菜单栏图标，执行上一页。」）：
+
+**① ⇧+左键 = 切上一个桌面（已实现）**
+
+- `AppState.switchToPreviousDesktop()`：与 `switchToNextDesktop()` **完全对称** —— 同一个 `switcher.target(.previous)`、
+  同一次 `applyConfigForDesktop` 预应用、同样两端循环。**不是**新写一条链路，避免两条路慢慢长歪。
+- `MenuBarController`：`isShiftClick` 判定 + 「上一个桌面」菜单项 + 一行禁用提示「（⇧+左键点菜单栏图标同效）」；
+  tooltip 改成「左键切下一个桌面，⇧+左键切上一个，右键打开菜单」。设置页那句说明也补上了。
+- **`clickAction == .openMenu` 时 ⇧+左键一并走菜单**（`forceMenu` 判定在 shift 之前）—— 不留隐形的第二行为。
+- 新增 `testPreviousDesktopPreAppliesItsOwnDock`：断言"预应用真的发生 + 目标是对面那个桌面的 Dock + 只写一次"。
+
+**② 切桌面的"左右滑动"动画：做不到，已定性为不做（D22）**
+
+用户观察是对的 —— 当前确实是硬切。四条可能的路全部走死，证据见 `docs/spikes.md` **实验 7**：
+
+1. **程序化切空间是瞬时提交**：3 轮实测 **6 / 0 / 0 ms**，塞不进一段过渡。
+2. **`SLSManagedDisplaySetIsAnimating` 不是触发器**，是**粘滞状态位**（置位后 600 ms 内 **101/101** 次采样仍为 true，
+   不会自复位），对切空间耗时与 WindowServer/Dock 的 CPU 都无可测影响。
+   ⚠️ **顺带更正上一轮的一个错记**：我曾把这个调用的返回值 `-2752379` 记成"返回成功"。这次复测发现
+   **同一次运行内 8 次调用恒为 `-785121165`，换一次运行变成 `-2752379`** —— 那是 **void ABI 的残留寄存器**，
+   根本不是 `CGError`。**判断这个调用有没有生效只能看读回值，不能看返回值。**
+3. **会话级开关写后读不回**：`SLSSetSessionSwitchCubeAnimation` + `kSLSSessionSwitchTransitionType*`
+   （值 `cube` / `transition` / `none` / `""`）看着正对症，但**只有 set 没有 get**；`CGSessionCopyCurrentDictionary()`
+   只有 11 个键（全审计/用户/登录态），`com.apple.spaces` / `com.apple.dock` 里也没有；扫遍 SkyLight 的 `__TEXT`
+   **5,037,056 字节**，含 `SwitchCube` / `SessionSwitch` 的**只有函数名本身**。
+   → 它是 WindowServer 进程内的会话内存值，**改了就还原不回去 → 破无痕原则 → 不能用**。
+4. ⚠️ **`SLSWillSwitchSpaces` 猜签名会段错误**：按 `(cid, CFArray)` 调用，进程直接死在 SkyLight 内部的
+   `array_call_as_integer_list`。**已在此划线：不要再拿用户的图形会话试错。**
+5. 绕道"合成 `Ctrl+←` 让 Dock 自己动画"也堵死：`CGPreflightPostEventAccess()` 返回 `true`，
+   但**阳性对照合成 `Cmd+Tab` 同样不生效** → 问题在事件投递被拦，不是参数选错。
+
+**不做假动画**：不自己画跨屏浮层假装滑动（既不是真的切桌面动画，又要在多显示器/全屏空间下处理一堆边界）。
+真正的过渡实现在 WindowServer 的 `Transition{Slide,Cube,Flip,…}Metal` 里，只服务用户手势。
+
+**新增工具**：`scripts/spike-symbols.swift` —— 从 dyld 共享缓存里枚举 SkyLight 的导出符号（本机 **23,474** 个）。
+`nm` 在磁盘上找不到 SkyLight（框架在共享缓存里），必须在进程内解析 Mach-O，且
+**`LC_SYMTAB.symoff` 是共享缓存内的文件偏移**，要先经 `__LINKEDIT` 换算成 vmaddr 才能取指针。
+
+**验收证据**：
+
+- `swift build --disable-sandbox` → `Build complete!`，**零警告**。
+- `swift test --disable-sandbox` → **258 个测试全绿**（4 个真实 Dock 验收默认跳过）。257 → 258。
+- 复核实验全程只读 + 一次程序化切空间（切完切回），跑完确认 `SLSManagedDisplayIsAnimating` 已复位为 `false`，**无残留状态**。
+
+**未解决的事**：无新增。B5（多显示器真机）与 A1–A5（手测）仍等用户。动画这条已转为"不做"，不再挂账。
 
 ### 2026-09-18（第 9 次）— 完成 P5（收尾）：README、多显示器加固、全屏真机回归、B12–B14
 

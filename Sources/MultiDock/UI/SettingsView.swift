@@ -78,9 +78,10 @@ private struct GeneralTab: View {
                     }
                 }
                 .pickerStyle(.radioGroup)
-                Text("右键或 ⌥+左键始终打开菜单。")
+                Text("右键或 ⌥+左键始终打开菜单。⇧+左键切上一个桌面；左键若设为「打开菜单」，⇧+左键也一并打开菜单。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Section("桌面切换") {

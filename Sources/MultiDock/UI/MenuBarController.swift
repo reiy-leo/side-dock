@@ -29,7 +29,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             button.action = #selector(statusItemClicked(_:))
             // 关键：同时接收左右键，否则拿不到右键事件。
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            button.toolTip = "MultiDock — 左键切下一个桌面，右键打开菜单"
+            button.toolTip = "MultiDock — 左键切下一个桌面，⇧+左键切上一个，右键打开菜单"
         }
 
         menu.delegate = self
@@ -62,10 +62,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let event = NSApp.currentEvent
         let isRightClick = event?.type == .rightMouseUp
         let isOptionClick = event?.modifierFlags.contains(.option) ?? false
+        let isShiftClick = event?.modifierFlags.contains(.shift) ?? false
         let forceMenu = state.settings.clickAction == .openMenu
 
         if isRightClick || isOptionClick || forceMenu {
             showMenu()
+        } else if isShiftClick {
+            state.switchToPreviousDesktop()
         } else {
             state.switchToNextDesktop()
         }
@@ -125,6 +128,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         next.isEnabled = state.spaceProviderAvailable && state.desktops.count > 1
         menu.addItem(next)
 
+        let previous = NSMenuItem(title: "上一个桌面", action: #selector(goPreviousDesktop), keyEquivalent: "")
+        previous.target = self
+        previous.isEnabled = state.spaceProviderAvailable && state.desktops.count > 1
+        // 图标上的等价操作写进副标题：菜单栏图标宽窄有限，靠 tooltip 不够显眼。
+        let hint = NSMenuItem(title: "（⇧+左键点菜单栏图标同效）", action: nil, keyEquivalent: "")
+        hint.isEnabled = false
+        menu.addItem(previous)
+        menu.addItem(hint)
+
         // 计划 §3.7 菜单栏下拉：把此刻真实 Dock 抓下来覆盖当前桌面的配置。
         let resetFromLive = NSMenuItem(
             title: "用当前 Dock 重置本桌面配置",
@@ -175,6 +187,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func goNextDesktop() { state.switchToNextDesktop() }
+    @objc private func goPreviousDesktop() { state.switchToPreviousDesktop() }
     @objc private func resetFromLiveDock() { state.resetActiveDesktopConfigFromLiveDock() }
     @objc private func refreshDesktops() { state.refreshDesktops() }
     @objc private func restoreToBaseline() { state.restoreToBaselineNow() }

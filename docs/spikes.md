@@ -6,11 +6,15 @@
 
 ---
 
-## 摘要：三句话结论
+## 摘要：结论
+
+> 实验 1–3 是 P0 阶段的原始三问；实验 4–7 是后续阶段落地时**挖出来的新发现**，其中实验 5、6 各推翻了
+> `docs/PLAN.md` 的一处假设，实验 7 是一条**明确的不做项**（别再去试）。
 
 1. **不存在热重载**。写偏好后无论 post 什么通知，Dock 都不会重新读取——必须重启 Dock 进程。
 2. **重启很快**：SIGHUP 后 Dock 仅约 **101 ms** 不可用；SIGTERM 约 **395 ms**（Dock 收到 TERM 会先做约 255 ms 清理再退出）。→ **主路径定为 SIGHUP**，SIGTERM + kickstart 作兜底。
 3. **程序化切桌面可用且极快（20 ms），但不触发 `NSWorkspaceActiveSpaceDidChangeNotification`**。→ SpaceObserver 必须以**轮询为主**，通知只能当优化。
+4. **切桌面的"左右滑动动画"做不到**（实验 7）：程序化切空间是硬切（0–6 ms），SkyLight 不暴露带过渡的入口；唯一像入口的会话级开关**写后读不回**、碰了就破无痕原则；`SLSWillSwitchSpaces` 签名未知、猜错直接段错误。**零权限 + 无痕下无解，不要再试。**
 
 ---
 
@@ -347,6 +351,126 @@ let start = TimeInterval(info.pbi_start_tvsec) + TimeInterval(info.pbi_start_tvu
 
 ---
 
+## 实验 7：切桌面能不能有「左右滑动」动画（2026-09-18，结论：**做不到，别再试**）
+
+**动机**：用户要求"点菜单栏图标切桌面时要有左右滑动的动画，当前是硬切"。
+
+**结论先行**：在**零权限 + 无痕**两条硬约束下**没有可用入口**。程序化切空间是瞬时的，
+真正的过渡动画由 WindowServer 的 `Transition*Metal` 内部类驱动、只服务于**用户手势**。
+下面四条证据，以及一条**不要走的路**。
+
+### 7.1 现象确认：程序化切空间确实是硬切
+
+`CGSManagedDisplaySetCurrentSpace` 从发起到活动空间真的变了：
+
+| 轮次 | 耗时 |
+| --- | --- |
+| 1 | **6 ms** |
+| 2 | 0 ms |
+| 3 | 0 ms |
+
+（轮询间隔 500 µs，3 个用户桌面，显示标识 `AB24BB32-…`）
+**0–6 ms 里不可能塞进一段过渡动画** —— 用户的观察是对的。
+
+### 7.2 `SLSManagedDisplaySetIsAnimating` 不是动画触发器，是粘滞状态位
+
+这个符号名字最像"打开动画"，但它不是：
+
+| 观测项 | 结果 |
+| --- | --- |
+| `SLSManagedDisplayIsAnimating`（调用前） | `false` |
+| `SLSManagedDisplaySetIsAnimating(cid, display, true)` | **返回 `-785121165`**（同一次运行内 8 次调用值完全一致；换一次运行变成 `-2752379`） |
+| 置位后 600 ms 内采样 | **101/101 次仍为 `true`**，不会自己复位 |
+| 复位调用 | 生效，读回 `false` |
+| 对 WindowServer / Dock 的 CPU 占用 | 无可测影响 |
+| 对切空间耗时 | 无可测影响 |
+
+> ⚠️ **返回值不能当成功标志。** 同一个调用在两次运行里给出**两个不同的稳定值**（`-785121165` / `-2752379`），
+> 这是 **void ABI 的残留寄存器**，不是 `CGError`。上一轮我把 `-2752379` 记成"返回成功"，**是错的**，
+> 这里更正。判断这个调用有没有生效只能看**读回值**，不能看返回值。
+
+字符串表里还有一句 `"The display has a nil transition type."` —— 说明"显示 → 过渡类型"这个映射
+在本机是 **nil**。没有过渡类型就没有过渡对象，那个 `IsAnimating` 位只是个孤立标志位。
+
+### 7.3 会话级开关存在，但**写后读不回** → 按无痕原则不能碰
+
+符号表里确实有整套"会话切换过渡类型"：
+
+| 符号 | 值 / 含义 |
+| --- | --- |
+| `SLSSetSessionSwitchCubeAnimation` | 会话级设置器（**只有 set，没有 get**） |
+| `kSLSSessionSwitchTransitionTypeCube` | `"cube"` |
+| `kSLSSessionSwitchTransitionTypeKey` | `"transition"`（现代的左右滑动） |
+| `kSLSSessionSwitchTransitionTypeNone` | `"none"` |
+| `kSLSSessionSwitchTransitionTypeUnset` | `""` |
+
+看起来很对症 —— 但：
+
+1. **没有 getter**（`SLSGetSessionSwitchCubeAnimation` / `SLSCopySessionSwitchTransitionType` 都不存在）。
+2. **偏好域里也没有它**：`CGSessionCopyCurrentDictionary()` 只有 11 个键（全是审计/用户/登录态），
+   不含过渡类型；`defaults read com.apple.spaces` 与 `com.apple.dock` 里也没有对应键。
+3. 扫遍 SkyLight 的 `__TEXT`（5,037,056 字节）里所有可打印字符串，
+   含 `SwitchCube` / `SessionSwitch` 的**只有函数名 `SetSessionSwitchCubeAnimation` 本身**，没有任何偏好键。
+
+→ 它是 **WindowServer 进程内的会话级内存值**。我们**改了就还原不回去**（读不到原值），
+**这直接违反"绝不永久改变用户状态"的无痕原则**，所以即使它能生效也不能用。
+
+### 7.4 ⚠️ 不要走的路：`SLSWillSwitchSpaces` 会段错误
+
+合理猜测是"Dock 做动画切换前会先 `SLSWillSwitchSpaces` 通知 WindowServer，再提交"。
+按 `(cid, CFArray<NSNumber>)` 试：
+
+```
+SkyLight  0x…  array_call_as_integer_list + 70
+SkyLight  0x…  SLSWindowServerClientWillSwitchSpaces + 139
+→ SIGSEGV
+```
+
+**签名猜错，进程直接死在 SkyLight 内部。** `SLSBridgedWillSwitchSpacesOperation` 只有
+`initWithSpaces:`，看不出到底带不带 `cid`、数组元素是 `NSNumber` 还是别的结构体。
+
+> **停止线**：继续猜签名去戳 WindowServer，风险是**把用户的图形会话搞挂**。
+> 收益（一个动画）与风险完全不成比例。**这条线到此为止，不要再往前试。**
+
+### 7.5 真正的动画在哪
+
+符号表里过渡实现是一整套 Metal 类，**都在 WindowServer 内部**：
+
+`TransitionSlideMetal`、`TransitionCubeMetal`、`TransitionFlipMetal`、`TransitionBlendMetal`、
+`TransitionShrinkMetal`、`TransitionSpiralMetal`、`TransitionDropMetal`、`TransitionRadialBlurMetal`，
+配套 `new_transition(CGXConnection*, CGSTransitionStyle, CGSTransitionFlags, CGXWindow*, CGXSession*, const float*, Transition**)`、
+`CGXInvokeTransition`、`CGXMarkTransitionStart/End`、`CGSTransitionStyle` / `CGSTransitionFlags` 枚举。
+
+**驱动它们的是 Dock**（Mission Control 属于 Dock），入口是**用户手势**（触控板横扫 / `Ctrl+←`）。
+没有任何一处对外暴露"给我带动画地切到某个空间"。
+
+### 7.6 合成按键事件这条路也堵死了（补测）
+
+绕道思路是"模拟 `Ctrl+←` 让 Dock 自己去做动画切换"。**在本机不通**：
+
+| 观测项 | 结果 |
+| --- | --- |
+| `CGPreflightPostEventAccess()` | **`true`**（看起来有权限） |
+| 热键 `Ctrl+←` / `Ctrl+→` 是否启用（`com.apple.symbolichotkeys` 79/80/81） | `enabled = 1` |
+| 试过的 tap | `cghidEventTap` / `cgSessionEventTap` / `cgAnnotatedSessionEventTap` |
+| 试过的 `CGEventSource` 状态 | `.hidSystemState` / `.combinedSessionState` / `.privateState` |
+| **阳性对照**：合成 `Cmd+Tab`，看前台 App 有没有变 | **没变** |
+| 结论 | 合成事件在本机被拦，**不是** tap 或 state 选错 |
+
+> **阳性对照是关键**：`Cmd+Tab` 是最稳的合成事件用例，它都不动，说明问题在"事件投递被拦"这一层，
+> 而不是我们的参数。以后再遇到"合成事件没反应"，**先跑阳性对照**，别在参数上反复试。
+
+### 7.7 决定
+
+- **不做真动画。** 在零权限 + 无痕下没有安全入口，硬做要动 WindowServer 内部状态。
+- **不改需求、也不做假动画**：不自己画跨屏浮层假装滑动 —— 那既不是真的切桌面动画，
+  又要在多显示器 / 全屏空间下处理一堆边界，收益远低于成本。
+- **替代方案（已确认可行、且已实现）**：`⇧+左键` 切上一个桌面，并在下拉菜单里给出等价入口，
+  让"往回切"这件事至少不需要绕过菜单。见 `docs/PLAN.md` §3.7。
+- 若将来 macOS 暴露了带过渡的切空间 API，再回来做；`docs/PLAN.md` §5 风险表里留了这条。
+
+---
+
 ## 对 `docs/PLAN.md` 的修订清单
 
 | 位置 | 原内容 | 修订为 |
@@ -365,6 +489,8 @@ let start = TimeInterval(info.pbi_start_tvsec) + TimeInterval(info.pbi_start_tvu
 | §4 P4 行 | 待做 | ✅ 已完成（见本文实验 6 与 AGENTS.md §8 第 7 次记录）。**只有第 ③ 条"注销/重启后 Dock 为 baseline"未实测**（要真注销一次机器） |
 | §3.9 | "必要时还原基准"没写清时机 | 补上：自愈**启动后异步执行**，不阻塞启动；债务跨会话继承（`needsSelfHeal`）；还原失败要保留标记并标 `pid = 0` |
 | §3.9 | 登录项退回 `~/Library/LaunchAgents/local.multidock.plist` | 文件名实际是 `local.multidock.loginitem.plist`，且**刻意不设 `KeepAlive`**（登录启动项不是守护进程） |
+| §3.1 / §3.7 | 菜单栏左键 = 切下一个桌面 | 补上 **`⇧+左键` = 切上一个桌面**（下拉菜单同时给「上一个桌面」项 + 等价提示），左键行为仍可改成"打开菜单"。见本文实验 7.7 |
+| §3.1 / §5 | （无）切桌面动画 | **新增一条明确的不做项**：程序化切空间是硬切（0–6 ms），SkyLight 不暴露带过渡的入口；会话级开关写后读不回、违反无痕原则；`SLSWillSwitchSpaces` 签名未知且试错会段错误。**结论见本文实验 7** |
 
 ---
 
@@ -385,4 +511,8 @@ swift scripts/spike-switch.swift 1
 
 # 停机时长
 swiftc -O scripts/spike-dock-downtime.swift -o /tmp/downtime && /tmp/downtime HUP
+
+# 枚举 SkyLight 的导出符号（只读、零权限，用于查「有没有对应的私有 API」）
+swift scripts/spike-symbols.swift
+swift scripts/spike-symbols.swift Transition Cube
 ```

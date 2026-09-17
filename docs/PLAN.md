@@ -83,7 +83,8 @@ multi-dock/
 ├── scripts/spike-dock-downtime.swift   P0 实验：毫秒级测 Dock 停机时长
 ├── scripts/check-toast-window.sh       客观验收 toast：用 CGWindowListCopyWindowInfo 读窗口层/透明度/坐标（零权限）
 ├── scripts/check-fullscreen-filter.swift  真机回归全屏过滤：把本进程窗口切成全屏造出 type=4 空间（零权限）
-├── docs/spikes.md                      P0 结论（含对本文档的三处修正）
+├── scripts/spike-symbols.swift         枚举 SkyLight 导出符号（内存内解析 Mach-O，零权限，查"有没有对应私有 API"）
+├── docs/spikes.md                      P0 结论（含对本文档的多处修正）
 └── README.md                           含"如何完全卸载并还原初始 Dock"
 ```
 
@@ -118,6 +119,12 @@ struct DesktopSpace: Hashable {
 - 主键 `spaceUUID`（跨重启稳定）；多显示器时映射键为 `(displayUUID, spaceUUID)`。
 - **`type != 0` 的空间一律不参与**：不列入菜单、不参与循环、切换时不应用配置。否则每次进全屏 App 都会被当成切桌面（严重体验问题）。
 - 切换目标 = 当前活动显示器上，按 `Spaces` 数组顺序取的下一个 / 上一个用户桌面，两端循环。
+- **切桌面的过程本身没有动画**（**不做，别再试**）。程序化 `CGSManagedDisplaySetCurrentSpace` 是**瞬时提交**（实测 0–6 ms），
+  SkyLight 不暴露"带过渡地切到某空间"的入口；唯一像入口的会话级开关 `SLSSetSessionSwitchCubeAnimation`
+  **写后读不回**（无 getter、偏好域里也没有），改了就还原不回去 → 违反无痕原则；
+  `SLSWillSwitchSpaces` 签名未知、猜错会直接把进程打死在 SkyLight 内部。
+  真正的过渡动画由 WindowServer 的 `Transition*Metal` 内部类驱动，只服务于**用户手势**（触控板横扫 / `Ctrl+←`）。
+  完整证据见 `docs/spikes.md` 实验 7。**切桌面时 Dock 该闪还是会闪（约 101 ms），这是重载 Dock 的代价，不是动画。**
 - 事件源（**P0 实测后反转了主次**）：**300 ms 轮询为主**，`NSWorkspaceActiveSpaceDidChangeNotification` 为辅。原因是实测发现程序化切桌面时该通知根本不触发（对照实验证明通知通道本身正常），所以通知只能当"用户主动切换时的快速通道"来降低延迟。两条路都进同一个幂等的 `handleActiveSpaceChanged()`，用 `(displayUUID, spaceUUID)` 去重。
 - **我们自己发起的切换必须预应用**（§3.4 第 8 条）：切换后收不到任何通知，不能等通知回来才动 Dock。这条从"优化"升级为"必需"。
 - `SpaceProvider` 协议隔离私有 API；失效时降级为"只能手动改 Dock、不能自动跟随与切换"，并在 UI 明确报警，而不是静默失效。
@@ -309,10 +316,13 @@ struct AppSettings: Codable {
 **菜单栏下拉**
 - 桌面列表（当前项打勾，点选即切换；显示解析后的名字：自定义名或「桌面 N」）
 - 「下一个桌面」（循环）
+- 「上一个桌面」+ 一条禁用提示「（⇧+左键点菜单栏图标同效）」
 - 「用当前 Dock 重置本桌面配置」
 - 分隔线 → 「设置…」「退出并还原 Dock」
-- **交互**：左键单击 = 切下一个桌面；右键 / ⌥+左键 = 下拉菜单。设置里可把左键改为"打开菜单"（照顾不习惯的人）。
+- **交互**：左键单击 = 切下一个桌面；**`⇧`+左键 = 切上一个桌面**；右键 / ⌥+左键 = 下拉菜单。
+  设置里可把左键改为"打开菜单"（照顾不习惯的人）——**改成"打开菜单"后 `⇧`+左键也一并走菜单**，避免留一个隐形的第二行为。
 - 菜单栏图标显示当前桌面序号（如 `2`）便于一眼确认。
+- tooltip 写清三种点击：`左键切下一个桌面，⇧+左键切上一个，右键打开菜单`。
 
 > **P2 实现记录** —— 通用 Tab 已接上：**默认 Dock 编辑条 + 「立即应用」+「立即还原到原始 Dock」+「把当前 Dock 设为新基准」+ 本机不支持键的提示**。`mru-spaces` 开关、位置/大小控件、`largesize` 等属 P3/P4。
 >
@@ -324,7 +334,8 @@ struct AppSettings: Codable {
 >
 > - **通用 Tab**：默认 Dock 编辑条 + **默认 Dock 的外观**（`DockAppearanceEditor`）+ 应用区（立即应用 / 立即还原到原始 Dock / 把当前 Dock 设为新基准 + 应用摘要）+ 菜单栏交互 + 桌面切换 toast 开关 + 退出行为 + Dock 应用开关（编辑后立即应用 / 识别手动改动并回存 / 重载方式）+ 本机不支持键。**`mru-spaces` 开关仍未做（P4）**。
 > - **桌面 Tab**：由 `UI/DesktopListView.swift` 承载 —— 左侧桌面列表（就地改名 + `n/10` 计数 + 「独立 Dock / 沿用默认」徽标 + 当前桌面标记 + 刷新按钮），右侧详情（沿用默认开关 → 无 override 时给「复制默认 Dock 到本桌面」提示，有 override 时给完整图标条 + 外观编辑器 + 「立即应用」/「从当前真实 Dock 抓取」/「重置为默认」）。**「位置」= Dock 屏幕位置 + 大小**（用户已确认，见 §6）。
-> - **菜单栏下拉**：桌面列表（当前项打勾，点选即切）→「下一个桌面」→**「用当前 Dock 重置本桌面配置」**→「刷新桌面列表」→ 调试面板… / 设置… → **「退出并还原 Dock」**（标题写清会还原，避免误解）。
+> - **菜单栏下拉**：桌面列表（当前项打勾，点选即切）→「下一个桌面」→**「上一个桌面」**（附禁用提示「（⇧+左键点菜单栏图标同效）」）→**「用当前 Dock 重置本桌面配置」**→「刷新桌面列表」→ 调试面板… / 设置… → **「退出并还原 Dock」**（标题写清会还原，避免误解）。
+>   - **`⇧`+左键 = 切上一个桌面**（2026-09-18 加）。走的是与「下一个桌面」**完全对称**的一条链路：同一个 `switcher.target(.previous)`、同一次 `applyConfigForDesktop` 预应用，两端循环。单测 `testPreviousDesktopPreAppliesItsOwnDock` 断言"预应用真的发生 + 目标是对面那个桌面的 Dock + 只写一次"。
 >   - 「用当前 Dock 重置本桌面配置」的语义是**不新增绑定**：当前桌面有独立 Dock 就覆盖它，没有就覆盖**默认 Dock**（凭空造 override 会让该桌面悄悄脱离默认）。
 > - **编辑器的读写必须分开**：`AppState.setDockConfigInMemory` / `setDockAppearanceInMemory` 只改内存，`dockEdited(_:reason:)` 才落盘 + 按开关应用；默认 Dock 与逐桌面 override 共用 `DockEditTarget`（`.defaultDock` / `.desktop(space)`）一套入口。`DockAppearanceEditor.onCommit` 只在**滑杆松手 / 开关值变化**时提交 —— 逐帧落盘会让拖一次滑杆重启几十次 Dock。
 
@@ -491,7 +502,7 @@ struct AppSettings: Codable {
 | **强杀/崩溃时来不及还原** | 用户退出后 Dock 停留在非原始状态 | `session.state` 标记 + 下次启动自动还原；P4 专门验收 `kill -9` 场景 |
 | **还原等待不充分就退出进程** | 用户看到"Dock 没还原" | `terminateLater` 挂起退出，等 Dock 归位确认（上限 5s）后才真正退出 |
 | 还原动作被自动回存逻辑误记 | 配置被污染 | 还原期间停止 DockWatcher（3.8 边界约定） |
-| 空间切换带动画、无可调时长 | 切换到"下一个桌面"不是瞬时 | 接受系统动画；预应用让切换结束时 Dock 已正确 |
+| 空间切换**没有**动画（程序化切换是瞬时提交） | 点菜单栏切桌面时是硬切，没有"左右滑动"的过渡 | **明确不做**，零权限 + 无痕下无解：程序化切空间实测 0–6 ms；会话级开关 `SLSSetSessionSwitchCubeAnimation` 写后读不回（改了就还原不回去）；`SLSWillSwitchSpaces` 签名未知、猜错会段错误。见 `spikes.md` 实验 7。**别再试** |
 | `mru-spaces = 1`（本机会命中） | 桌面顺序被系统重排，"下一个"不符合直觉 | 设置页显式开关，用户主动关闭；不静默修改 |
 | 写坏 Dock 配置 | 用户 Dock 损坏 | 首次写前全量基准 + 每轮备份；只覆盖白名单键；单次原子写；一键还原；README 给出 `defaults import` 还原步骤 |
 | 与用户在真实 Dock 上的手动改动互相覆盖 | 改动被吞 | 3 秒保护窗口 + 归一化指纹 + 自动回存 + 历史版本 + 可关闭 |

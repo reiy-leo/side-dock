@@ -609,6 +609,43 @@ final class AppStateDockTests: XCTestCase {
                        "预应用与切空间后的 observer 回调必须合并成一次，否则 Dock 会重启两次")
     }
 
+    /// ⇧+左键（上一个桌面）走的是同一条预应用链路：也要先算目标、把目标 Dock 推下去，再切空间。
+    func testPreviousDesktopPreAppliesItsOwnDock() async {
+        let events = Box<[String]>([])
+        let spaces = FakeSpaceProvider.desktops(count: 3)
+        let provider = FakeSpaceProvider(
+            desktops: spaces,
+            activeSpaceID: spaces[0].id64,
+            events: events
+        )
+        let preferences = FakePreferences(domain: baseDomain(), events: events)
+        let state = makeState(
+            preferences: preferences,
+            stores: makeStores("previous"),
+            provider: provider
+        )
+        state.start()
+        defer { state.stop() }
+
+        // 桌面 3 有自己的 Dock，当前在桌面 1（用默认 40）→ 往前切一定真的要写。
+        state.setOverride(config(tilesize: 88), for: spaces[2], reason: "桌面 3 独立")
+        await state.dockController.waitForIdle()
+        state.setDockConfigInMemory(config(tilesize: 40), for: .defaultDock)
+        state.dockEdited(.defaultDock, reason: "准备")
+        await state.dockController.waitForIdle()
+
+        events.value.removeAll()
+        state.switchToPreviousDesktop()
+
+        XCTAssertTrue(state.dockController.isApplying, "上一个桌面同样要在切空间之前发起应用")
+        await state.dockController.waitForIdle()
+
+        XCTAssertEqual(provider.switchTargets, [spaces[2].id64], "第一个桌面再往前应回到最后一个")
+        XCTAssertEqual(preferences.lastEntries?["tilesize"], .double(88),
+                       "要应用目标桌面的 Dock，不是当前桌面的")
+        XCTAssertEqual(events.value.filter { $0 == "write" }.count, 1)
+    }
+
     func testSwitchingBetweenIdenticalDesktopsNeverRestartsDock() async {
         // P3 验收：两个桌面配置相同时，来回切不该有任何 Dock 刷新。
         let spaces = FakeSpaceProvider.desktops(count: 2)
