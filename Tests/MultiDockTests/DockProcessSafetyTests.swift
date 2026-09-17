@@ -72,4 +72,22 @@ final class DockProcessSafetyTests: XCTestCase {
         let pid = try XCTUnwrap(control.dockPID())
         XCTAssertTrue(control.signal(pid, 0), "身份确认应当认出真正的 Dock")
     }
+
+    func testRealDockStartTimeIsReadable() throws {
+        // `DockReloader` 靠进程年龄推算 launchd 的节流窗口（`proc_pidinfo(PROC_PIDTBSDINFO)`）。
+        // 读不出来会退回内存记忆 —— 那条路在"别人刚重启过 Dock"时是错的，
+        // 所以这里守住"在真实系统上读得到"。
+        let pid = try XCTUnwrap(control.dockPID())
+        let startedAt = try XCTUnwrap(control.startTime(of: pid), "读不到 Dock 启动时刻")
+        let age = Date().timeIntervalSince1970 - startedAt
+
+        XCTAssertGreaterThan(age, 0, "启动时刻不该在未来")
+        XCTAssertLessThan(age, 60 * 60 * 24 * 30, "启动时刻看起来不对：\(startedAt)")
+    }
+
+    func testStartTimeRefusesNonPositivePID() {
+        // 与信号闸门同理：别拿 -1 去问 libproc。
+        XCTAssertNil(control.startTime(of: 0))
+        XCTAssertNil(control.startTime(of: -1))
+    }
 }

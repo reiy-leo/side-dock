@@ -9,6 +9,61 @@ final class Box<T>: @unchecked Sendable {
     init(_ value: T) { self.value = value }
 }
 
+/// 模拟 `com.apple.dock` 偏好域。
+///
+/// 刻意照抄 `DockPreferences.writeWhitelisted` 的「只覆盖白名单键」语义 ——
+/// 白名单本身的语义由 `DockPreferencesTests` 负责，这里只让调用方观察
+/// 「写了几次、写了哪些键、域变成什么样」。
+///
+/// 放在 `TestSupport` 而不是某个测试类内部：`AppStateDockTests` 与
+/// `StartupSelfHealTests` 都要用它，各写一份迟早会不一致。
+final class FakePreferences: DockPreferenceAccessing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var domain: [String: PlistValue]
+    private var writes = 0
+    private var history: [[String: PlistValue]] = []
+    private var mruWriteCount = 0
+    /// 与 `FakeSpaceProvider` 共用的顺序记录，用来断言"预应用先于切换"。
+    var events: Box<[String]>?
+
+    init(domain: [String: PlistValue], events: Box<[String]>? = nil) {
+        self.domain = domain
+        self.events = events
+    }
+
+    func readDomain() -> [String: PlistValue] { lock.withLock { domain } }
+
+    @discardableResult
+    func writeWhitelisted(_ entries: [String: PlistValue]) -> Int {
+        let count = lock.withLock {
+            writes += 1
+            history.append(entries)
+            for (key, value) in entries where DockPreferences.whitelistedKeys.contains(key) {
+                domain[key] = value
+            }
+            return entries.count
+        }
+        events?.value.append("write")
+        return count
+    }
+
+    /// `mru-spaces` 是白名单之外的唯一例外，替身里照样只改这一个键。
+    @discardableResult
+    func writeMRUSpaces(_ enabled: Bool) -> Bool {
+        lock.withLock {
+            mruWriteCount += 1
+            domain[DockPreferences.mruSpacesKey] = .bool(enabled)
+        }
+        return true
+    }
+
+    var writeCount: Int { lock.withLock { writes } }
+    var lastEntries: [String: PlistValue]? { lock.withLock { history.last } }
+    var mruWrites: Int { lock.withLock { mruWriteCount } }
+    /// 当前域的快照，用来断言"到底写进去了什么"。
+    var snapshot: [String: PlistValue] { lock.withLock { domain } }
+}
+
 /// 模拟 Dock 进程。
 ///
 /// 关键能力是「哪些信号能让 Dock 回来」——用它可以精确构造 P0 实测里的两条路径
@@ -27,17 +82,31 @@ final class FakeDockProcess: DockProcessControlling, @unchecked Sendable {
     private var countdown = 0
     private var signalsSent: [(pid: pid_t, sig: Int32)] = []
     private var kickstarts = 0
+    /// 替身"报告"的 Dock 启动时刻。nil = 报告不出来（`DockReloader` 会退回用内存里的记忆）。
+    private var reportedStartTime: TimeInterval?
 
     init(
         pid: pid_t? = 100,
         restartsOn: Set<Int32> = [SIGHUP],
         kickstartRestarts: Bool = true,
-        restartDelayPolls: Int = 0
+        restartDelayPolls: Int = 0,
+        startTime: TimeInterval? = nil
     ) {
         self.pid = pid
         self.restartsOn = restartsOn
         self.kickstartRestarts = kickstartRestarts
         self.restartDelayPolls = restartDelayPolls
+        self.reportedStartTime = startTime
+    }
+
+    /// 改掉"报告"的启动时刻。用来构造「内存里记着刚重启过、但真实 Dock 已经跑了很久」这类场景。
+    func reportStartTime(_ time: TimeInterval?) {
+        lock.withLock { reportedStartTime = time }
+    }
+
+    /// 覆盖协议默认实现（默认返回 nil = 拿不到启动时刻）。
+    func startTime(of pid: pid_t) -> TimeInterval? {
+        lock.withLock { reportedStartTime }
     }
 
     func dockPID() -> pid_t? {

@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import MultiDock
 
@@ -184,6 +185,172 @@ final class DockAcceptanceTests: XCTestCase {
         XCTAssertEqual(DockPreferences.readDomain()["mod-count"]?.intValue, modCountBefore,
                        "短路时 mod-count 不该变 —— 变了说明 Dock 其实被重启了")
         print("[P3 验收] 内容相同时短路：\(identical.summary)")
+    }
+
+    // MARK: - P4 验收：自愈幂等 + Dock 被杀死后拉回
+
+    /// P4 验收标准 ⑤：**连开三次 App 并每次还原，结果稳定幂等**。
+    ///
+    /// 客观判据不只是"三次之后 Dock 是对的"（那太弱），而是：
+    /// - 第一次必须**真的写回基准**（`.applied`）；
+    /// - 第二、三次必须**短路**（`mod-count` 不动 = 没有白重启一次 Dock）。
+    ///
+    /// 后一条才是"幂等"的真意思：每次启动都白重启一遍 Dock 的话，
+    /// 用户会看到每次开机 Dock 都闪一下。
+    func testSelfHealIsIdempotentAcrossThreeLaunches() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment[Self.enableFlag] == "1",
+            "会真的重启 Dock；设 \(Self.enableFlag)=1 才跑"
+        )
+
+        let before = DockPreferences.readDomain()
+        XCTAssertFalse(before.isEmpty, "读不到 com.apple.dock，验收无意义")
+        try Self.dump(before, named: "p4-before")
+
+        do {
+            try await runSelfHealPhase(before: before)
+        } catch {
+            await Self.writeBack(before, label: "异常还原")
+            throw error
+        }
+
+        let restored = await Self.writeBack(before, label: "P4 验收结束还原")
+        try Self.dump(restored, named: "p4-after-restore")
+
+        let illegal = Self.differences(between: before, and: restored)
+            .subtracting(DockPreferences.whitelistedKeys)
+            .subtracting(Self.dockSelfMutatingKeys)
+        XCTAssertTrue(illegal.isEmpty, "还原后白名单外的键仍有差异：\(illegal.sorted())")
+        XCTAssertEqual(Set(before.keys), Set(restored.keys), "键集合必须完全一致")
+        print("""
+        [P4 验收] 还原后差异键：\(Self.differences(between: before, and: restored).sorted())
+        [P4 验收] 图标顺序 after-restore：\(Self.labels(of: restored))
+        """)
+    }
+
+    private func runSelfHealPhase(before: [String: PlistValue]) async throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("multidock-p4-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let baselineStore = BaselineStore(
+            baselineURL: directory.appendingPathComponent("baseline.plist"),
+            markerURL: directory.appendingPathComponent("session.state"),
+            backupsURL: directory.appendingPathComponent("backups", isDirectory: true)
+        )
+        // 基准 = 操作前的 Dock。直接落文件，不经过 App —— 免得它去抓"当前"的当基准。
+        try Self.dump(before, named: "p4-baseline")
+        try Data(contentsOf: Self.dumpDirectory.appendingPathComponent("multidock-acceptance-p4-baseline.plist"))
+            .write(to: baselineStore.baselineURL)
+
+        // ---- 1. 先把 Dock 弄脏：换一套明显不同的配置 ----
+        var dirty = DockConfig.read(from: before)
+        dirty.appearance.tilesize = dirty.appearance.tilesize == 52 ? 44 : 52
+        dirty.appearance.magnification.toggle()
+        let dirtyOutcome = await DockController(backup: {})
+            .apply(dirty, reason: "P4 验收：先把 Dock 弄脏", force: true)
+        XCTAssertEqual(dirtyOutcome.result, .applied, "弄脏失败：\(dirtyOutcome.summary)")
+        XCTAssertNotEqual(DockPreferences.readDomain()["tilesize"], before["tilesize"],
+                          "Dock 没被弄脏，后面的自愈验证就没意义")
+
+        // ---- 2. 连开三次「App」，每次都应该把 Dock 还原回基准 ----
+        var summaries: [String] = []
+        var modCounts: [Int] = []
+        for round in 1...3 {
+            // 每次启动前都留一个"上次被强杀"的残留标记。
+            try baselineStore.writeSessionMarker(
+                BaselineStore.SessionMarker(
+                    pid: 999_999,
+                    startedAt: Date(),
+                    appliedFingerprint: "dirty-round-\(round)",
+                    appliedAt: Date()
+                )
+            )
+            let state = AppState(
+                configStore: ConfigStore(
+                    fileURL: directory.appendingPathComponent("config-round-\(round).json")
+                ),
+                baselineStore: baselineStore,
+                presenceMonitor: DockPresenceMonitor(
+                    process: RealDockProcessControl(),
+                    pollInterval: .seconds(60)      // 别让它在验收期间自己动手
+                )
+            )
+            state.start()
+            await state.waitForSelfHeal()
+            summaries.append(state.selfHealSummary ?? "（没有自愈）")
+            modCounts.append(DockPreferences.readDomain()["mod-count"]?.intValue ?? -1)
+            state.stop()
+
+            let live = DockPreferences.readDomain()
+            for key in DockPreferences.whitelistedKeys where before[key] != nil {
+                XCTAssertEqual(live[key], before[key], "第 \(round) 轮之后 \(key) 没回到基准")
+            }
+        }
+
+        XCTAssertEqual(summaries[0], "已自动还原上次未还原的 Dock", "第一次必须真的写回基准")
+        XCTAssertEqual(summaries[1], "Dock 已与原始状态一致，无需还原", "第二次该短路")
+        XCTAssertEqual(summaries[2], "Dock 已与原始状态一致，无需还原", "第三次该短路")
+        XCTAssertEqual(modCounts[1], modCounts[2],
+                       "第二、三轮不该重启 Dock —— mod-count 变了说明白重启了一次")
+        print("""
+        [P4 验收] 三次自愈的结果：\(summaries)
+        [P4 验收] mod-count 三次：\(modCounts)（第 2、3 次必须相同 = 没有白重启 Dock）
+        """)
+    }
+
+    /// P4 验收标准 ④：**人为杀掉 Dock 后 3 秒内恢复**。
+    ///
+    /// ⚠️ 这条会**真的杀掉你的 Dock**（`SIGKILL`，等价于 `kill -9`）。
+    /// launchd 的 `KeepAlive` 会把它拉回来，Dock 会闪一下、菜单栏图标短暂消失。
+    /// 默认跳过，`MULTIDOCK_DOCK_ACCEPTANCE=1` 才跑。
+    ///
+    /// 说明：Dock 由 launchd 守护，正常机器上它自己就会在几十毫秒内回来 ——
+    /// 所以这条验收证明的是"**3 秒内一定恢复**"，而不是"全靠我们的监视器才恢复"。
+    /// 监视器的判定与拉回逻辑（含 launchd 也不管了的极端情况）在
+    /// `DockPresenceMonitorTests` 里用替身覆盖。
+    func testKillingDockRecoversWithinThreeSeconds() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment[Self.enableFlag] == "1",
+            "会真的杀掉 Dock；设 \(Self.enableFlag)=1 才跑"
+        )
+
+        let process = RealDockProcessControl()
+        let before = DockPreferences.readDomain()
+        try Self.dump(before, named: "p4-kill-before")
+
+        let originalPID = try XCTUnwrap(process.dockPID(), "拿不到 Dock PID，验收无意义")
+        print("[P4 验收] 杀之前的 Dock PID：\(originalPID)")
+
+        let started = ContinuousClock.now
+        XCTAssertEqual(Darwin.kill(originalPID, SIGKILL), 0, "杀 Dock 失败")
+
+        // 3 秒内必须看到一个新的、正数的 PID。
+        var recoveredPID: pid_t?
+        let deadline = started + .seconds(3)
+        while ContinuousClock.now < deadline {
+            if let pid = process.dockPID(), pid > 0, pid != originalPID {
+                recoveredPID = pid
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        let elapsed = started.duration(to: ContinuousClock.now)
+        let milliseconds = Int(elapsed.components.seconds * 1000)
+            + Int(elapsed.components.attoseconds / 1_000_000_000_000_000)
+
+        let recovered = try XCTUnwrap(recoveredPID, "3 秒内 Dock 没回来 —— 用户会失去整个 Dock")
+        XCTAssertLessThan(milliseconds, 3000)
+
+        // Dock 重启后会重新读偏好域：白名单键必须原样还在（我们在它重启期间没写坏任何东西）。
+        let after = DockPreferences.readDomain()
+        for key in DockPreferences.whitelistedKeys where before[key] != nil {
+            XCTAssertEqual(after[key], before[key], "Dock 重启后 \(key) 变了")
+        }
+        XCTAssertEqual(Set(before.keys), Set(after.keys), "键集合不该变")
+        print("""
+        [P4 验收] Dock 已恢复：PID \(originalPID) → \(recovered)，用时约 \(milliseconds) ms（上限 3000 ms）
+        [P4 验收] 恢复后白名单键与键集合均与杀之前一致
+        """)
     }
 
     /// 写入 + 校验 + 差异核对。

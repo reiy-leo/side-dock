@@ -276,6 +276,77 @@ P3 把"切桌面自动应用 + 预应用"接起来后，用 `DockAcceptanceTests
 
 ---
 
+## 实验 6：节流窗口的判据是「Dock 进程年龄」，不是我们的记忆（2026-09-18，P4 验收中意外挖出）
+
+### 6.1 现象
+
+第一次跑 P4 验收时，**P3 那条 20 次来回切换的用例第一轮报了 1030 ms 的 Dock 不可用**：
+
+```
+[P3 验收] Dock 不可用时长（ms）：[1030, 52, 50, 55, 46, 50, 48, 70, 60, 43, ...]  最坏 1030 ms
+```
+
+只有**第一轮**是 1030 ms，后面 19 轮全是 43–70 ms。P3 的代码没改过，而它上一次（第 6 次会话）跑的时候 20 轮全是 45–90 ms。
+
+### 6.2 根因
+
+`DockReloader` 把"上一次重启归位"的时刻记在**自己的成员变量** `lastRestartAt` 里，重启前先睡到
+`lastRestartAt + minimumSpacing`。这套逻辑有两个盲区：
+
+1. **launchd 的节流是按服务算的，不是按进程、更不是按我们的对象算的。**
+   同一个测试进程里，前一条用例（P4 的还原）刚重启完 Dock；紧接着 P3 用例
+   **新建了一个 `DockReloader`** —— 它的 `lastRestartAt` 是 `nil`，于是认为自己"从没重启过"，
+   直接发 SIGHUP，结果吃满整段节流：**1030 ms**。
+2. **别人的重启我们也看不见**：用户 `killall Dock`、别的 Dock 定制 App、甚至**我们自己的
+   `DockPresenceMonitor` 拉回**（`kickstart` 不走 `DockReloader`）都会重启 Dock，
+   而 `lastRestartAt` 一无所知。下一次切桌面就会让 Dock 消失一秒多。
+
+### 6.3 判据改成「进程年龄」
+
+节流窗口是 **Dock 进程年龄**的函数 —— 它刚起来不到 1 秒，launchd 就不愿意马上再拉一次。
+所以直接读进程的启动时刻：
+
+```swift
+var info = proc_bsdinfo()
+let size = MemoryLayout<proc_bsdinfo>.size          // 136
+let written = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(size))
+guard written == Int32(size) else { return nil }     // 尺寸对不上就放弃，别读错字段
+let start = TimeInterval(info.pbi_start_tvsec) + TimeInterval(info.pbi_start_tvusec) / 1_000_000
+```
+
+实测（本机 macOS 15.7.9 / x86_64）：
+
+| 观测项 | 结果 |
+| --- | --- |
+| `proc_pidinfo(PROC_PIDTBSDINFO)` 返回字节数 | **136 = `MemoryLayout<proc_bsdinfo>.size`** ✅ |
+| Dock 的 `pbi_start_tvsec/tvusec` | 读得到，换算出的年龄与真实情况相符（实测 66.91 s） |
+| 拿不到时（替身进程 / 结构体布局变化） | 返回 `nil` → `DockReloader` **退回内存里的 `lastRestartAt`**，行为与改之前一致 |
+
+### 6.4 结果
+
+| 观测项 | 改之前 | 改之后 |
+| --- | --- | --- |
+| P3 验收第一轮 Dock 不可用 | **1030 ms** | **45 ms** |
+| P3 验收 20 轮 Dock 不可用 | `[1030, 52, 50, …]` | `[45, 54, 55, 58, 49, 47, 48, 47, 52, 55, 50, 52, 50, 84, 51, 50, 48, 49, 46, 49]`，最坏 **84 ms** |
+| 还原路径的 `spacingWait` 上报 | 新建的 reloader 一律报 0（明明等了却不说） | 如实上报（如"先等了 925 ms 错开节流，期间 Dock 可用"） |
+
+> **顺带的好处**：`DockPresenceMonitor` 的 `kickstart` 与"用户自己 `killall Dock`"这两种重启
+> 现在也能被正确错开了 —— 改之前它们会让紧接着的一次桌面切换把 Dock 藏一秒多。
+
+> ⚠️ **别把这条改回内存记忆**：内存里的是**猜测**（可能被外部重启打脸），进程年龄是**事实**。
+> 单元测试用"报告启动时刻的替身"钉住了它（`DockReloaderTests` 的
+> `testFreshReloaderStillWaitsWhenTheDockIsYoung` / `testProcessAgeWinsOverStaleInMemoryWindow`）。
+
+### 6.5 附带确认：`kill -9` 掉 Dock 后多久恢复
+
+| 观测项 | 结果 |
+| --- | --- |
+| `SIGKILL` Dock 后归位 | **1072 ms**（`KeepAlive` 让 launchd 拉起它，但会先吃一次隐式节流，所以不是 100 ms 级） |
+| 判据 | 3 秒内必须出现**新的正数 PID**（`testKillingDockRecoversWithinThreeSeconds`） |
+| 恢复后 | 白名单键与键集合都与杀之前一致 |
+
+---
+
 ## 对 `docs/PLAN.md` 的修订清单
 
 | 位置 | 原内容 | 修订为 |
@@ -290,6 +361,10 @@ P3 把"切桌面自动应用 + 预应用"接起来后，用 `DockAcceptanceTests
 | §3.5 | SIGHUP 约 101 ms 不可用 | 补上**重启节流**：距上次重启不足约 1 s 时再重启要 **约 1070 ms**；`DockReloader.minimumSpacing` 错开它，实测把 Dock 不可用时长压回 **45–90 ms** |
 | §3.4 第 8 条 | "先 apply 再切空间" | 措辞修正为"**发起**应用与切空间同一拍，不等轮询"。切空间前完成重启物理上做不到（重启 101 ms > 切空间 20 ms），见 PLAN §3.4 的 P3 实现记录 |
 | §6 | 桌面"位置"含义待确认 | ✅ 已确认：Dock 屏幕位置 + 大小（2026-09-18） |
+| §3.5 / §3.9 | 节流窗口靠 `DockReloader.lastRestartAt`（内存记忆）错开 | 改成按 **Dock 进程年龄**（`proc_pidinfo(PROC_PIDTBSDINFO)`）推算，拿不到年龄才退回内存记忆。理由：launchd 的节流**按服务**算，别人的重启我们看不见。见本文实验 6 |
+| §4 P4 行 | 待做 | ✅ 已完成（见本文实验 6 与 AGENTS.md §8 第 7 次记录）。**只有第 ③ 条"注销/重启后 Dock 为 baseline"未实测**（要真注销一次机器） |
+| §3.9 | "必要时还原基准"没写清时机 | 补上：自愈**启动后异步执行**，不阻塞启动；债务跨会话继承（`needsSelfHeal`）；还原失败要保留标记并标 `pid = 0` |
+| §3.9 | 登录项退回 `~/Library/LaunchAgents/local.multidock.plist` | 文件名实际是 `local.multidock.loginitem.plist`，且**刻意不设 `KeepAlive`**（登录启动项不是守护进程） |
 
 ---
 

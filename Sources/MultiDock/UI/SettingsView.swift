@@ -19,6 +19,8 @@ struct SettingsView: View {
 
 private struct GeneralTab: View {
     @Bindable var state: AppState
+    /// 待确认的备份恢复。恢复备份会真的重启 Dock，必须二次确认。
+    @State private var pendingBackup: BaselineStore.BackupEntry?
 
     var body: some View {
         Form {
@@ -94,6 +96,81 @@ private struct GeneralTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            Section("启动与自愈") {
+                Toggle("登录时自动启动", isOn: loginItemBinding)
+                    .disabled(!LoginItem.isAvailable)
+                Text(state.loginItemStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !LoginItem.isAvailable {
+                    Text("当前不在 .app 包里运行，登录启动不可用。用 ./scripts/build-app.sh 打包后再开。")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Text("强杀自愈：被强杀或崩溃时，下次启动会自动把 Dock 还原为原始状态，并在屏幕上给出提示。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let summary = state.selfHealSummary {
+                    Label(summary, systemImage: "arrow.uturn.backward")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                if let stale = state.interruptedSession {
+                    Text("上次未正常退出：PID \(String(stale.pid))")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("桌面行为") {
+                Toggle("根据最近使用自动重排空间（mru-spaces）", isOn: mruSpacesBinding)
+                    .disabled(state.mruSpaces == nil)
+                Text("本机默认是开的。开着时系统会按最近使用重排桌面顺序，菜单栏的「切到下一个桌面」会变得不符合直觉，建议关掉。这个键不在常规写入范围内 —— 只有你在这里点开关才会改，改完会自动重启一次 Dock 生效。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if state.mruSpaces == nil {
+                    Text("当前 macOS 的 com.apple.dock 里没有这个键，因此不提供开关。")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Section("备份与还原") {
+                if state.backups.isEmpty {
+                    Text("还没有历史备份。每次真正写 Dock 之前都会自动留一份，最多保留 20 份。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(state.backups.prefix(5)) { entry in
+                        HStack(spacing: 8) {
+                            Text(entry.fileName)
+                                .font(.caption.monospaced())
+                            Text(entry.date.formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("恢复") { pendingBackup = entry }
+                        }
+                    }
+                    if state.backups.count > 5 {
+                        Text("只列出最近 5 份，共 \(state.backups.count) 份。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Button("刷新列表") { state.refreshBackups() }
+                Text("恢复备份只覆盖 Dock 的图标与外观，不动热角、启动台网格等设置 —— 因为我们从来只写那几项。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Section("Dock 应用") {
                 Toggle("编辑后立即应用", isOn: autoApplyBinding)
                 Toggle("识别真实 Dock 上的手动改动并回存", isOn: autoCaptureBinding)
@@ -120,6 +197,23 @@ private struct GeneralTab: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { state.refreshBackups() }
+        .alert(
+            "恢复这份备份？",
+            isPresented: Binding(
+                get: { pendingBackup != nil },
+                set: { if !$0 { pendingBackup = nil } }
+            ),
+            presenting: pendingBackup
+        ) { entry in
+            Button("恢复", role: .destructive) {
+                state.restoreBackup(entry)
+                pendingBackup = nil
+            }
+            Button("取消", role: .cancel) { pendingBackup = nil }
+        } message: { entry in
+            Text("会用 \(entry.fileName) 里的图标与外观覆盖当前 Dock，并重启一次 Dock（约 0.1 秒不可用）。")
+        }
     }
 
     private var defaultDockBinding: Binding<DockConfig> {
@@ -149,6 +243,22 @@ private struct GeneralTab: View {
         Binding(
             get: { state.settings.restoreOnQuit },
             set: { value in state.updateSettings { $0.restoreOnQuit = value } }
+        )
+    }
+
+    /// 登录项状态属于系统（`SMAppService`），**不存进 config.json**，所以直接读系统。
+    /// 改完之后 `setLoginItemEnabled` 会刷新 `loginItemStatus`，视图因此重新求值。
+    private var loginItemBinding: Binding<Bool> {
+        Binding(
+            get: { LoginItem.isEnabled },
+            set: { state.setLoginItemEnabled($0) }
+        )
+    }
+
+    private var mruSpacesBinding: Binding<Bool> {
+        Binding(
+            get: { state.mruSpaces ?? false },
+            set: { state.setMRUSpaces($0) }
         )
     }
 

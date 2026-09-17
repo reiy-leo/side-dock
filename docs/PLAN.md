@@ -356,9 +356,36 @@ struct AppSettings: Codable {
 
 ### 3.9 登录启动与自愈
 
-- 登录项优先 `SMAppService.mainApp`；未签名构建下注册失败则退回 `~/Library/LaunchAgents/local.multidock.plist`（`RunAtLoad`）。
+- 登录项优先 `SMAppService.mainApp`；未签名构建下注册失败则退回 `~/Library/LaunchAgents/local.multidock.loginitem.plist`（`RunAtLoad`，**刻意不设 `KeepAlive`**：这是登录启动项不是守护进程，退出 App 后不该被反复拉起）。
 - 启动顺序固定为：**检测残留 session.state → 必要时还原基准 → 应用当前桌面配置 → 建立会话标记**。
 - Dock 重启后 3 秒未归位 → `launchctl kickstart -k` 兜底；仍异常则提示从备份恢复。
+
+> **P4 实现记录（2026-09-18）** —— 本节已全部落地。几处与原文不同、且不能"改回去"的地方：
+>
+> 1. **自愈是启动后异步跑的，不阻塞启动**。`runStartupSelfCheck` 只把残留标记记进 `pendingSelfHeal`，
+>    真正的还原由 `scheduleSelfHealIfNeeded` 在观察器/监视器就位后发起（`AppState.performSelfHeal`）。
+>    还原会写偏好 + 重启 Dock，放在启动路径里同步等会让 App 启动卡一秒。
+> 2. **自愈债务要跨会话继承**（`SessionMarker.needsSelfHeal`）。自愈是异步的，还原途中再崩一次不能让债务丢掉：
+>    `beginSession()` 会把 `state.hasPendingSelfHeal` 写进新标记。字段是**可选**的 ——
+>    老版本写的 `session.state` 里没有它，用非可选会让解码失败，而解码失败等于"没有残留标记"，
+>    会静默丢掉自愈能力。
+> 3. **退出还原失败时标记必须留下，并标成"非活动会话"**（`keepMarkerAndFinish`：`needsSelfHeal = true` + `pid = 0`）。
+>    清掉标记等于把下次启动的自愈能力一起扔了；只留标记不改 `pid` 也不行 ——
+>    `detectInterruptedSession()` 会用 `kill(pid, 0)` 判断"标记是不是另一个还活着的实例"，
+>    pid 为 0 时它才会跳过这个检查。
+> 4. **还原前必须先 `await state.prepareForTermination()`**：停 watcher、停存活监视器、等自愈跑完、
+>    `await dockController.waitForIdle()`。最后一件不能省 —— `request()` 是异步排队的，
+>    漏掉的话那笔待办会在还原**之后**落地，用户看到的结果是"退出时还原了，Dock 却还是错的"。
+> 5. **注销/关机这条路系统不给等待时间**，只能尽力：先把债务写进标记，再发起还原并等它跑完；
+>    没跑完的由下次启动自愈接手。**不要**改成同步阻塞等还原，那会拖住关机。
+> 6. **Dock 存活监视的判据**：连续缺失 `missThreshold`（默认 2 次 / 1 秒）才算"真的不在"，
+>    之后按 `kickstartEvery`（默认 4 轮）重试 —— 一次缺失就动手会让每次正常切换都白打一次 `launchctl`。
+> 7. **备份恢复只写白名单键**，不做整域替换：我们自己从来只碰白名单键，整域替换会把用户后来改的
+>    热角、启动台网格冲回旧值。需要整域恢复的场景在 README 里给 `defaults import` 的做法。
+> 8. **`mru-spaces` 是白名单之外的唯一写入例外**，只给它一个窄方法（`DockPreferences.writeMRUSpaces(_:)`），
+>    不开放通用的"写某个键"口子。它**不在** `apply` 的管辖范围内，写完要单独 `reloadOnly()` 重启一次 Dock。
+> 9. **登录启动的状态属于系统**，不存进 `config.json`。非 `.app` 环境（`swift test`）里
+>    `SMAppService.mainApp` 拿不到有效句柄 → `LoginItem.isAvailable` 先看 bundle，不可用就如实显示原因。
 
 ### 3.10 桌面命名与切换提示（toast）
 
@@ -418,7 +445,7 @@ struct AppSettings: Codable {
 | **P2 编辑条 + 应用（✅ 已完成 2026-09-18）** | DockPreferences 读写、ConfigStore、备份轮转、`DockReloader`、`DockController`、`DockStripRules`、`DockStripEditor`、通用 Tab、手动「立即应用」、**「立即还原到原始 Dock」按钮** | ✅ **全部达成**（`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --filter DockAcceptanceTests`，真实 Dock）：apply 后与操作前全量域 diff，**变化的键只有 `["magnification","persistent-apps","tilesize"]`**（全部在白名单内，白名单外的键一个没动）；**Dock 给新写入的条目补上了 `GUID`（`i:1414651200`）** → 写入真的被读进去并重建了 Dock；还原后图标顺序逐项回到原样、白名单键逐键一致、键集合一致（34 键），**仅剩 `["mod-count","recent-apps"]`**（Dock 自己的计数器）。SIGHUP **125–138 ms**。Finder/Launchpad 无法被拖出（编辑条里没有拖拽手柄 + `DockStripRules` 保证启动台在首位）。**142 个测试全绿、零警告** |
 | **P2.5 桌面命名 + 切换 toast（不写 Dock）✅ 已完成 2026-09-18** | `DesktopNaming`（归一化 + 显示名解析 + 改名规则）、`AppState.displayName(for:)` 并替换所有调用点、桌面页改名输入框、`ToastPresenter`（纯逻辑）、`DesktopNameToastWindow`（AppKit 窗口）、设置开关、调试面板「测试 toast」、`scripts/check-toast-window.sh` | ✅ 全部达成：**70 个测试全绿**、零警告；`check-toast-window.sh --watch` 实测窗口 `layer=25 alpha=1.00 x=916 y=80 w=87 h=39`（中心 959.5 = 主屏 midX 960，距可见区顶部 80 pt），出现到消失 **983 / 987 ms**；日志 `toast 显示` → `toast 隐藏` 间隔 **1.014–1.098 s**；改 12 字名字 → 加载后截到 10 字并原样显示在 toast 里（`toast 显示「一二三四五六七八九十」`）；无名字的桌面回落「桌面 1」；空绑定行被自动清理；**切 4 次桌面（含 4 次 toast）前后 `defaults read com.apple.dock` 逐键相同** |
 | **P3 桌面页 + 自动切换（✅ 已完成 2026-09-18）** | 桌面 Tab 的 Dock 部分（绑定与 override）、切换时自动应用、防抖合并、内容相同跳过、预应用、自动回存 | ✅ **全部达成**（`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --filter DockAcceptanceTests`，真实 Dock）：两个桌面两套配置**来回切 20 次全部成功**，每次真实域的 `tilesize`/`magnification` 都等于目标那份；**Dock 不可用时长 45–90 ms**（最坏 90 ms，见 `spikes.md` 实验 5 的节流修复）；两桌面配置相同时 `.skippedIdentical` + `reload == nil` + `mod-count` 不变（确实没重启 Dock）；`DockWatcher` **误判 0 次**；还原后差异键 **`[]`**、图标顺序逐项一致、键集合一致（34 键）。**195 个测试全绿、零警告** |
-| **P4 无痕与自愈** | 退出还原全链路（菜单退出 / Cmd+Q / 注销关机）、退出前等待重载完成、`session.state` 残留检测、登录启动、Dock 未归位兜底、备份恢复 UI、`mru-spaces` 开关 | ① 正常退出后 `com.apple.dock` 逐键等于 baseline；② `kill -9` 强杀后重启 App，自动还原 baseline 并给出提示；③ 注销/重启后 Dock 为 baseline；④ 人为杀掉 Dock 后 3 秒内自动恢复；⑤ 连开三次 App 并每次还原，结果稳定幂等 |
+| **P4 无痕与自愈（✅ 已完成 2026-09-18，③ 待用户注销实测）** | 退出还原全链路（菜单退出 / Cmd+Q / 注销关机）、退出前等待重载完成、`session.state` 残留检测、登录启动、Dock 未归位兜底、备份恢复 UI、`mru-spaces` 开关 | ① ✅ 还原链路由 P2 验收 + `testSuccessfulRestoreClearsMarker` 覆盖（逐键等于 baseline）。② ✅ `testSelfHealIsIdempotentAcrossThreeLaunches`（真实 Dock）：连开三次 → `[已自动还原, 已与原始状态一致, 已与原始状态一致]`，`mod-count` 三次都是 22569（第 2、3 次没有白重启 Dock），每轮之后白名单键都等于基准。③ ⚠️ **未实测**（要真注销/重启一次机器）：代码路径是"先写债务标记 + 尽力还原，没跑完的由下次启动自愈接手"。④ ✅ `testKillingDockRecoversWithinThreeSeconds`（真实 Dock）：`SIGKILL` 后 **1072 ms** 归位（上限 3 s），恢复后白名单键与键集合都与杀之前一致。⑤ ✅ 同 ②。**239 个测试全绿、零警告** |
 | **P5 收尾** | 多显示器与热插拔、全屏过滤回归、README（含完全卸载与还原步骤） | 插拔外接显示器后映射不串；README 还原步骤实测可让 Dock 回到初始状态 |
 
 ---
@@ -432,6 +459,13 @@ struct AppSettings: Codable {
 | 无热重载，切桌面必然重启 Dock | 切桌面 Dock 闪一下 | ✅ P0 实测仅 **约 101 ms**（SIGHUP）。内容相同直接跳过；连击合并；预应用；UI/README 明示"约 0.1 秒" |
 | **launchd 的重启节流**：距上次重启不足约 1 s 时再重启，Dock 要 **约 1070 ms** 才归位（`spikes.md` 实验 5） | 连续切桌面时 Dock 消失一秒多 | ✅ 已实现 `DockReloader.minimumSpacing`（默认 1 s）：先等满窗口再重启，**等待期间 Dock 可用**。实测把 Dock 不可用时长压到 **45–90 ms**；`ReloadOutcome` 把 `elapsed`（不可用）与 `spacingWait`（可用等待）分开记 |
 | **`NSRunningApplication` 在 Dock 重启窗口返回 `processIdentifier == -1`** | ① 误判"Dock 已回来"；② `kill(-1, SIGTERM)` = **杀掉当前用户的所有进程** | ✅ 三道防线：`dockPID()` 过滤 `> 0`；`signal()` 拒绝 `pid <= 0` 且用 `proc_name` 确认身份；`waitForRestart` 只接受 `pid > 0`。测试在 `DockProcessSafetyTests`，全部用**信号 0** 断言（闸门坏了是测试失败，不会打死测试进程） |
+| **节流窗口的判据错了**（P4 验收实测）：原以为"记在自己内存里"就够，但 launchd 的节流是**按服务**算的 | 别人（用户 / 别的 App / 我们的存活监视器）刚重启过 Dock 时，我们紧接着重启会吃满整段节流，Dock 消失一秒多 | ✅ 改成按 **Dock 进程年龄**（`proc_pidinfo(PROC_PIDTBSDINFO)` 的 `pbi_start_tvsec/tvusec`）推算窗口，拿不到年龄才退回内存记忆。实测 P3 第一轮从 **1030 ms → 45 ms**。见 `spikes.md` 实验 6 |
+| **退出还原被排队的应用覆盖** | 退出后 Dock 还是错的（用户以为已还原） | ✅ 还原前 `await state.prepareForTermination()`：停 watcher / 停监视器 / 等自愈 / `await dockController.waitForIdle()` |
+| **还原失败后自愈能力丢失** | 下次启动不再尝试还原，Dock 永久停在非基准状态 | ✅ 失败保留标记 + `needsSelfHeal = true` + `pid = 0`；`beginSession` 把债务继承给下一次启动 |
+| **备份恢复越界写白名单之外的键** | 用户后来改的热角、启动台网格被冲回旧值 | ✅ 备份恢复只走 `DockConfig.read` + `apply`（白名单键），**不做整域替换**；单测断言 `wvous-br-corner` / `mod-count` 不被覆盖 |
+| **`mru-spaces` 变成"随便写某个键"的通用口子** | 迟早被误用到热角等键上 | ✅ 只给一个窄方法 `DockPreferences.writeMRUSpaces(_:)`，且不在 `apply` 管辖内（写完单独 `reloadOnly()`） |
+| **`SMAppService` 在非 `.app` 环境不可用** | 登录启动开关点了没反应 | ✅ `LoginItem.isAvailable` 先看 bundle，不可用就在设置页显示原因；`enable()` 抛 `LoginItemError.notInAppBundle` |
+| **注销/关机时来不及还原** | 关机后 Dock 停在非基准状态 | ⚠️ 系统不给等待时间，只能尽力：先写债务标记再发起还原。**未实测**（要真注销一次），见 `AGENTS.md` §6.3 B9 |
 | `pgrep` 子进程单次约 **110 ms**，被放进 15 ms 轮询热路径 | 每次重启判定被拖慢一个量级 | ✅ 改用 `proc_listpids` + `proc_name`（**0.02 ms**），不再起子进程；`DockProcessSafetyTests` 有测试守平均耗时 |
 | **SIGTERM 的 255 ms 清理窗口覆盖我们的写入** | 应用不生效 | ✅ 已实现：应用后读回校验，不一致重试一次（SIGTERM 仅作 SIGHUP 的兜底）。P2 实测 SIGHUP 路径每次一次过，重试由单测覆盖 |
 | **Dock 回写 `GUID` 是异步的** | 拿"GUID 是否被补全"当判据时会误判成"写入没生效" | 判据必须配轮询（P2 实测 apply 返回后立刻读还是 nil，200 ms 内出现） |

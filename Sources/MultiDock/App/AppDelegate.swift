@@ -28,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lifecycle?.noteDockApplied(fingerprint: fingerprint)
         }
         lifecycle.restoreHandler = { [weak state] in
-            _ = await state?.restoreToBaseline()
+            await state?.restoreToBaseline()
         }
         menuBar = MenuBarController(state: state)
         menuBar.onOpenDebugPanel = { [weak self] in self?.showDebugPanel() }
@@ -111,7 +111,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let window = makeWindow(
             title: "MultiDock 设置",
-            size: NSSize(width: 560, height: 480),
+            // 与 `SettingsView` 根视图的 `.frame(width:height:)` 保持一致，
+            // 否则窗口先按这个尺寸画一帧再被 SwiftUI 撑开，会看到一次跳动。
+            size: NSSize(width: 780, height: 560),
             content: SettingsView(state: state)
         )
         settingsWindow = window

@@ -92,4 +92,15 @@ final class DockPreferencesTests: XCTestCase {
             XCTAssertFalse(DockPreferences.whitelistedKeys.contains(key), "\(key) 不该出现在白名单")
         }
     }
+
+    func testMRUSpacesIsNotReachableThroughTheWhitelistPath() {
+        // `mru-spaces` 只能通过 `DockPreferences.writeMRUSpaces(_:)` 这一个窄口子写。
+        // 一旦混进白名单，每次「立即应用」都会顺手改掉用户的桌面重排设置 —— 那是静默修改。
+        let merged = DockPreferences.merged(
+            domain: realisticDomain,
+            entries: [DockPreferences.mruSpacesKey: .bool(false)]
+        )
+        XCTAssertEqual(merged["mru-spaces"], .int(1), "白名单路径绝不能碰 mru-spaces")
+        XCTAssertTrue(DockPreferences.excludedKeys.contains(DockPreferences.mruSpacesKey))
+    }
 }

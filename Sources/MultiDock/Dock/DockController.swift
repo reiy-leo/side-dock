@@ -4,6 +4,16 @@ import Foundation
 protocol DockPreferenceAccessing: Sendable {
     func readDomain() -> [String: PlistValue]
     @discardableResult func writeWhitelisted(_ entries: [String: PlistValue]) -> Int
+    /// 写 `mru-spaces`。白名单之外的**唯一**例外，见 `DockPreferences.writeMRUSpaces(_:)`。
+    @discardableResult func writeMRUSpaces(_ enabled: Bool) -> Bool
+}
+
+extension DockPreferenceAccessing {
+    /// 读 `mru-spaces`。默认实现走 `readDomain()`，这样测试替身不必单独实现它，
+    /// 也不会绕过注入点去读真实系统的偏好域。
+    func readMRUSpaces() -> Bool? {
+        readDomain()[DockPreferences.mruSpacesKey]?.boolValue
+    }
 }
 
 struct RealDockPreferences: DockPreferenceAccessing {
@@ -11,6 +21,10 @@ struct RealDockPreferences: DockPreferenceAccessing {
     @discardableResult
     func writeWhitelisted(_ entries: [String: PlistValue]) -> Int {
         DockPreferences.writeWhitelisted(entries)
+    }
+    @discardableResult
+    func writeMRUSpaces(_ enabled: Bool) -> Bool {
+        DockPreferences.writeMRUSpaces(enabled)
     }
 }
 
@@ -98,6 +112,13 @@ final class DockController {
         Set(preferences.readDomain().keys).intersection(DockPreferences.whitelistedKeys)
     }
 
+    /// 读 `mru-spaces`。走注入点，不要在 `AppState` 里直接调 `DockPreferences`。
+    func readMRUSpaces() -> Bool? { preferences.readMRUSpaces() }
+
+    /// 写 `mru-spaces`。写完之后要自己 `reloadOnly` 一次才生效。
+    @discardableResult
+    func writeMRUSpaces(_ enabled: Bool) -> Bool { preferences.writeMRUSpaces(enabled) }
+
     /// 读当前真实的 Dock 全量域。
     ///
     /// 所有需要"看现在 Dock 长什么样"的地方都必须走这里，**不要直接调 `DockPreferences.readDomain()`** ——
@@ -164,6 +185,18 @@ final class DockController {
     /// `request()` 会**同步**建好任务，所以调用方在 `request()` 返回后立刻读它是 `true`。
     /// 「预应用」正是靠这一点验证"切空间之前就已经发起应用，没等轮询"。
     var isApplying: Bool { drainTask != nil }
+
+    /// 只重启 Dock，不写任何偏好。
+    ///
+    /// 给「改了白名单之外的键」用 —— 目前只有 `mru-spaces`。**不要**走 `request`/`apply`：
+    /// 那条路会把当前配置的白名单键重写一遍，而这里根本没有配置要应用，
+    /// 只是让 Dock 重新读一遍偏好域。
+    ///
+    /// 刻意不合成一个 `Outcome` 出来：`appliedFingerprint` 在这里没变，
+    /// 硬造一个 Outcome 会让"最近一次应用摘要"显示出一次并不存在的应用。
+    func reloadOnly(strategy: ReloadStrategy = .auto) async -> ReloadOutcome {
+        await reloader.reload(strategy: strategy)
+    }
 
     private func drain() async {
         while let next = pending {

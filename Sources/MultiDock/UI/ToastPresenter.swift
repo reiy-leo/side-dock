@@ -60,7 +60,16 @@ final class ToastPresenter {
     /// 手动触发（调试面板用）。
     func show(text: String, displayUUID: String? = nil) {
         guard isEnabled() else { return }
+        present(text: text, displayUUID: displayUUID)
+    }
 
+    /// **无条件**提示。给"自愈还原"这类系统级告知用：它不是桌面切换提示，
+    /// 不该被「切换桌面时显示桌面名称」这个开关关掉 —— 用户必须知道 Dock 被我们动过。
+    func announce(_ text: String, displayUUID: String? = nil) {
+        present(text: text, displayUUID: displayUUID)
+    }
+
+    private func present(text: String, displayUUID: String?) {
         // 1 秒内又切了桌面 → 取消上一次计时，直接换文字并重新计时。
         // 绝不并发多个计时器：否则旧计时器会把新提示提前收走。
         hideTask?.cancel()

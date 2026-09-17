@@ -16,9 +16,29 @@ struct BaselineStore: Sendable {
         /// 最近一次应用到真实 Dock 的归一化指纹。nil 表示本次运行从未改过 Dock。
         var appliedFingerprint: String?
         var appliedAt: Date?
+        /// 上次启动时**已经判定需要自愈还原**，但还没做完就挂了（P4）。
+        ///
+        /// 为什么要这个字段：残留标记原来在启动自检里一读完就被清掉，而自愈还原是异步的。
+        /// 如果 App 在还原途中再次崩溃/被杀，新会话标记（`beginSession` 写的）里
+        /// `appliedFingerprint` 是 nil —— 下次启动就会认为"Dock 是干净的"，自愈从此丢失。
+        /// 有了这个标记，还原没做完这件事本身会被继承到下一次启动。
+        ///
+        /// 可选类型：老版本写下的 `session.state` 里没有这个键，用非可选会让解码失败，
+        /// 而解码失败等于"没有残留标记"，会静默丢掉自愈能力。
+        var needsSelfHeal: Bool?
 
         /// 残留标记是否意味着「Dock 可能处于非基准状态」。
-        var impliesDirtyDock: Bool { appliedFingerprint != nil }
+        var impliesDirtyDock: Bool { appliedFingerprint != nil || needsSelfHeal == true }
+    }
+
+    /// 一份历史备份。设置页的「备份与还原」列它。
+    struct BackupEntry: Sendable, Hashable, Identifiable {
+        var url: URL
+        /// 从文件名解析出的时刻；解析不出来时退回文件修改时间。
+        var date: Date
+
+        var id: URL { url }
+        var fileName: String { url.lastPathComponent }
     }
 
     var baselineURL: URL = AppPaths.baselineFile
@@ -46,9 +66,13 @@ struct BaselineStore: Sendable {
 
     /// 读基准快照的全量域。
     func readBaseline() -> [String: PlistValue] {
-        guard
-            let data = try? Data(contentsOf: baselineURL),
-            let raw = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        guard let data = try? Data(contentsOf: baselineURL) else { return [:] }
+        return Self.readDomain(from: data)
+    }
+
+    /// 从 plist 数据解析全量域。基准与历史备份共用一套解析（口径必须一致）。
+    static func readDomain(from data: Data) -> [String: PlistValue] {
+        guard let raw = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
         else { return [:] }
         var result: [String: PlistValue] = [:]
         for (key, value) in raw {
@@ -122,6 +146,35 @@ struct BaselineStore: Sendable {
         return contents
             .filter { $0.pathExtension == "plist" }
             .sorted { $0.lastPathComponent > $1.lastPathComponent }
+    }
+
+    /// 历史备份列表，最新在前。给设置页的「备份与还原」用。
+    func listBackups() -> [BackupEntry] {
+        existingBackups().map { url in
+            BackupEntry(url: url, date: Self.date(fromBackupName: url.lastPathComponent) ?? modifiedAt(url))
+        }
+    }
+
+    /// 读一份历史备份的全量域。
+    func readBackup(at url: URL) -> [String: PlistValue] {
+        guard let data = try? Data(contentsOf: url) else { return [:] }
+        return Self.readDomain(from: data)
+    }
+
+    /// 从 `dock-yyyyMMdd-HHmmss.plist` 解析时刻。用户改过文件名就返回 nil，由调用方回落。
+    static func date(fromBackupName name: String) -> Date? {
+        var stem = name
+        if stem.hasPrefix("dock-") { stem.removeFirst("dock-".count) }
+        if stem.hasSuffix(".plist") { stem.removeLast(".plist".count) }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.date(from: stem)
+    }
+
+    private func modifiedAt(_ url: URL) -> Date {
+        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+        return values?.contentModificationDate ?? .distantPast
     }
 
     private func pruneBackups() throws {

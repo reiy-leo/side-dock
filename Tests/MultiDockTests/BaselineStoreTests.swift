@@ -172,4 +172,95 @@ final class BaselineStoreTests: XCTestCase {
         try Data("x".utf8).write(to: store.backupsURL.appendingPathComponent("dock-20260101-00001.plist"))
         XCTAssertEqual(store.existingBackups().count, 1)
     }
+
+    // MARK: - 自愈债务（P4）
+
+    func testNeedsSelfHealSurvivesRoundTripAndMarksDirty() throws {
+        let store = makeStore()
+        try store.writeSessionMarker(.init(pid: 999_999, startedAt: Date(), needsSelfHeal: true))
+
+        let loaded = try XCTUnwrap(store.readSessionMarker())
+        XCTAssertEqual(loaded.needsSelfHeal, true)
+        XCTAssertTrue(loaded.impliesDirtyDock, "继承来的自愈债务也算 Dock 可能不干净")
+    }
+
+    func testMarkerWrittenByOlderVersionStillDecodes() throws {
+        // 老版本的 `session.state` 里没有 needsSelfHeal。用非可选字段会让解码失败，
+        // 而解码失败等于"没有残留标记" —— 会静默丢掉自愈能力。
+        let store = makeStore()
+        let legacy = #"{"pid":999999,"startedAt":"2026-09-01T00:00:00Z","appliedFingerprint":"abc"}"#
+        try Data(legacy.utf8).write(to: store.markerURL)
+
+        let loaded = try XCTUnwrap(store.readSessionMarker())
+        XCTAssertNil(loaded.needsSelfHeal)
+        XCTAssertEqual(loaded.appliedFingerprint, "abc")
+        XCTAssertTrue(loaded.impliesDirtyDock)
+    }
+
+    func testInactiveMarkerWithZeroPIDIsAlwaysTreatedAsInterrupted() throws {
+        // 退出还原失败时我们主动留下的标记：pid = 0 表示"不是另一个还活着的实例"，
+        // 所以必须被当成残留，而不是被 `kill(pid, 0)` 那条多实例检查忽略掉。
+        let store = makeStore()
+        try store.writeSessionMarker(.init(pid: 0, startedAt: Date(), needsSelfHeal: true))
+
+        let detected = try XCTUnwrap(store.detectInterruptedSession())
+        XCTAssertEqual(detected.pid, 0)
+    }
+
+    // MARK: - 历史备份（P4）
+
+    func testBackupDateIsParsedFromFileName() throws {
+        let parsed = try XCTUnwrap(BaselineStore.date(fromBackupName: "dock-20260918-010203.plist"))
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        XCTAssertEqual(formatter.string(from: parsed), "20260918-010203")
+    }
+
+    func testUnparseableBackupNameFallsBackToModificationDate() throws {
+        let store = makeStore()
+        try FileManager.default.createDirectory(at: store.backupsURL, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: store.backupsURL.appendingPathComponent("my-dock-backup.plist"))
+
+        let entry = try XCTUnwrap(store.listBackups().first)
+        XCTAssertEqual(entry.fileName, "my-dock-backup.plist")
+        XCTAssertNotEqual(entry.date, .distantPast, "文件名解析不出来时要退回文件修改时间")
+    }
+
+    func testListBackupsIsNewestFirstWithParsedDates() throws {
+        let store = makeStore()
+        try FileManager.default.createDirectory(at: store.backupsURL, withIntermediateDirectories: true)
+        for name in ["dock-20260101-000001.plist", "dock-20260918-090000.plist"] {
+            try Data("x".utf8).write(to: store.backupsURL.appendingPathComponent(name))
+        }
+
+        let entries = store.listBackups()
+        XCTAssertEqual(entries.map(\.fileName), [
+            "dock-20260918-090000.plist",
+            "dock-20260101-000001.plist",
+        ])
+        XCTAssertGreaterThan(entries[0].date, entries[1].date)
+    }
+
+    func testReadBackupParsesTheSnapshot() throws {
+        let store = makeStore()
+        try FileManager.default.createDirectory(at: store.backupsURL, withIntermediateDirectories: true)
+        let url = store.backupsURL.appendingPathComponent("dock-20260918-090000.plist")
+        let payload: [String: Any] = ["tilesize": 44.0, "orientation": "left"]
+        try PropertyListSerialization.data(fromPropertyList: payload, format: .xml, options: 0)
+            .write(to: url)
+
+        let domain = store.readBackup(at: url)
+        XCTAssertEqual(domain["tilesize"], .double(44))
+        XCTAssertEqual(domain["orientation"], .string("left"))
+    }
+
+    func testReadBackupReturnsEmptyForCorruptFile() throws {
+        let store = makeStore()
+        try FileManager.default.createDirectory(at: store.backupsURL, withIntermediateDirectories: true)
+        let url = store.backupsURL.appendingPathComponent("dock-20260918-090000.plist")
+        try Data("not a plist".utf8).write(to: url)
+
+        XCTAssertTrue(store.readBackup(at: url).isEmpty, "坏文件必须返回空，让调用方拒绝写 Dock")
+    }
 }

@@ -12,6 +12,16 @@ protocol DockProcessControlling: Sendable {
     @discardableResult func signal(_ pid: pid_t, _ sig: Int32) -> Bool
     /// `launchctl kickstart -k` 兜底。返回是否执行成功。
     @discardableResult func kickstart() -> Bool
+    /// 某个 PID 的启动时刻（Unix 秒）。拿不到返回 nil。
+    ///
+    /// 用来推算 launchd 的重启节流窗口（见 `DockReloader`）——
+    /// 那个窗口是 **Dock 进程年龄**的函数，不是"我们记不记得自己重启过"的函数。
+    func startTime(of pid: pid_t) -> TimeInterval?
+}
+
+extension DockProcessControlling {
+    /// 替身默认拿不到启动时刻 → `DockReloader` 退回用内存里的 `lastRestartAt` 推算。
+    func startTime(of pid: pid_t) -> TimeInterval? { nil }
 }
 
 /// 真实实现。
@@ -107,6 +117,19 @@ struct RealDockProcessControl: DockProcessControlling {
         } catch {
             return false
         }
+    }
+
+    /// Dock 进程的启动时刻。实测 `proc_pidinfo(PROC_PIDTBSDINFO)` 返回 136 字节 = 结构体大小。
+    ///
+    /// 拿不到（进程已死、无权限、结构体尺寸对不上）就返回 nil —— 调用方会退回用内存里的记忆推算。
+    func startTime(of pid: pid_t) -> TimeInterval? {
+        guard pid > 0 else { return nil }
+        var info = proc_bsdinfo()
+        let size = MemoryLayout<proc_bsdinfo>.size
+        let written = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(size))
+        // 尺寸对不上说明结构体布局变了（跨系统版本），宁可返回 nil 也别读错字段。
+        guard written == Int32(size) else { return nil }
+        return TimeInterval(info.pbi_start_tvsec) + TimeInterval(info.pbi_start_tvusec) / 1_000_000
     }
 }
 
@@ -240,8 +263,30 @@ final class DockReloader {
                              spacingWait: spacingWait)
     }
 
-    /// 睡到距上次重启归位满 `minimumSpacing` 为止。返回实际等待时长。
+    /// 睡到 Dock 的「年龄」超过 `minimumSpacing` 为止。返回实际等待时长。
+    ///
+    /// **判据是 Dock 进程的真实年龄，不是我们自己的记忆。** 这是被验收实测逼出来的：
+    /// P4 验收里前一条用例刚重启完 Dock，紧接着 P3 用例新建了一个 `DockReloader`
+    /// （`lastRestartAt` 为 nil，它以为"从没重启过"），于是第一次重启直接被节流到
+    /// **1030 ms**，Dock 消失了一秒多。
+    ///
+    /// 教训：launchd 的节流是**按服务**算的，与我们记不记得自己重启过无关。
+    /// 所以"别人刚重启过 Dock"（用户 `killall Dock`、别的 App、我们的存活监视器 `kickstart`）
+    /// 同样会让我们的下一次重启变慢。按进程年龄算就把这些情况全覆盖了。
+    ///
+    /// 拿不到启动时刻（替身进程、跨系统版本结构体变化）才退回内存里的 `lastRestartAt`。
     private func waitForSpacing() async -> TimeInterval {
+        let spacing = Self.seconds(minimumSpacing)
+
+        if let pid = process.dockPID(), pid > 0, let startedAt = process.startTime(of: pid) {
+            let age = Date().timeIntervalSince1970 - startedAt
+            let remaining = spacing - age
+            guard remaining > 0.001 else { return 0 }
+            let started = Date()
+            try? await Task.sleep(for: .seconds(remaining))
+            return Date().timeIntervalSince(started)
+        }
+
         guard let last = lastRestartAt else { return 0 }
         let target = last + minimumSpacing
         let remaining = ContinuousClock.now.duration(to: target)
@@ -249,6 +294,12 @@ final class DockReloader {
         let started = Date()
         try? await Task.sleep(for: remaining)
         return Date().timeIntervalSince(started)
+    }
+
+    /// `Duration` → 秒。只用于和 `Date` 的墙钟做差，不参与计时精度敏感的地方。
+    private static func seconds(_ duration: Duration) -> TimeInterval {
+        TimeInterval(duration.components.seconds)
+            + TimeInterval(duration.components.attoseconds) / 1e18
     }
 
     /// 轮询等待一个**不同于** `oldPID` 的 Dock 进程出现。

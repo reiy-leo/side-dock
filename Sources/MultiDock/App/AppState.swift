@@ -84,12 +84,34 @@ final class AppState {
     /// 监视真实 Dock 上的人工改动（P3）。`autoCaptureUserEdits` 关闭时不创建。
     private(set) var dockWatcher: DockWatcher?
 
+    // MARK: - 无痕与自愈（P4）
+
+    /// 启动自检发现「上次没走完还原」时置上，由 `scheduleSelfHealIfNeeded` 消费。
+    private(set) var pendingSelfHeal: BaselineStore.SessionMarker?
+    /// 本次运行是否真的自动还原过。设置页与调试面板显示这句话。
+    private(set) var selfHealSummary: String?
+    /// Dock 存活监视。Dock 被外部弄死（`kill -9`、崩溃）时拉回来。
+    private(set) var dockPresenceMonitor: DockPresenceMonitor?
+    /// `mru-spaces` 的真实值。nil = 本机没有这个键（UI 显示为不支持，不做假开关）。
+    private(set) var mruSpaces: Bool?
+    /// 历史备份列表，最新在前（设置页「备份与还原」）。
+    private(set) var backups: [BaselineStore.BackupEntry] = []
+    /// 登录启动的当前状态描述。
+    private(set) var loginItemStatus = "未检查"
+
+    /// 本次启动是否欠着一次自愈还原。`LifecycleController` 靠它把"还欠一次还原"写进新会话标记。
+    var hasPendingSelfHeal: Bool { pendingSelfHeal?.impliesDirtyDock == true }
+
     /// 由 `AppDelegate` 接到 `LifecycleController.noteDockApplied`，把"改过 Dock"记进会话标记。
     var onDockApplied: (@MainActor (String) -> Void)?
 
     private let configStore: ConfigStore
     private let baselineStore: BaselineStore
+    /// 测试注入的存活监视器。为 nil 时 `startDockPresenceMonitor` 自己造一个真的。
+    private let injectedPresenceMonitor: DockPresenceMonitor?
     private let maxLogEntries = 400
+    /// 自愈任务。留着句柄有两个用处：保证只发起一次；退出前可以等它跑完。
+    private var selfHealTask: Task<Void, Never>?
 
     /// 依赖全部可注入：`DockController`、两个 Store、以及空间提供者都能换成测试替身，
     /// 这样「立即应用 / 还原 / 切桌面预应用」这几条路径不必真的动用户的 Dock 也能测。
@@ -99,7 +121,8 @@ final class AppState {
         dockController: DockController = DockController(),
         configStore: ConfigStore = ConfigStore(),
         baselineStore: BaselineStore = BaselineStore(),
-        provider: (any SpaceProviding)? = nil
+        provider: (any SpaceProviding)? = nil,
+        presenceMonitor: DockPresenceMonitor? = nil
     ) {
         let provider = provider ?? SpaceProviderFactory.make()
         spaceProviderAvailable = provider.isAvailable
@@ -109,6 +132,7 @@ final class AppState {
         self.dockController = dockController
         self.configStore = configStore
         self.baselineStore = baselineStore
+        self.injectedPresenceMonitor = presenceMonitor
         observer.onActiveSpaceChanged = { [weak self] space in
             guard let self else { return }
             if let space {
@@ -293,6 +317,8 @@ final class AppState {
 
         runStartupSelfCheck()
         loadConfiguration()
+        refreshLoginItemStatus()
+        refreshBackups()
 
         // 把"此刻真实 Dock 的内容"记成已应用状态：如果它已经等于要应用的那份配置，
         // 下面的自动应用就会被指纹短路，启动时不会白重启一次 Dock。
@@ -310,12 +336,30 @@ final class AppState {
         }
 
         startDockWatcher()
+        startDockPresenceMonitor()
+        // 自愈必须放在最后：它要走还原链路（写偏好 + 重启 Dock），
+        // 得等观察器、watcher、监视器都就位，否则还原完它们才启动，状态会错。
+        scheduleSelfHealIfNeeded()
     }
 
     func stop() {
         observer.stop()
         dockWatcher?.stop()
+        dockPresenceMonitor?.stop()
         append(.info, "桌面观察已停止")
+    }
+
+    /// 退出前的准备工作：停掉会跟还原抢写入的监视器，并等所有排队的应用跑完。
+    ///
+    /// **这一步不能省**。`DockController.request` 是异步排队的：如果还原之前还有一笔待办
+    /// 没落地，它会在还原**之后**才写进去 —— 用户看到的结果是"退出时还原了，Dock 却还是错的"。
+    func prepareForTermination() async {
+        dockWatcher?.stop()
+        dockPresenceMonitor?.stop()
+        // 自愈可能正在写偏好。先等它落地，否则两笔写入互相覆盖，
+        // 结果取决于谁后写完 —— 那是不可复现的错乱。
+        await waitForSelfHeal()
+        await dockController.waitForIdle()
     }
 
     /// 启动自检：残留会话标记 + 基准快照（计划 §3.9 的固定顺序）。
@@ -323,7 +367,9 @@ final class AppState {
         if let stale = baselineStore.detectInterruptedSession() {
             interruptedSession = stale
             if stale.impliesDirtyDock {
-                append(.warning, "上次未正常退出（PID \(stale.pid)），Dock 可能未还原 —— 自动还原将在 P4 提供")
+                // 不在这里还原：还原要写偏好 + 重启 Dock，得等观察器与监视器都就位。
+                pendingSelfHeal = stale
+                append(.warning, "上次未正常退出（PID \(stale.pid)），Dock 可能没还原 —— 启动后自动还原")
             } else {
                 append(.info, "发现上次未正常退出的残留标记，但上次未改动过 Dock，无需还原")
             }
@@ -419,6 +465,8 @@ final class AppState {
             append(.warning, "本机 Dock 域里没有这些键，对应设置将不可用："
                 + unavailableAppearanceKeys.sorted().joined(separator: "、"))
         }
+        // mru-spaces 走同一个注入点，测试里不会读到真实系统的偏好域。
+        mruSpaces = dockController.readMRUSpaces()
     }
 
     /// 编辑器专用：只改内存，不落盘。
@@ -566,6 +614,113 @@ final class AppState {
         case .failed:
             append(.error, "Dock 应用失败：\(outcome.summary)")
         }
+    }
+
+    // MARK: - 无痕与自愈（P4）
+
+    /// 启动自愈：上次被强杀/崩溃留下的残留标记，意味着真实 Dock 可能还停在我们写下的配置上。
+    /// 启动后把它还原回基准，并给用户一个看得见的提示（toast + 日志）。
+    private func scheduleSelfHealIfNeeded() {
+        guard selfHealTask == nil, let stale = pendingSelfHeal, stale.impliesDirtyDock else { return }
+        selfHealTask = Task { [weak self] in await self?.performSelfHeal(stale) }
+    }
+
+    /// 等自愈跑完。退出流程与测试都要用 —— 不等的话，自愈的写入会和退出还原的写入互相覆盖。
+    func waitForSelfHeal() async {
+        await selfHealTask?.value
+    }
+
+    /// 自愈还原。独立成方法而不是塞进 `Task` 闭包，是为了能单测。
+    ///
+    /// 失败**不清债务**：会话标记里的 `needsSelfHeal`（由 `LifecycleController.beginSession`
+    /// 从 `hasPendingSelfHeal` 继承）会留到下次启动继续重试；退出时也会再走一遍还原链路。
+    func performSelfHeal(_ stale: BaselineStore.SessionMarker) async {
+        append(.warning, "开始自愈还原：上次（PID \(stale.pid)）没走完退出还原")
+        let outcome = await restoreToBaseline()
+        pendingSelfHeal = nil
+
+        guard let outcome else {
+            selfHealSummary = "自愈还原失败（读不到基准快照）"
+            append(.error, "自愈还原失败：读不到基准快照 \(baselineStore.baselineURL.path)")
+            return
+        }
+        switch outcome.result {
+        case .applied:
+            selfHealSummary = "已自动还原上次未还原的 Dock"
+            append(.info, "自愈还原完成：\(outcome.summary)")
+            toastPresenter?.announce("已自动还原上次未还原的 Dock")
+        case .skippedIdentical:
+            selfHealSummary = "Dock 已与原始状态一致，无需还原"
+            append(.info, "自愈检查：真实 Dock 已经与基准一致，不用动它")
+        case .failed:
+            selfHealSummary = "自愈还原失败，请手动还原"
+            append(.error, "自愈还原失败，请到设置页点「立即还原到原始 Dock」")
+        }
+    }
+
+    /// Dock 存活监视（P4 验收第 4 条）。Dock 被外部弄死时拉回来。
+    private func startDockPresenceMonitor() {
+        // 注入的监视器带着自己的日志出口（测试用），不要在这里覆盖它。
+        let monitor = injectedPresenceMonitor ?? DockPresenceMonitor { [weak self] message in
+            self?.append(.warning, message)
+        }
+        dockPresenceMonitor = monitor
+        monitor.start()
+    }
+
+    /// 「根据最近使用自动重排空间」。**只在用户主动点开关时调用**，不静默修改（计划 §1 风险项）。
+    func setMRUSpaces(_ enabled: Bool) {
+        let previous = mruSpaces
+        guard dockController.writeMRUSpaces(enabled) else {
+            mruSpaces = dockController.readMRUSpaces()
+            append(.error, "写 mru-spaces 失败（可能被系统策略锁住），保持原值")
+            return
+        }
+        mruSpaces = enabled
+        append(.info, "mru-spaces：\(previous.map(String.init) ?? "未知") → \(enabled)")
+        // 这个键不在白名单里，`apply` 管不到它 —— 只能单独重启一次 Dock 让它生效。
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await self.dockController.reloadOnly(strategy: self.settings.reloadStrategy)
+            self.append(.info, "mru-spaces 生效重载：\(outcome.description)")
+        }
+    }
+
+    /// 刷新历史备份列表（设置页打开时调）。
+    func refreshBackups() {
+        backups = baselineStore.listBackups()
+    }
+
+    /// 恢复某份历史备份。
+    ///
+    /// **只写白名单键**，不做整域替换。理由：我们自己从来只碰白名单键，备份里白名单之外的键
+    /// （热角、启动台网格……）与我们无关；整域替换反而会把用户后来改过的那些设置一并冲回旧值，
+    /// 那才是真的破坏。需要整域恢复的场景（Dock 被别的东西改坏了）在 README 里给了做法。
+    func restoreBackup(_ entry: BaselineStore.BackupEntry) {
+        let domain = baselineStore.readBackup(at: entry.url)
+        guard !domain.isEmpty else {
+            append(.error, "备份 \(entry.fileName) 读不出来或已损坏，未做任何改动")
+            return
+        }
+        let config = DockConfig.read(from: domain)
+        append(.info, "恢复备份 \(entry.fileName)：\(config.pinnedApps.count) 个图标")
+        applyDock(config, reason: "恢复备份 \(entry.fileName)")
+    }
+
+    /// 登录启动状态（设置页显示）。真正的注册/注销在 `LoginItem`。
+    func refreshLoginItemStatus() {
+        loginItemStatus = LoginItem.statusDescription()
+    }
+
+    /// 开/关登录启动。用户主动点开关才会走到这里。
+    func setLoginItemEnabled(_ enabled: Bool) {
+        do {
+            let how = enabled ? try LoginItem.enable() : try LoginItem.disable()
+            append(.info, "登录启动：\(enabled ? "开启" : "关闭") —— \(how)")
+        } catch {
+            append(.error, "登录启动设置失败：\(error.localizedDescription)")
+        }
+        refreshLoginItemStatus()
     }
 
     // MARK: - 桌面命名（计划 §3.10）

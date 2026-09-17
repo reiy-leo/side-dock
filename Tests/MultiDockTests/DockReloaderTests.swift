@@ -272,4 +272,97 @@ final class DockReloaderTests: XCTestCase {
         XCTAssertLessThan(secondWall, firstWall + 0.1,
                           "第二次多等了：第一次 \(Int(firstWall * 1000)) ms，第二次 \(Int(secondWall * 1000)) ms")
     }
+
+    // MARK: - 节流窗口按 **Dock 进程年龄** 算（P4 验收踩出来的回归）
+
+    /// 回归护栏，来自一次真实验收失败：
+    ///
+    /// P4 验收里前一条用例刚重启完 Dock，紧接着 P3 用例**新建了一个 `DockReloader`**
+    /// （`lastRestartAt` 为 nil，它以为自己从没重启过），于是第一次重启直接被 launchd
+    /// 节流到 **1030 ms** —— Dock 当着用户的面消失了一秒多。
+    ///
+    /// 教训：launchd 的节流是**按服务**算的，与我们记不记得自己重启过无关。
+    /// 判据必须落在 Dock 进程的真实年龄上。这条测试用一个"刚起来 50 ms"的替身来钉住它。
+    func testFreshReloaderStillWaitsWhenTheDockIsYoung() async {
+        let process = FakeDockProcess(
+            restartsOn: [SIGHUP],
+            startTime: Date().timeIntervalSince1970 - 0.05
+        )
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(200),
+            pollInterval: .milliseconds(2),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .milliseconds(300)
+        )
+
+        let outcome = await reloader.reload(strategy: .auto)
+
+        XCTAssertEqual(outcome.method, .sighup)
+        XCTAssertGreaterThan(
+            outcome.spacingWait, 0.15,
+            "Dock 才起来 50 ms，必须等掉剩下的约 250 ms；实际只等了 \(Int(outcome.spacingWait * 1000)) ms"
+        )
+    }
+
+    func testOldDockIsNotWaitedFor() async {
+        // Dock 已经跑了 10 分钟 → 早就过了节流窗口，一次都不该等。
+        let process = FakeDockProcess(
+            restartsOn: [SIGHUP],
+            startTime: Date().timeIntervalSince1970 - 600
+        )
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(200),
+            pollInterval: .milliseconds(2),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .milliseconds(300)
+        )
+
+        let outcome = await reloader.reload(strategy: .auto)
+
+        XCTAssertEqual(outcome.method, .sighup)
+        XCTAssertEqual(outcome.spacingWait, 0)
+    }
+
+    func testProcessAgeWinsOverStaleInMemoryWindow() async {
+        // 内存里记着"刚重启过"（第一次是我们自己重启的），但真实 Dock 已经跑了 10 分钟
+        // —— 以进程年龄为准，不该再等。这条守的是"别把内存当成事实"。
+        let process = FakeDockProcess(
+            restartsOn: [SIGHUP],
+            startTime: Date().timeIntervalSince1970 - 600
+        )
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(200),
+            pollInterval: .milliseconds(2),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .milliseconds(300)
+        )
+
+        _ = await reloader.reload(strategy: .auto)
+        // 刚归位的 Dock 在内存里把窗口打开了，但替身报告的启动时刻说它早就老了。
+        let second = await reloader.reload(strategy: .auto)
+
+        XCTAssertEqual(second.spacingWait, 0,
+                       "拿得到进程年龄时，就该以年龄为准，别再等内存里那个窗口")
+    }
+
+    func testFallsBackToMemoryWhenProcessAgeIsUnavailable() async {
+        // 拿不到启动时刻（替身、跨系统版本结构体变化）→ 退回内存里的 `lastRestartAt`。
+        let process = FakeDockProcess(restartsOn: [SIGHUP])   // 不报告启动时刻
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(200),
+            pollInterval: .milliseconds(2),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .milliseconds(120)
+        )
+
+        let first = await reloader.reload(strategy: .auto)
+        XCTAssertEqual(first.spacingWait, 0)
+
+        let second = await reloader.reload(strategy: .auto)
+        XCTAssertGreaterThan(second.spacingWait, 0.05, "拿不到年龄时必须靠内存里的窗口兜住")
+    }
 }

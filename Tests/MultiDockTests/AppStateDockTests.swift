@@ -8,40 +8,7 @@ import XCTest
 @MainActor
 final class AppStateDockTests: XCTestCase {
 
-    // MARK: - 替身
-
-    private final class FakePreferences: DockPreferenceAccessing, @unchecked Sendable {
-        private let lock = NSLock()
-        private var domain: [String: PlistValue]
-        private var writes = 0
-        private var history: [[String: PlistValue]] = []
-        /// 与 `FakeSpaceProvider` 共用的顺序记录。
-        var events: Box<[String]>?
-
-        init(domain: [String: PlistValue], events: Box<[String]>? = nil) {
-            self.domain = domain
-            self.events = events
-        }
-
-        func readDomain() -> [String: PlistValue] { lock.withLock { domain } }
-
-        @discardableResult
-        func writeWhitelisted(_ entries: [String: PlistValue]) -> Int {
-            let count = lock.withLock {
-                writes += 1
-                history.append(entries)
-                for (key, value) in entries where DockPreferences.whitelistedKeys.contains(key) {
-                    domain[key] = value
-                }
-                return entries.count
-            }
-            events?.value.append("write")
-            return count
-        }
-
-        var writeCount: Int { lock.withLock { writes } }
-        var lastEntries: [String: PlistValue]? { lock.withLock { history.last } }
-    }
+    // 偏好域替身 `FakePreferences` 已移到 `TestSupport.swift`（`StartupSelfHealTests` 共用）。
 
     private func baseDomain() -> [String: PlistValue] {
         [
@@ -379,7 +346,10 @@ final class AppStateDockTests: XCTestCase {
         defer { state.stop() }
         let lifecycle = LifecycleController(state: state, baselineStore: stores.1)
         lifecycle.applicationDidFinishLaunching()
-        lifecycle.restoreHandler = { XCTFail("没改过 Dock 就不该触发还原") }
+        lifecycle.restoreHandler = {
+            XCTFail("没改过 Dock 就不该触发还原")
+            return nil
+        }
 
         XCTAssertFalse(lifecycle.sessionChangedDock)
         // 用户可能在运行期间自己拖过图标；此时"还原"会把他的改动一起抹掉。
@@ -410,7 +380,10 @@ final class AppStateDockTests: XCTestCase {
         let lifecycle = LifecycleController(state: state, baselineStore: stores.1)
         lifecycle.applicationDidFinishLaunching()
         lifecycle.noteDockApplied(fingerprint: "fp-1")
-        lifecycle.restoreHandler = { XCTFail("开关关掉就不该还原") }
+        lifecycle.restoreHandler = {
+            XCTFail("开关关掉就不该还原")
+            return nil
+        }
 
         XCTAssertTrue(lifecycle.shouldTerminate())
         XCTAssertTrue(state.log.contains { $0.message.contains("已关闭退出还原") })

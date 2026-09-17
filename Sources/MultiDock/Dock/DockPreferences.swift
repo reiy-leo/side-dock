@@ -112,4 +112,31 @@ enum DockPreferences {
         for (key, value) in readDomain() { payload[key] = value.anyValue }
         return try? PropertyListSerialization.data(fromPropertyList: payload, format: .xml, options: 0)
     }
+
+    // MARK: - 白名单之外：唯一的两个例外
+
+    /// 「根据最近使用自动重新排列空间」。本机默认 `1`（开），会打乱桌面顺序、
+    /// 破坏「切到下一个桌面」的直觉（`docs/PLAN.md` §1 的当前风险项）。
+    static let mruSpacesKey = "mru-spaces"
+
+    /// 读 `mru-spaces`。域里没有这个键时返回 nil —— UI 据此显示"本机不支持"，而不是做一个没反应的开关。
+    static func readMRUSpaces() -> Bool? {
+        readDomain()[mruSpacesKey]?.boolValue
+    }
+
+    /// 写 `mru-spaces`。
+    ///
+    /// ⚠️ **这是白名单之外唯一的写入路径**，刻意只认这一个键，而不是开放一个
+    /// `writeExplicit(key:value:)` 通用口子 —— 通用口子迟早会被误用到热角、启动台网格、
+    /// `recent-apps` 上，那些键改坏了用户是能感觉到的。要再加键，请再加一个同样窄的方法。
+    ///
+    /// 只在设置页的显式开关里调用（用户主动点击才改）。调用方负责重启 Dock 让改动生效。
+    @discardableResult
+    static func writeMRUSpaces(_ enabled: Bool) -> Bool {
+        let payload: CFDictionary = [mruSpacesKey: PlistValue.bool(enabled).anyValue] as CFDictionary
+        CFPreferencesSetMultiple(payload, nil, domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+        CFPreferencesAppSynchronize(domain)
+        // 读回确认。写不进去（例如被 MDM 管住）时返回 false，UI 才能如实报错而不是假装成功。
+        return readMRUSpaces() == enabled
+    }
 }

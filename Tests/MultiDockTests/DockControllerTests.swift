@@ -51,6 +51,13 @@ final class DockControllerTests: XCTestCase {
             lock.withLock { entriesHistory.reduce(into: Set<String>()) { $0.formUnion($1.keys) } }
         }
         var snapshot: [String: PlistValue] { lock.withLock { domain } }
+
+        /// `mru-spaces` 是白名单之外的唯一例外，替身里照样只改这一个键。
+        @discardableResult
+        func writeMRUSpaces(_ enabled: Bool) -> Bool {
+            lock.withLock { domain[DockPreferences.mruSpacesKey] = .bool(enabled) }
+            return true
+        }
     }
 
     /// 模拟 Dock 进程。

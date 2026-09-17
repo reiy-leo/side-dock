@@ -140,6 +140,17 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        // 手动还原：自愈失败或用户自己拖乱了 Dock 时的出口。与设置页那个按钮同一条路径。
+        let restore = NSMenuItem(
+            title: "立即还原到原始 Dock",
+            action: #selector(restoreToBaseline),
+            keyEquivalent: ""
+        )
+        restore.target = self
+        menu.addItem(restore)
+
+        menu.addItem(.separator())
+
         let debug = NSMenuItem(title: "调试面板…", action: #selector(openDebugPanel), keyEquivalent: "d")
         debug.target = self
         menu.addItem(debug)
@@ -166,6 +177,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func goNextDesktop() { state.switchToNextDesktop() }
     @objc private func resetFromLiveDock() { state.resetActiveDesktopConfigFromLiveDock() }
     @objc private func refreshDesktops() { state.refreshDesktops() }
+    @objc private func restoreToBaseline() { state.restoreToBaselineNow() }
     @objc private func openDebugPanel() { onOpenDebugPanel?() }
     @objc private func openSettings() { onOpenSettings?() }
     @objc private func quit() { onQuit?() }
