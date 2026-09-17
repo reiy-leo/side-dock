@@ -133,7 +133,7 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | toast 验收工具 | `scripts/check-toast-window.sh` | 用 `CGWindowListCopyWindowInfo` 读窗口元数据（零权限），`--watch` 报告出现/消失时刻 |
 | P0 实验脚本 | `scripts/spike-*.{sh,swift}` | 重载策略 / 切桌面 / 停机时长 / 探测（含显示器 UUID 映射） |
 | 打包脚本 | `scripts/build-app.sh` | 编译 → 组装 `.app` → ad-hoc 签名 |
-| 测试 | `Tests/MultiDockTests/` | **233 个测试，全绿**（其中 4 个真实 Dock 验收默认跳过，需显式开启） |
+| 测试 | `Tests/MultiDockTests/` | **239 个测试，全绿**（其中 4 个真实 Dock 验收默认跳过，需显式开启） |
 | 设计文档 | `docs/PLAN.md` | 已按 P0 结论修订 |
 | 实验结论 | `docs/spikes.md` | 5 个实验的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现**） |
 
@@ -186,7 +186,23 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 
 ### 未完成（计划里已定义、代码里还没有）
 
-- P5：多显示器 / 热插拔、全屏过滤回归、README（含完全卸载与还原步骤）。
+**P5（整段未开始）**
+
+- 多显示器 / 热插拔回归、全屏过滤回归、**README 重写**（含完全卸载与还原步骤）。
+
+**散落在计划各处、代码里确实没有的（2026-09-18 全量核对得出，见 §6.3 B11–B14）**
+
+| # | 缺什么 | 计划出处 |
+| --- | --- | --- |
+| B11 | **README 仍停在 P1 状态** —— 写着"P0 与 P1 已完成""还不能改 Dock"，卸载节自认"P5 再补"。与代码严重脱节 | `docs/PLAN.md` §2 文件树注释、§4 P5 |
+| B12 | **编辑条竖排**：`orientation` 改成 left/right 后图标条仍固定横排 | `docs/PLAN.md` §3.6 第 5 条 |
+| B13 | **孤儿绑定**：桌面被系统删除/重排后，绑定既不清理也不提示，会一直堆在 `config.json` | `docs/PLAN.md` §5 最后一行 |
+| B14 | **`DockWatcher` 回存前不存历史版本**，直接覆盖（备份轮转只覆盖写 Dock 那一刻，回存只改 config 不写 Dock，兜不住） | `docs/PLAN.md` §3.8 结尾、§5 |
+
+**另两处"做了但没做全"（优先级低）**
+
+- **Dock 拉不回时没有 UI 提示**：`DockPresenceMonitor` 拉回失败只记日志「会继续重试」，计划要求"仍异常则提示从备份恢复"。见 `docs/PLAN.md` §3.9 第 3 条。
+- **降级报警只进日志和调试面板**：`AppState.spaceProviderWarning` 没有在设置窗口顶部显示横幅。计划要求"在 UI 明确报警"。见 `docs/PLAN.md` §3.1 末段。
 
 ### 下一步：P5（收尾）
 
@@ -275,7 +291,7 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 
 ```bash
 swift build -c release --disable-sandbox   # 编译
-swift test --disable-sandbox               # 233 个测试（含 4 个默认跳过的真实 Dock 验收）
+swift test --disable-sandbox               # 239 个测试（含 4 个默认跳过的真实 Dock 验收）
 ./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
 open build/MultiDock.app                   # 运行（必须在 .app 里跑，菜单栏图标才正常）
 ./scripts/check-toast-window.sh --watch 12 # 客观验收 toast（零权限，读窗口元数据）
@@ -363,6 +379,10 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | B8 | **手动移除 Finder 是否落键**未验证 | 若有新键需纳入白名单 | 可选，30 秒。步骤见 `docs/spikes.md` 实验 3，风险低 |
 | B9 | **注销/关机路径只能尽力还原**（系统不给等待时间） | 关机瞬间可能来不及写完基准 | 已按"先留债务标记、下次启动自愈"处理，见 §3 的 P4 第 9 条。真要验证得注销一次机器 |
 | B10 | **登录启动的 LaunchAgent 退回方案没在真机跑过**（本机 SMAppService 那条路没触发过退回） | 未签名场景下可能开了没用 | 需要真的重登录一次验证。逻辑侧只有 plist 内容有单测 |
+| B11 | **README 还停在 P1 状态**（2026-09-18 全量核对发现）：仍写"P0 与 P1 已完成""还不能改 Dock"，卸载节自认"P5 再补" | 用户照 README 操作会得到错误信息 | **P5 第一件事**。要写：完全卸载三步、用基准/备份还原 `com.apple.dock` 的精确命令、P2–P4 已有能力 |
+| B12 | **编辑条竖排未实现**：`orientation` = left/right 时图标条仍固定横排 | 位置改成左/右后，编辑条与实际 Dock 长得不一样 | P5，纯 UI，改动局限在 `UI/DockStripEditor.swift` |
+| B13 | **孤儿绑定不清理也不提示**：桌面被系统删除/重排后，`DesktopBinding` 永久留在 `config.json` | 配置越积越多、看不出哪些还有效 | P5。建议：设置页给"清理无效绑定"入口，或对当前桌面列表里不存在的绑定标灰 |
+| B14 | **`DockWatcher` 回存前不存历史版本**：直接覆盖目标配置 | 用户手改被误判时，旧配置找不回来 | P5 或不做。备份轮转兜不住（回存只改 config、不写 Dock，不触发备份） |
 | **C. 参数与取舍（记录在案）** | | | |
 | C1 | **`DockWatcher` 轮询周期 2 s 是拍的**，没有实测依据 | 用户手动改 Dock 后最长 2 s 才被回存 | 按用户体感调 |
 | C2 | **一次切换的应用总耗时约 1 秒**（其中 Dock 只消失 45–90 ms，其余是主动错开节流的等待） | 切桌面后 Dock 配置生效有一秒延迟，但期间 Dock 可用 | 按"宁等不闪"处理，见 §6.1 第 6 条 |
@@ -408,6 +428,33 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-09-18（第 8 次）— 全量核对「文档/计划 vs 代码」，列出未实现清单
+
+**做了什么**（用户：「检查文档和计划中还有哪些没有实现的」）：
+
+- **只读核对，没写业务代码**。把 `docs/PLAN.md` 与 `AGENTS.md` 的每一条承诺逐条对到代码上（`grep` + 读源文件），
+  产出「未完成清单」，结论见 §3 的「未完成」段与 §6.3 的 **B11–B14**。
+- 结论分四类：
+  1. **P5 整段未开始**（README 重写 / 多显示器热插拔回归 / 全屏过滤回归）—— 与 §3 原有记录一致。
+  2. **散落的 4 条实现缺口**（新发现，已补进 §6.3）：B11 README 停在 P1、B12 编辑条竖排、
+     B13 孤儿绑定不清理不提示、B14 `DockWatcher` 回存不存历史版本。
+  3. **两处"做了但没做全"**（已在 §3 记录）：Dock 拉不回时缺 UI 提示（PLAN §3.9 第 3 条）、
+     降级报警没进设置页（PLAN §3.1 末段，现在只在日志 + 调试面板）。
+  4. **已确认实现、不用再查的**：`NSOpenPanel`「添加到 Dock」、桌面页「复制默认到本桌面」/「重置为默认」/
+     「从当前真实 Dock 抓取」/「刷新桌面列表」、备份恢复 UI、`mru-spaces` 开关、登录启动、
+     `DockPresenceMonitor` 的 `kickstart` 拉回、toast 的 `displayUUID → NSScreen` 映射与回落。
+- **文档错漏已修**：
+  - 测试数 **233 → 239**（§3 表格与 §5 构建命令两处，实际 `grep func test` 就是 239）。
+  - `docs/PLAN.md` §3.8 引用的「`AGENTS.md` §6.3 B3」**编号不存在**（B 组已从 B5 起）→ 改为 B14。
+  - §3「未完成」段从一行扩成完整清单。
+
+**未解决 / 交给下一个 session**：
+
+- **P5 仍是空白**，且 **B11（README）是里面最该先做的** —— 现在 README 会误导用户。
+- B12 / B13 / B14 三条要不要做、做到什么程度，等用户拍板（都不是阻塞项）。
+- §6.3 **A 组 5 条手测（A1–A5）一次都没做过**，A4 是 `DockWatcher` 回存路径的唯一真实检验。
+- B9（注销/关机）、B10（LaunchAgent 退回）需要真的注销/重登录一次。
 
 ### 2026-09-18（第 7 次）— 完成 P4：无痕与自愈（**顺带修正了节流窗口的判据**）
 
