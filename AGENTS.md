@@ -94,7 +94,10 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 
 ## 3. 当前进度
 
-**P0（实验）、P1（骨架 + 识别 + 菜单栏）、P2.5（桌面命名 + 切换 toast）、P2（编辑条 + 应用）、P3（桌面页 + 自动切换）、P4（无痕与自愈）已完成并实测通过。下一步是 P5（收尾）。**
+**P0（实验）、P1（骨架 + 识别 + 菜单栏）、P2.5（桌面命名 + 切换 toast）、P2（编辑条 + 应用）、P3（桌面页 + 自动切换）、P4（无痕与自愈）、P5（收尾）已完成并实测通过。**
+
+> P5 里唯一还欠的是**多显示器热插拔的真机实测**（本机单显示器，必须用户插一台外接屏）。
+> 全屏过滤已经真机回归过了 —— 做法是**自己造一个全屏空间**，见 §4 与 `scripts/check-fullscreen-filter.swift`。
 
 > ⚠️ **从 P2 起，代码真的会改用户的 Dock 了。** 写路径已接线：设置页「立即应用」→ `DockController` → 写偏好 + 重启 Dock。无痕原则靠 `LifecycleController` 的退出还原 + 会话标记兜底（见 §3 的 P2 小节）。
 
@@ -120,6 +123,8 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | Dock 重载 | `Dock/DockReloader.swift` | `DockProcessControlling` 协议 + 真实实现；SIGHUP 主路径 → SIGTERM → `launchctl kickstart` 三级降级；**重启节流错开**（`minimumSpacing`）；**发信号前的安全闸门**（见 §4 的 `-1` 陷阱） |
 | 应用流水线 | `Dock/DockController.swift` | 指纹短路 → 备份 → 读全量域 → 只覆盖白名单键 → 原子写 → 重启 → 读回校验（**不一致重试一次**）；`request()` 带防抖合并；`comparableFingerprint` / `adoptLiveDockAsApplied` / `isApplying` |
 | 手动改动回存 | `Dock/DockWatcher.swift` | 轮询真实域的可比指纹，识别用户手动改动 → 回存到当前桌面的绑定（受开关控制）；**纯逻辑 + 注入式读写**，可脱离真实 Dock 单测 |
+| 回存撤销栈 | `Dock/DockEditHistory.swift` | 回存前的旧配置暂存（**内存**，每目标 5 层），供电桌面页/通用页的「撤销自动回存」。刻意不落盘，理由见 §3 的 P5 第 6 条 |
+| 全屏过滤回归脚本 | `scripts/check-fullscreen-filter.swift` | 把本进程自己的窗口切成全屏 → SkyLight 多出 `type=4` 空间 → 真机验证过滤。**零权限** |
 | 配置持久化 | `Store/ConfigStore.swift` | 原子写 `config.json` |
 | 基准快照 | `Store/BaselineStore.swift` | 基准 + 会话标记 + 备份轮转（保留 20 份） |
 | 菜单栏 | `UI/MenuBarController.swift` | `NSStatusItem`，区分左右键，标题显示当前桌面序号；下拉含桌面列表 / 下一个桌面 / **用当前 Dock 重置本桌面配置** / 刷新 / **立即还原到原始 Dock** / 调试面板 / 设置 / **退出并还原 Dock** |
@@ -133,7 +138,7 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | toast 验收工具 | `scripts/check-toast-window.sh` | 用 `CGWindowListCopyWindowInfo` 读窗口元数据（零权限），`--watch` 报告出现/消失时刻 |
 | P0 实验脚本 | `scripts/spike-*.{sh,swift}` | 重载策略 / 切桌面 / 停机时长 / 探测（含显示器 UUID 映射） |
 | 打包脚本 | `scripts/build-app.sh` | 编译 → 组装 `.app` → ad-hoc 签名 |
-| 测试 | `Tests/MultiDockTests/` | **239 个测试，全绿**（其中 4 个真实 Dock 验收默认跳过，需显式开启） |
+| 测试 | `Tests/MultiDockTests/` | **257 个测试，全绿**（其中 4 个真实 Dock 验收默认跳过，需显式开启） |
 | 设计文档 | `docs/PLAN.md` | 已按 P0 结论修订 |
 | 实验结论 | `docs/spikes.md` | 5 个实验的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现**） |
 
@@ -184,35 +189,48 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 8. **登录启动的状态属于系统**（`SMAppService` / LaunchAgent plist），**不存进 `config.json`** —— 本地再存一份迟早和系统不一致。非 `.app` 环境（`swift test`）里 `SMAppService.mainApp` 拿不到有效句柄，所以 `LoginItem.isAvailable` 先看 bundle，不可用就如实显示原因。
 9. **注销/关机这条路系统不给等待时间**，只能尽力：先把债务写进标记，再发起一次还原并等它跑完；没跑完的由下次启动自愈接手。**不要**改成"同步阻塞等还原"，那会拖住关机。
 
+### 已完成：P5（收尾）✅ 2026-09-18
+
+规格见 `docs/PLAN.md` §4 P5，验收证据见 §8 第 9 次记录。
+
+**实现要点（改动时别踩）**：
+
+1. **README 已整篇重写**（原先停在 P1 状态，会误导用户）。含完全卸载三步：退出还原 → 关登录项 → 删数据目录；
+   另给了 `defaults import baseline.plist` + `kill -HUP $(pgrep -x Dock)` 的整域还原，并写清它是**整域替换**（会把热角一起回退）。
+2. **显示器配置变化要重读桌面列表**（`AppState.handleScreenParametersChanged`，由 `AppDelegate` 接
+   `NSApplication.didChangeScreenParametersNotification`）。多显示器下 `displayUUID` 是映射键的一部分，
+   插拔之后不刷新就会串行。**只刷新、不主动应用 Dock** —— 屏幕变化瞬间活动空间还没定，交给 300 ms 轮询收敛。
+3. **全屏过滤已真机回归**：`scripts/check-fullscreen-filter.swift` 把**本进程的一个窗口切成全屏**
+   （零权限，这是自己的窗口），SkyLight 就会多出一个 `type=4` 空间，于是能真的验证过滤。见 §4 的实测结论。
+4. **编辑条竖排已实现**（`DockStripEditor.isVertical`）：`orientation != "bottom"` 时改成 `ScrollView(.vertical)` + `VStack`，
+   格子用 `SlotSizing` 定高。之前位置改成左/右后编辑条仍是横的，排序会看反。
+5. **孤儿绑定只提示、绝不自动清理**（`AppState.orphanedBindings` / `pruneOrphanedBindings`）。
+   ⚠️ **自动删是错的**：外接显示器被拔掉时，那台显示器上的桌面整体消失，绑定看着就是孤儿 —— 插回去还要用。
+   所以桌面页给横幅 + 「清理」按钮 + 二次确认。
+6. **回存历史用内存撤销栈，不落盘**（`Dock/DockEditHistory.swift`）。计划原文说"覆盖前存一份历史版本"，
+   落盘一堆没有恢复入口的文件是花架子 —— 用户翻到 `history/` 也用不上。真正要长期保命的是 `baseline.plist` 与 `backups/`。
+   回存要防的风险是"误判一次把配置写坏了"，一步撤销就够，所以做成 UI 上的「撤销自动回存」按钮（每个目标 5 层）。
+   撤销后 watcher 不会立刻再触发 —— 它只在真实 Dock 指纹变化时才回调，撤销改的是配置、没动 Dock。
+
 ### 未完成（计划里已定义、代码里还没有）
 
-**P5（整段未开始）**
-
-- 多显示器 / 热插拔回归、全屏过滤回归、**README 重写**（含完全卸载与还原步骤）。
-
-**散落在计划各处、代码里确实没有的（2026-09-18 全量核对得出，见 §6.3 B11–B14）**
-
-| # | 缺什么 | 计划出处 |
-| --- | --- | --- |
-| B11 | **README 仍停在 P1 状态** —— 写着"P0 与 P1 已完成""还不能改 Dock"，卸载节自认"P5 再补"。与代码严重脱节 | `docs/PLAN.md` §2 文件树注释、§4 P5 |
-| B12 | **编辑条竖排**：`orientation` 改成 left/right 后图标条仍固定横排 | `docs/PLAN.md` §3.6 第 5 条 |
-| B13 | **孤儿绑定**：桌面被系统删除/重排后，绑定既不清理也不提示，会一直堆在 `config.json` | `docs/PLAN.md` §5 最后一行 |
-| B14 | **`DockWatcher` 回存前不存历史版本**，直接覆盖（备份轮转只覆盖写 Dock 那一刻，回存只改 config 不写 Dock，兜不住） | `docs/PLAN.md` §3.8 结尾、§5 |
+- **多显示器热插拔的真机实测**：映射键 `(displayUUID, spaceUUID)`、插拔后自动刷新、toast 的 `displayUUID → NSScreen` 定位与回落
+  都已实现，但**本机只有一台显示器，必须用户插一台外接屏才能验**。见 §6.3 B5。
 
 **另两处"做了但没做全"（优先级低）**
 
 - **Dock 拉不回时没有 UI 提示**：`DockPresenceMonitor` 拉回失败只记日志「会继续重试」，计划要求"仍异常则提示从备份恢复"。见 `docs/PLAN.md` §3.9 第 3 条。
 - **降级报警只进日志和调试面板**：`AppState.spaceProviderWarning` 没有在设置窗口顶部显示横幅。计划要求"在 UI 明确报警"。见 `docs/PLAN.md` §3.1 末段。
 
-### 下一步：P5（收尾）
+### 下一步：P5 已做完，只剩多显示器真机实测
 
-`docs/PLAN.md` §4 的 P5 行只有两条，但建议按这个顺序做：
+P5 的三条都已落地（README ✅、全屏过滤真机回归 ✅、多显示器加固 ✅），详见 §3 的「已完成：P5」。
+剩下的只有一条，而且**只能用户动手**：
 
-1. **README**（最该先做）：完整安装、使用、**完全卸载与还原**三步。用户要能把 Dock 彻底恢复原样 ——
-   `./scripts/build-app.sh` 装了什么、`defaults import com.apple.dock /tmp/…` 怎么还原、`~/Library/Application Support/MultiDock/` 删什么。
-2. **多显示器 / 热插拔回归**：`(displayUUID, spaceUUID)` 映射在插拔外接显示器后不能串。
-   本机是单显示器，**这条只能靠用户插拔外接屏实测**，别硬编造结论。toast 的 `displayUUID` → `NSScreen` 映射已有回落 `NSScreen.main`。
-3. **全屏过滤回归**：全屏 App 空间不触发 Dock 切换（`type != 0` 过滤），P1 单测覆盖过，P5 用真实全屏 App 再走一遍。
+1. **多显示器 / 热插拔实测**（§6.3 B5）：`(displayUUID, spaceUUID)` 映射在插拔外接显示器后不能串。
+   本机是单显示器，**这条只能靠用户插一台外接屏实测**，别硬编造结论。
+   核对手段已备好：调试面板显示「显示器数量」和每个桌面的 `displayUUID` 前 8 位；
+   插拔后 App 会自动刷新桌面列表并记一条 `显示器配置变化：桌面列表已刷新（N → M 个）`。
 
 ### 用户必须手测的 5 条（无法脚本化，见 §6.3 A 组）
 
@@ -271,7 +289,8 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | **写偏好会不会污染别的键：不会** | `CFPreferencesSetMultiple` + 全量域读回 + 只覆盖白名单键，实测 `mru-spaces` / `wvous-*` / `mod-count` / `recent-apps` 全部原样 |
 | **`plutil -p` 比对长数组会错位** | 用 `diff` 比对 `plutil -p` 导出的文本时，数组元素行数不同会导致后面整体错位，产生**假差异**。要判断"成员/顺序变了"就抽出标签序列比，要判断"值变了"就用 `PlistValue` 结构比较（验收测试里 `differences(between:and:)` 就是这么做的） |
 | **测试窗口期内别手动改 Dock** | 实测踩过：验收跑到一半 Dock 被外部改动（`persistent-others` 从 4 项变 1 项），"还原后仍有差异"报了假失败 |
-| 多显示器空间 | `com.apple.spaces spans-displays` 不存在 → 默认"显示器各自独立空间"，映射键需 `(displayUUID, spaceUUID)` |
+| **全屏过滤的真机回归（2026-09-18 实测通过）** | 用 `scripts/check-fullscreen-filter.swift` **把本进程自己的一个窗口切成全屏**（零权限）→ SkyLight 多出一个 **`type=4`、id64=537** 的空间，活动 id64 从 6 变成 537。实测：① 它**没有**被算进用户桌面（type=0 仍是 2 个）；② 活动空间**不再命中**任何用户桌面 → `SpaceObserver` 返回 nil；③ 退出全屏后空间数与活动桌面都回到原样。MultiDock 日志同步印证：`活动空间不是用户桌面（可能是全屏 App），不触发切换`，且从全屏退回桌面**没有**弹 toast。**做法记住**：不用辅助功能也能造出全屏空间 —— 切自己的窗口就行 |
+| 多显示器空间 | `com.apple.spaces spans-displays` 不存在 → 默认"显示器各自独立空间"，映射键需 `(displayUUID, spaceUUID)`。**插拔外接屏后必须重读桌面列表**（已接 `NSApplication.didChangeScreenParametersNotification`）；本机单显示器，真机验证仍需用户插屏 |
 | **`SMAppService.mainApp` 只在 `.app` 里可用** | `swift test` / `swift run` 的进程不是 bundle（`Bundle.main.bundlePath` 不以 `.app` 结尾），拿不到有效的登录项句柄。所以 `LoginItem.isAvailable` 先看 bundle，不可用时 UI 直接显示原因 —— **不要**在非 bundle 环境里调 `SMAppService.mainApp.status` |
 | **历史备份的命名** | `~/Library/Application Support/MultiDock/backups/dock-yyyyMMdd-HHmmss.plist`，最多 20 份。`BaselineStore.listBackups()` 从文件名解析时刻；解析不出来（用户改过名）就退回文件修改时间 |
 | 风险项 | 本机 `mru-spaces = 1`（自动重排空间），会打乱桌面顺序、破坏"下一个桌面"直觉 → 设置页给显式开关，**用户主动点击才改** |
@@ -291,7 +310,7 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 
 ```bash
 swift build -c release --disable-sandbox   # 编译
-swift test --disable-sandbox               # 239 个测试（含 4 个默认跳过的真实 Dock 验收）
+swift test --disable-sandbox               # 257 个测试（含 4 个默认跳过的真实 Dock 验收）
 ./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
 open build/MultiDock.app                   # 运行（必须在 .app 里跑，菜单栏图标才正常）
 ./scripts/check-toast-window.sh --watch 12 # 客观验收 toast（零权限，读窗口元数据）
@@ -373,16 +392,16 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | A4 | **P3 验收里"在真实 Dock 手动拖入一个图标，切走再切回仍在"**（拖拽是纯 UI 操作，脚本化要辅助功能权限，与硬约束冲突） | 这条是 `DockWatcher` **回存路径的唯一真实检验** | 请手动：拖一个图标进 Dock → 切到另一个桌面 → 切回来，看图标还在不在 |
 | A5 | **「连切 5 次只显示最终名字」只做了单测**，没做真机连击 | 真机是否闪烁未实测 | 单测 `testRapidSwitchKeepsOnlyLatestTextAndHidesOnce` 覆盖调度逻辑；真机需手动快速点菜单栏 |
 | **B. 待做的功能（已排期）** | | | |
-| B5 | **多显示器**：本机单显示器，`(displayUUID, spaceUUID)` 映射键只写了没实测 | 插外接显示器后映射可能串 | P5，**只能靠用户插拔外接屏实测** |
-| B6 | **全屏 App 空间的过滤**只有单测覆盖，没有真实全屏回归 | 每次进全屏可能误切 Dock | P5 |
+| B5 | **多显示器仍未真机实测**（P5 唯一剩下的）：映射键、插拔后自动刷新、toast 的 `displayUUID → NSScreen` 定位都实现了，但本机只有一台显示器 | 插外接显示器后映射可能串 | **只能靠用户插一台外接屏实测**。调试面板已加「显示器数量」与每个桌面的 `displayUUID` 前 8 位，核对时用 |
+| B6 | ~~全屏 App 空间的过滤只有单测覆盖~~ | 每次进全屏可能误切 Dock | ✅ **已解决（2026-09-18）**：真机回归通过，见 §4 的「全屏过滤的真机回归」与 `scripts/check-fullscreen-filter.swift` |
 | B7 | **用户手动切桌面时 `activeSpaceDidChange` 通知是否触发**未知 | 只影响"能否把跟随延迟从 300 ms 降到接近 0" | P5 顺手测 |
 | B8 | **手动移除 Finder 是否落键**未验证 | 若有新键需纳入白名单 | 可选，30 秒。步骤见 `docs/spikes.md` 实验 3，风险低 |
 | B9 | **注销/关机路径只能尽力还原**（系统不给等待时间） | 关机瞬间可能来不及写完基准 | 已按"先留债务标记、下次启动自愈"处理，见 §3 的 P4 第 9 条。真要验证得注销一次机器 |
 | B10 | **登录启动的 LaunchAgent 退回方案没在真机跑过**（本机 SMAppService 那条路没触发过退回） | 未签名场景下可能开了没用 | 需要真的重登录一次验证。逻辑侧只有 plist 内容有单测 |
-| B11 | **README 还停在 P1 状态**（2026-09-18 全量核对发现）：仍写"P0 与 P1 已完成""还不能改 Dock"，卸载节自认"P5 再补" | 用户照 README 操作会得到错误信息 | **P5 第一件事**。要写：完全卸载三步、用基准/备份还原 `com.apple.dock` 的精确命令、P2–P4 已有能力 |
-| B12 | **编辑条竖排未实现**：`orientation` = left/right 时图标条仍固定横排 | 位置改成左/右后，编辑条与实际 Dock 长得不一样 | P5，纯 UI，改动局限在 `UI/DockStripEditor.swift` |
-| B13 | **孤儿绑定不清理也不提示**：桌面被系统删除/重排后，`DesktopBinding` 永久留在 `config.json` | 配置越积越多、看不出哪些还有效 | P5。建议：设置页给"清理无效绑定"入口，或对当前桌面列表里不存在的绑定标灰 |
-| B14 | **`DockWatcher` 回存前不存历史版本**：直接覆盖目标配置 | 用户手改被误判时，旧配置找不回来 | P5 或不做。备份轮转兜不住（回存只改 config、不写 Dock，不触发备份） |
+| B11 | ~~README 还停在 P1 状态~~ | 用户照 README 操作会得到错误信息 | ✅ **已解决（2026-09-18，P5）**：整篇重写，含完全卸载三步与整域还原命令 |
+| B12 | ~~编辑条竖排未实现~~ | 位置改成左/右后，编辑条与实际 Dock 长得不一样 | ✅ **已解决（2026-09-18，P5）**：`DockStripEditor.isVertical` + `SlotSizing` |
+| B13 | ~~孤儿绑定不清理也不提示~~ | 配置越积越多、看不出哪些还有效 | ✅ **已解决（2026-09-18，P5）**：桌面页横幅 + 「清理」按钮 + 二次确认。**绝不自动删**（拔外接屏会误伤） |
+| B14 | ~~`DockWatcher` 回存前不存历史版本~~ | 用户手改被误判时，旧配置找不回来 | ✅ **已解决（2026-09-18，P5）**：改成内存撤销栈 `DockEditHistory` + UI 上的「撤销自动回存」。**刻意不落盘** —— 落盘一堆没有恢复入口的文件是花架子 |
 | **C. 参数与取舍（记录在案）** | | | |
 | C1 | **`DockWatcher` 轮询周期 2 s 是拍的**，没有实测依据 | 用户手动改 Dock 后最长 2 s 才被回存 | 按用户体感调 |
 | C2 | **一次切换的应用总耗时约 1 秒**（其中 Dock 只消失 45–90 ms，其余是主动错开节流的等待） | 切桌面后 Dock 配置生效有一秒延迟，但期间 Dock 可用 | 按"宁等不闪"处理，见 §6.1 第 6 条 |
@@ -407,6 +426,11 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | D14 | ~~`mru-spaces = 1` 打乱桌面顺序~~ | 切桌面顺序不符合直觉 | ✅ P4 已做：设置 → 通用 → 桌面行为，显式开关 + 自动重启 Dock 生效。**用户主动点击才改** |
 | D15 | ~~退出还原可能被排队的应用覆盖~~ | 退出后 Dock 还是错的 | ✅ P4 已修：还原前 `await prepareForTermination()`（停 watcher/监视器 + 等自愈 + 等 `waitForIdle`） |
 | D16 | ~~还原失败后自愈能力丢失~~ | 下次启动不再尝试还原 | ✅ P4 已修：失败保留标记 + `pid = 0` + `needsSelfHeal`，下次启动接着还。单测覆盖 |
+| D17 | ~~README 停在 P1 状态~~ | 用户照它操作会得到错误信息 | ✅ P5 已整篇重写，含完全卸载三步 |
+| D18 | ~~编辑条竖排未实现~~ | 位置改左/右后编辑条与实际 Dock 不一致 | ✅ P5 已实现 |
+| D19 | ~~孤儿绑定不清理不提示~~ | 配置越积越多 | ✅ P5 已做横幅 + 显式清理（**不自动删**） |
+| D20 | ~~回存不存历史版本~~ | 误判回存后旧配置找不回 | ✅ P5 做成内存撤销栈 + 「撤销自动回存」，刻意不落盘 |
+| D21 | ~~全屏过滤只有单测~~ | 每次进全屏可能误切 Dock | ✅ P5 真机回归通过（自己造全屏空间，零权限） |
 
 ---
 
@@ -417,8 +441,10 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 3. **动 Dock 相关代码前先读 §4 的四条**："launchd 重启节流"、"节流窗口判据"、"`-1` PID 陷阱"、"查 Dock PID 的代价"。踩到节流会让 Dock 消失一秒多；踩到 `-1` 会杀掉用户的全部进程。
 4. 需要动 Dock 的改动，验收用 `MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`；**跑之前先 `defaults export com.apple.dock` 备份，且中途别手动改 Dock**。
 5. 顺手催一下 §6.3 的 A 组（A1–A5 只能人点）：改名、两个按钮、图标条拖拽、**A4 手动拖图标进 Dock 再切走切回**、菜单栏连击。
-6. 做 P5：README（含完全卸载与还原步骤）→ 多显示器/热插拔回归（要用户插外接屏）→ 全屏过滤回归。
-7. 收尾：按 §0 更新本文档 + `git commit`。
+6. 顺手催一下 §6.3 的 A 组（A1–A5 只能人点）与 B9（注销/关机）、B10（LaunchAgent 退回）。
+7. **多显示器实测**：请用户插一台外接屏，用调试面板的「显示器数量」+ 每个桌面 `displayUUID` 前 8 位核对有没有串。
+8. 可选的两处收尾：Dock 拉不回时的 UI 提示（PLAN §3.9 第 3 条）、降级报警横幅进设置页（PLAN §3.1 末段）。
+9. 收尾：按 §0 更新本文档 + `git commit`。
 
 > ⚠️ **给写代码的 agent 的一条工程提醒**：同一个文件**不要在同一条消息里发两个编辑** ——
 > 实测会静默丢掉其中一个（本次会话踩了三次，都是靠编译错误才发现）。一个文件一次改一处。
@@ -428,6 +454,42 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-09-18（第 9 次）— 完成 P5（收尾）：README、多显示器加固、全屏真机回归、B12–B14
+
+**做了什么**（用户：「继续完成任务」）：
+
+- **README 整篇重写**（B11）：原先停在 P1 状态（"还不能改 Dock"）。现在写清 P0–P4 的真实能力、
+  完全卸载三步（退出还原 → 关登录项 → 删数据目录）、`defaults import baseline.plist` + `kill -HUP $(pgrep -x Dock)`
+  的整域还原（并说明它会把热角一起回退）、故障排查表。
+- **多显示器加固**：`AppState.handleScreenParametersChanged()` + `AppDelegate` 接
+  `NSApplication.didChangeScreenParametersNotification`（插拔外接屏 → 重读桌面列表）。**只刷新、不主动应用 Dock**。
+  调试面板加「显示器数量」与每个桌面 `displayUUID` 前 8 位，方便核对有没有串。**真机实测仍需用户插屏**（B5）。
+- **全屏过滤真机回归通过**（B6）：新增 `scripts/check-fullscreen-filter.swift` —— **把自己的一个窗口切成全屏**
+  就能造出真实的 `type=4` 空间（零权限），不用辅助功能也能回归。实测见 §4。
+  抽了 `SkyLightSpaceProvider.userDesktops(fromDisplays:)` 这个纯函数 + `SpaceParsingTests`（8 条）钉死解析规则。
+- **B12 编辑条竖排**：`DockStripEditor.isVertical` + `SlotSizing`，`orientation != "bottom"` 时走竖排。
+- **B13 孤儿绑定**：`AppState.orphanedBindings` / `pruneOrphanedBindings` + 桌面页横幅与「清理」按钮（二次确认）。
+  **绝不自动删** —— 拔外接屏会让绑定看起来像孤儿。
+- **B14 回存历史**：新增 `Dock/DockEditHistory.swift`（内存撤销栈，每目标 5 层）+ 桌面页/通用页的「撤销自动回存」按钮。
+  **刻意不落盘**：落盘一堆没有恢复入口的文件是花架子；长期保命靠 `baseline.plist` 与 `backups/`。
+- 新增测试 2 个文件 18 条：`SpaceParsingTests`（8）、`BindingHistoryTests`（10）。
+
+**验收证据**：
+
+- `swift test --disable-sandbox` **257 个测试全绿、零警告**（4 个真实 Dock 验收默认跳过）。239 → 257。
+- 全屏真机回归：`进入全屏前 2 个 type=0 空间 → 全屏中 3 个（多出 type=4、id64=537）、type=0 仍是 2 个、
+  活动 id64=537 不命中任何用户桌面 → 退出后回到 2 个、活动 id64=6`。
+  MultiDock 同步日志：`活动空间不是用户桌面（可能是全屏 App），不触发切换`；从全屏退回桌面**没有**弹 toast。
+- `swift build -c release --disable-sandbox` 零警告；`./scripts/build-app.sh` + `open build/MultiDock.app` 冒烟通过
+  （日志显示 2 个用户桌面、会话标记建立正常）。
+
+**未解决 / 交给下一个 session**：
+
+- **B5 多显示器真机实测**（唯一剩下的 P5 项）—— 必须用户插一台外接屏。
+- 两处低优先级的"做了但没做全"：Dock 拉不回时缺 UI 提示（PLAN §3.9 第 3 条）、降级报警没进设置页（PLAN §3.1 末段）。
+- §6.3 **A 组 5 条手测（A1–A5）一次都没做过**，A4 是 `DockWatcher` 回存路径的唯一真实检验。
+- B9（注销/关机）、B10（LaunchAgent 退回）需要真的注销/重登录一次。
 
 ### 2026-09-18（第 8 次）— 全量核对「文档/计划 vs 代码」，列出未实现清单
 

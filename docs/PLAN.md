@@ -63,6 +63,7 @@ multi-dock/
 │   ├── Dock/DockReloader.swift         SIGHUP 为主 + SIGTERM/kickstart 兜底（**P2 已实现**）
 │   ├── Dock/DockStripRules.swift       图标条规则：启动台固定在首位、Finder 幻影、从 .app 造条目（**P2 已实现**）
 │   ├── Dock/DockWatcher.swift          识别用户在真实 Dock 上的手动改动并回存（**P3**）
+│   ├── Dock/DockEditHistory.swift      回存的旧配置暂存（内存撤销栈），供电「撤销自动回存」（**P5**）
 │   ├── Store/ConfigStore.swift         原子读写 config.json
 │   ├── Store/BaselineStore.swift       基准快照 + 会话标记 + 备份历史
 │   ├── UI/MenuBarController.swift      NSStatusItem：桌面列表 + 切换 + 设置入口
@@ -81,6 +82,7 @@ multi-dock/
 ├── scripts/spike-switch.swift          P0 实验：主动切桌面 + 通知是否触发
 ├── scripts/spike-dock-downtime.swift   P0 实验：毫秒级测 Dock 停机时长
 ├── scripts/check-toast-window.sh       客观验收 toast：用 CGWindowListCopyWindowInfo 读窗口层/透明度/坐标（零权限）
+├── scripts/check-fullscreen-filter.swift  真机回归全屏过滤：把本进程窗口切成全屏造出 type=4 空间（零权限）
 ├── docs/spikes.md                      P0 结论（含对本文档的三处修正）
 └── README.md                           含"如何完全卸载并还原初始 Dock"
 ```
@@ -279,7 +281,8 @@ struct AppSettings: Codable {
 > 2. **`_CFURLString` 必须带尾斜杠**：`file:///Applications/X.app/`。`URL(fileURLWithPath:).absoluteString` 不带尾斜杠，与真实域和 P0 写入实验都不一致。统一走 `DockTile.directoryURLString(for:)`。
 > 3. **启动台条目原样复用**：`DockStripRules.normalizedApps` 优先取数组里已有的启动台条目（连 `GUID` / `book` / `file-mod-date` 一起），只有域里没有时才 `makeLaunchpadTile()` 现造。早先版本无条件覆盖，每次编辑都会抹掉真实域里那几个字段（功能上能跑，但没必要动人家的数据）。
 > 4. **拖拽排序只在 `performDrop` 时落盘 + 应用一次**：`dropEntered` 会连续触发，所以 `AppState.setDefaultDock` 只改内存、`dockConfigEdited` 才落盘并触发应用。否则拖过一个图标就写一次 `config.json` 并重启一次 Dock。
-> 5. **竖排（left/right）暂未实现**：编辑条固定横排。`location` 自动横/竖排布等 P3/P5 一起做。
+> 5. ~~**竖排（left/right）暂未实现**~~ → ✅ **P5 已实现**：`orientation != "bottom"` 时 `DockStripEditor`
+>    自动切成 `ScrollView(.vertical)` + `VStack`，格子改定高（`SlotSizing`）。之前位置改成左/右后编辑条仍是横的，排序会看反。
 > 6. **「拖出即移除」用显式的垃圾桶投放区**（拖到编辑条外无法被检测到）。另配右键菜单「从 Dock 移除」。
 > 7. **排序/拖拽的真人手感未验证**（本机无法用脚本点 UI）—— 逻辑由 `DockStripRulesTests` + `AppStateDockTests` 覆盖，真机拖拽需要用户手动试一次。
 
@@ -352,7 +355,16 @@ struct AppSettings: Codable {
 >
 > **回存落点**：当前桌面有 override → 覆盖它；没有 → 覆盖**默认 Dock**（不凭空造 override）。当前不在用户桌面上（例如正处在全屏 App 里）→ 覆盖默认 Dock。
 >
-> **仍未做的**：计划里写的"覆盖前存一份历史版本"没实现（备份轮转只覆盖"写 Dock 那一刻"，而回存只改 config、不写 Dock，兜不住）。记录在 `AGENTS.md` §6.3 **B14**。
+> **P5 实现记录（2026-09-18）** —— "覆盖前存一份历史版本"做成了**内存撤销栈**，不是落盘的文件堆：
+>
+> - `Dock/DockEditHistory.swift`：回存覆盖前把旧配置压栈，每个目标保留 5 层；桌面页与通用页各有一个
+>   「撤销自动回存」按钮（没得可撤时禁用）。
+> - **为什么不落盘**：落盘一堆没有恢复入口的文件是花架子，用户翻到 `history/` 也用不上。
+>   回存要防的风险只有一个 —— "误判一次，把用户在真实 Dock 上的改动写坏了配置"，一步撤销就够。
+>   真正要长期保命的是 `baseline.plist` 与 `backups/`，那两个一直在落盘。
+> - **撤销后 watcher 不会立刻再触发**：它只在**真实 Dock 的指纹变化**时才回调，撤销改的是配置、没动 Dock。
+> - 回存落点与 `handleUserDockEdit` 同一口径：活动桌面有独立 Dock → 撤到该桌面；否则 → 撤到默认 Dock。
+>   API 因此**不收参数**（`undoLastAutoCapture()`），落点一律按当前活动桌面算。
 
 ### 3.9 登录启动与自愈
 
@@ -446,7 +458,7 @@ struct AppSettings: Codable {
 | **P2.5 桌面命名 + 切换 toast（不写 Dock）✅ 已完成 2026-09-18** | `DesktopNaming`（归一化 + 显示名解析 + 改名规则）、`AppState.displayName(for:)` 并替换所有调用点、桌面页改名输入框、`ToastPresenter`（纯逻辑）、`DesktopNameToastWindow`（AppKit 窗口）、设置开关、调试面板「测试 toast」、`scripts/check-toast-window.sh` | ✅ 全部达成：**70 个测试全绿**、零警告；`check-toast-window.sh --watch` 实测窗口 `layer=25 alpha=1.00 x=916 y=80 w=87 h=39`（中心 959.5 = 主屏 midX 960，距可见区顶部 80 pt），出现到消失 **983 / 987 ms**；日志 `toast 显示` → `toast 隐藏` 间隔 **1.014–1.098 s**；改 12 字名字 → 加载后截到 10 字并原样显示在 toast 里（`toast 显示「一二三四五六七八九十」`）；无名字的桌面回落「桌面 1」；空绑定行被自动清理；**切 4 次桌面（含 4 次 toast）前后 `defaults read com.apple.dock` 逐键相同** |
 | **P3 桌面页 + 自动切换（✅ 已完成 2026-09-18）** | 桌面 Tab 的 Dock 部分（绑定与 override）、切换时自动应用、防抖合并、内容相同跳过、预应用、自动回存 | ✅ **全部达成**（`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --filter DockAcceptanceTests`，真实 Dock）：两个桌面两套配置**来回切 20 次全部成功**，每次真实域的 `tilesize`/`magnification` 都等于目标那份；**Dock 不可用时长 45–90 ms**（最坏 90 ms，见 `spikes.md` 实验 5 的节流修复）；两桌面配置相同时 `.skippedIdentical` + `reload == nil` + `mod-count` 不变（确实没重启 Dock）；`DockWatcher` **误判 0 次**；还原后差异键 **`[]`**、图标顺序逐项一致、键集合一致（34 键）。**195 个测试全绿、零警告** |
 | **P4 无痕与自愈（✅ 已完成 2026-09-18，③ 待用户注销实测）** | 退出还原全链路（菜单退出 / Cmd+Q / 注销关机）、退出前等待重载完成、`session.state` 残留检测、登录启动、Dock 未归位兜底、备份恢复 UI、`mru-spaces` 开关 | ① ✅ 还原链路由 P2 验收 + `testSuccessfulRestoreClearsMarker` 覆盖（逐键等于 baseline）。② ✅ `testSelfHealIsIdempotentAcrossThreeLaunches`（真实 Dock）：连开三次 → `[已自动还原, 已与原始状态一致, 已与原始状态一致]`，`mod-count` 三次都是 22569（第 2、3 次没有白重启 Dock），每轮之后白名单键都等于基准。③ ⚠️ **未实测**（要真注销/重启一次机器）：代码路径是"先写债务标记 + 尽力还原，没跑完的由下次启动自愈接手"。④ ✅ `testKillingDockRecoversWithinThreeSeconds`（真实 Dock）：`SIGKILL` 后 **1072 ms** 归位（上限 3 s），恢复后白名单键与键集合都与杀之前一致。⑤ ✅ 同 ②。**239 个测试全绿、零警告** |
-| **P5 收尾** | 多显示器与热插拔、全屏过滤回归、README（含完全卸载与还原步骤） | 插拔外接显示器后映射不串；README 还原步骤实测可让 Dock 回到初始状态 |
+| **P5 收尾（✅ 已完成 2026-09-18，仅多显示器实测待用户插屏）** | README（含完全卸载与还原步骤）、多显示器与热插拔加固、全屏过滤回归、编辑条竖排、孤儿绑定、回存撤销 | ① ✅ README 整篇重写：完全卸载三步（退出还原 → 关登录项 → 删数据目录）+ `defaults import baseline.plist` 的整域还原（并写明它会把热角一起回退）。② ✅ **全屏过滤真机回归通过**：`scripts/check-fullscreen-filter.swift` 把自己的窗口切成全屏 → 造出真实 `type=4` 空间（id64=537），实测它没被算进用户桌面、活动空间不再命中任何用户桌面、退出后一切复原；MultiDock 日志同步记录「活动空间不是用户桌面…不触发切换」，且从全屏退回**没有**弹 toast。③ ✅ 多显示器加固：插拔外接屏（接 `NSApplication.didChangeScreenParametersNotification`）自动重读桌面列表，调试面板显示显示器数量与各桌面 `displayUUID` 前 8 位；**真机实测仍需用户插屏**（本机单显示器）。④ ✅ 编辑条竖排。⑤ ✅ 孤儿绑定只提示、不自动删（拔外接屏会误伤）。⑥ ✅ 回存撤销栈（内存，刻意不落盘）。**257 个测试全绿、零警告** |
 
 ---
 
@@ -483,7 +495,7 @@ struct AppSettings: Codable {
 | `mru-spaces = 1`（本机会命中） | 桌面顺序被系统重排，"下一个"不符合直觉 | 设置页显式开关，用户主动关闭；不静默修改 |
 | 写坏 Dock 配置 | 用户 Dock 损坏 | 首次写前全量基准 + 每轮备份；只覆盖白名单键；单次原子写；一键还原；README 给出 `defaults import` 还原步骤 |
 | 与用户在真实 Dock 上的手动改动互相覆盖 | 改动被吞 | 3 秒保护窗口 + 归一化指纹 + 自动回存 + 历史版本 + 可关闭 |
-| 全屏 App 空间混入 | 每次全屏都切 Dock | `type != 0` 过滤 |
+| 全屏 App 空间混入 | 每次全屏都切 Dock | `type != 0` 过滤。**P5 已真机回归**：把自己的窗口切成全屏造出真实 `type=4` 空间（零权限），实测过滤成立，见 §4 P5 行与 `scripts/check-fullscreen-filter.swift` |
 | **toast 抢焦点** | 用户切过去正要打字，字打进 toast | `canBecomeKey` / `canBecomeMain` = false，用 `orderFrontRegardless()` 显示 |
 | **toast 挡住点击** | 1 秒内点不到下面的东西 | `ignoresMouseEvents = true` |
 | **toast 只在自己所在的空间显示** | 切过去反而看不见，功能像失效 | `collectionBehavior` 必须含 `.canJoinAllSpaces` + `.fullScreenAuxiliary` |
@@ -492,10 +504,10 @@ struct AppSettings: Codable {
 | 名字超长 / 手改 `config.json` 塞超长名 | 设置页与 toast 布局被撑破 | 输入框计数 + 模型层 `DesktopNaming.normalize` 归一化，两层防线，单测覆盖 |
 | **输入框边打字边截断会打断中文输入法组字** | 拼音打不出字 | 输入框不做即时截断，只在回车/失焦时归一化（草稿留本地 `@State`） |
 | **`orderOut` 后窗口在 CG 窗口列表里滞留数秒** | 用窗口元数据验收会把「消失」时刻判晚 | 判别式带 `onscreen == true`；`check-toast-window.sh` 已按此实现 |
-| 显示器插拔后 `displayUUID` 映射不到 `NSScreen` | toast 出现在错误的屏幕 | 回落 `NSScreen.main`；P5 多显示器阶段回归 |
+| 显示器插拔后 `displayUUID` 映射不到 `NSScreen` / 桌面列表不刷新 | toast 出现在错误的屏幕；桌面串号 | 回落 `NSScreen.main`；✅ P5 已接 `NSApplication.didChangeScreenParametersNotification` → 插拔后自动重读桌面列表。**真机实测仍需用户插一台外接屏**（本机单显示器） |
 | Dock tile 的 `book` blob 过期 | 图标显示异常 | 比对时剔除该字段；若实测异常，写入时剥离 `book`/`file-mod-date` 让 Dock 重建（备选开关） |
 | 未签名登录项注册失败 | 开机不自动跑 | SMAppService 失败即退回 LaunchAgent |
-| 桌面被系统删除/重排后映射错位 | 配置串桌面 | 以 `spaceUUID` 为键；失效绑定标记为孤儿并在设置页提示"重新绑定/清理" |
+| 桌面被系统删除/重排后映射错位 | 配置串桌面 | 以 `spaceUUID` 为键；✅ P5 已做：失效绑定在桌面页列为孤儿并给「清理」+ 二次确认。**绝不自动删** —— 外接显示器被拔掉时那台显示器上的桌面整体消失，绑定看着就是孤儿，插回去还要用 |
 
 ---
 

@@ -28,6 +28,9 @@ struct DockStripEditor: View {
     private let iconSize: CGFloat = 44
     private let slotSize: CGFloat = 60
 
+    /// Dock 放在左右两侧时，编辑条也竖过来 —— 否则和实际 Dock 长得不一样，排序会看反。
+    private var isVertical: Bool { config.appearance.orientation != "bottom" }
+
     private var editable: [DockTile] {
         var seen = Set<String>()
         return DockStripRules.editableApps(config.pinnedApps)
@@ -44,19 +47,22 @@ struct DockStripEditor: View {
     // MARK: - 图标条
 
     private var strip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                finderSlot
-                launchpadSlot
-                ForEach(editable, id: \.normalizedKey) { tile in
-                    editableSlot(tile)
+        ScrollView(isVertical ? .vertical : .horizontal, showsIndicators: false) {
+            Group {
+                if isVertical {
+                    VStack(spacing: 6) { slots }
+                } else {
+                    HStack(spacing: 6) { slots }
                 }
-                appendSlot
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
         }
-        .frame(height: slotSize + 12)
+        .frame(
+            width: isVertical ? slotSize + 24 : nil,
+            height: isVertical ? nil : slotSize + 12
+        )
+        .frame(minHeight: isVertical ? 160 : nil, maxHeight: isVertical ? 260 : nil)
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(Color(nsColor: .textBackgroundColor))
@@ -74,6 +80,16 @@ struct DockStripEditor: View {
         }
     }
 
+    @ViewBuilder
+    private var slots: some View {
+        finderSlot
+        launchpadSlot
+        ForEach(editable, id: \.normalizedKey) { tile in
+            editableSlot(tile)
+        }
+        appendSlot
+    }
+
     private var finderSlot: some View {
         VStack(spacing: 2) {
             Image(nsImage: DockStripRules.icon(forPath: DockStripRules.finderPath, size: iconSize))
@@ -83,7 +99,7 @@ struct DockStripEditor: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
-        .frame(width: slotSize)
+        .modifier(SlotSizing(vertical: isVertical, size: slotSize))
         .help("访达永远在 Dock 最左侧。系统不把它存在偏好里，所以既不需要也不能修改。")
     }
 
@@ -101,7 +117,7 @@ struct DockStripEditor: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
-        .frame(width: slotSize)
+        .modifier(SlotSizing(vertical: isVertical, size: slotSize))
         .help("启动台固定在图标条最前面，不能移除或移动。")
     }
 
@@ -118,7 +134,7 @@ struct DockStripEditor: View {
                 .truncationMode(.middle)
                 .foregroundStyle(installed ? Color.primary : Color.secondary)
         }
-        .frame(width: slotSize)
+        .modifier(SlotSizing(vertical: isVertical, size: slotSize))
         .opacity(dragging == tile.normalizedKey ? 0.4 : 1)
         .contentShape(Rectangle())
         .help(installed ? tile.label : "\(tile.label)（磁盘上找不到这个 App）")
@@ -151,7 +167,7 @@ struct DockStripEditor: View {
                 Text("添加")
                     .font(.caption2)
             }
-            .frame(width: slotSize)
+            .modifier(SlotSizing(vertical: isVertical, size: slotSize))
             .foregroundStyle(.secondary)
             .contentShape(Rectangle())
         }
@@ -266,6 +282,20 @@ struct DockStripEditor: View {
         guard let live = captureLive() else { return }
         config = live
         onCommit("从当前 Dock 抓取：\(live.pinnedApps.count) 个图标")
+    }
+}
+
+// MARK: - 格子尺寸
+
+/// 横排时格子定宽、高度自适应；竖排时格子定高、宽度自适应（图标条整体才收得成一条）。
+private struct SlotSizing: ViewModifier {
+    let vertical: Bool
+    let size: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .frame(width: size)
+            .frame(height: vertical ? size : nil)
     }
 }
 

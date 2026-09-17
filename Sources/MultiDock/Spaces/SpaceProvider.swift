@@ -47,8 +47,14 @@ struct SkyLightSpaceProvider: SpaceProviding {
     var unavailableReason: String? { nil }
 
     func userDesktops() -> [DesktopSpace] {
+        Self.userDesktops(fromDisplays: bridge.managedDisplaySpaces())
+    }
+
+    /// 解析 SkyLight 的 display 字典数组。**抽成静态纯函数是为了能单测** ——
+    /// 全屏 App 空间（type=4）不是随时都有，等真机出现再去回归不可靠。
+    static func userDesktops(fromDisplays displays: [[String: Any]]) -> [DesktopSpace] {
         var result: [DesktopSpace] = []
-        for display in bridge.managedDisplaySpaces() {
+        for display in displays {
             let displayUUID = display["Display Identifier"] as? String ?? ""
             guard !displayUUID.isEmpty else { continue }
             let rawSpaces = display["Spaces"] as? [[String: Any]] ?? []

@@ -83,6 +83,8 @@ final class AppState {
 
     /// 监视真实 Dock 上的人工改动（P3）。`autoCaptureUserEdits` 关闭时不创建。
     private(set) var dockWatcher: DockWatcher?
+    /// 自动回存的旧配置暂存，供「撤销上一次自动回存」。只在内存里，见 `DockEditHistory`。
+    private var editHistory = DockEditHistory()
 
     // MARK: - 无痕与自愈（P4）
 
@@ -179,6 +181,30 @@ final class AppState {
         setOverride(settings.defaultDock, for: space, reason: "复制默认 Dock 到本桌面")
     }
 
+    // MARK: - 孤儿绑定（计划 §5「桌面被系统删除/重排后映射错位」）
+
+    /// 绑定还在，但对应的桌面已经不在了（桌面被删、或被系统重排换了 UUID）。
+    ///
+    /// ⚠️ **绝不自动清理**：外接显示器被拔掉时，那台显示器上的桌面会整体消失，
+    /// 它们的绑定看起来就是"孤儿"，但插回去还要用 —— 自动删会把用户的配置抹掉。
+    /// 所以只在这里列出来，由用户显式点按钮清。
+    var orphanedBindings: [DesktopBinding] {
+        let live = Set(desktops.map(\.id))
+        return bindings.filter { !live.contains($0.id) }
+    }
+
+    /// 清掉孤儿绑定，返回清掉的数量。
+    @discardableResult
+    func pruneOrphanedBindings() -> Int {
+        let orphans = orphanedBindings
+        guard !orphans.isEmpty else { return 0 }
+        let dead = Set(orphans.map(\.id))
+        bindings.removeAll { dead.contains($0.id) }
+        persistConfiguration()
+        append(.warning, "已清理 \(orphans.count) 条无效桌面绑定（对应桌面已不存在）")
+        return orphans.count
+    }
+
     /// 编辑器专用：只改内存，不落盘（理由同 `setDefaultDock`）。
     func setOverrideInMemory(_ config: DockConfig, for space: DesktopSpace) {
         bindings = DesktopNaming.updatingBindings(bindings, override: config, for: space)
@@ -219,17 +245,48 @@ final class AppState {
         }
 
         guard let space = activeSpace else {
+            editHistory.push(settings.defaultDock, for: DockEditHistory.defaultDockKey)
             updateSettings { $0.defaultDock = config }
             append(.info, "手动改动已回存到默认 Dock（当前不在用户桌面上）")
             return
         }
 
         if hasOverride(for: space) {
+            editHistory.push(effectiveConfig(for: space), for: space.id)
             setOverride(config, for: space, reason: "回存手动改动：\(config.pinnedApps.count) 个图标")
         } else {
+            editHistory.push(settings.defaultDock, for: DockEditHistory.defaultDockKey)
             updateSettings { $0.defaultDock = config }
             append(.info, "手动改动已回存到默认 Dock：\(config.pinnedApps.count) 个图标")
         }
+    }
+
+    // MARK: - 撤销自动回存
+
+    /// 回存落点与 `handleUserDockEdit` 同一口径：有独立 Dock 的桌面 → 该桌面；否则 → 默认 Dock。
+    private func captureTargetKey(for space: DesktopSpace?) -> String {
+        guard let space, hasOverride(for: space) else { return DockEditHistory.defaultDockKey }
+        return space.id
+    }
+
+    /// 回存永远落在**活动桌面**上，所以撤销的落点也按活动桌面算，不能由 UI 传。
+    func canUndoAutoCapture() -> Bool {
+        editHistory.canUndo(for: captureTargetKey(for: activeSpace))
+    }
+
+    /// 撤销上一次自动回存。返回是否真的撤了。
+    @discardableResult
+    func undoLastAutoCapture() -> Bool {
+        let space = activeSpace
+        let key = captureTargetKey(for: space)
+        guard let previous = editHistory.pop(for: key) else { return false }
+        if key == DockEditHistory.defaultDockKey {
+            updateSettings { $0.defaultDock = previous }
+            append(.info, "已撤销上一次自动回存：默认 Dock 恢复为 \(previous.pinnedApps.count) 个图标")
+        } else if let space {
+            setOverride(previous, for: space, reason: "撤销上一次自动回存")
+        }
+        return true
     }
 
     // MARK: - 编辑器统一入口（默认 Dock 与逐桌面独立 Dock 共用）
@@ -447,6 +504,18 @@ final class AppState {
     func refreshDesktops() {
         observer.refreshNow()
         append(.info, "手动刷新桌面列表：\(desktops.count) 个用户桌面")
+    }
+
+    /// 显示器配置变化（插拔外接屏 / 改分辨率）后重新识别桌面。
+    ///
+    /// 多显示器下 `displayUUID` 是映射键的一部分（`DesktopSpace.id`），插拔之后桌面列表
+    /// 必须重读 —— 否则新显示器上的桌面要等下一次手动刷新才出现，期间切换会串行。
+    /// 这里刻意**不**主动应用 Dock：屏幕变化的瞬间活动空间可能还没定，
+    /// 交给 300 ms 轮询去收敛，避免瞎重启一次 Dock。
+    func handleScreenParametersChanged() {
+        let before = desktops.count
+        observer.refreshNow()
+        append(.info, "显示器配置变化：桌面列表已刷新（\(before) → \(desktops.count) 个）")
     }
 
     func updateSettings(_ transform: (inout AppSettings) -> Void) {

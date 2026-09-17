@@ -14,6 +14,7 @@ struct DesktopListView: View {
     /// 改名草稿。**不直接绑到模型**：中文输入法组字期间改写绑定值会打断候选词。
     @State private var drafts: [String: String] = [:]
     @FocusState private var focused: String?
+    @State private var confirmingPrune = false
 
     private var selectedSpace: DesktopSpace? {
         state.desktops.first { $0.id == selection }
@@ -70,6 +71,39 @@ struct DesktopListView: View {
                     .foregroundStyle(.secondary)
             }
             .padding(10)
+
+            orphanBanner
+        }
+    }
+
+    /// 桌面被系统删掉、或外接显示器被拔走后，绑定会变成孤儿。
+    /// **只提示不自动删** —— 显示器插回来那些绑定还要用。
+    @ViewBuilder
+    private var orphanBanner: some View {
+        if !state.orphanedBindings.isEmpty {
+            Divider()
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("有 \(state.orphanedBindings.count) 条绑定对应的桌面已不存在")
+                        .font(.caption)
+                    Text("可能是桌面被删了，也可能是外接显示器被拔走。后者插回来还要用，所以不会自动删。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                Button("清理") { confirmingPrune = true }
+                    .help("只在确认这些桌面不会再回来时才清理。")
+            }
+            .padding(10)
+            .alert("清理 \(state.orphanedBindings.count) 条无效绑定？", isPresented: $confirmingPrune) {
+                Button("清理", role: .destructive) { state.pruneOrphanedBindings() }
+                Button("取消", role: .cancel) { }
+            } message: {
+                Text("这些绑定对应的桌面当前不存在。如果是因为外接显示器被拔走，插回来后需要重新配置。")
+            }
         }
     }
 
@@ -233,6 +267,9 @@ struct DesktopListView: View {
                 Button("重置为默认") {
                     state.setOverride(nil, for: space, reason: "重置为沿用默认 Dock")
                 }
+                Button("撤销自动回存") { state.undoLastAutoCapture() }
+                    .disabled(!state.canUndoAutoCapture())
+                    .help("撤销上一次「识别到你在真实 Dock 上的改动并回存」的覆盖（回存只落在当前活动桌面上）。")
             }
             Text("切到这个桌面时会自动应用这套 Dock。与默认一致时会被指纹短路，不会重启 Dock。")
                 .font(.caption)

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// 调试面板：当前 spaceUUID / id64 / type、桌面列表、应用日志。
 ///
@@ -41,6 +42,7 @@ struct DebugPanelView: View {
                         .foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                row("显示器数量", "\(NSScreen.screens.count)")
                 row("桌面数量", "\(state.desktops.count)")
                 if let active = state.activeSpace {
                     row("活动桌面", "\(state.displayName(for: active))（序号 \(active.ordinal)）")
@@ -83,6 +85,11 @@ struct DebugPanelView: View {
                                 .foregroundStyle(.tint)
                             Text(state.displayName(for: space))
                                 .frame(width: 60, alignment: .leading)
+                            // 多显示器时 displayUUID 是映射键的一部分，插拔外接屏后靠它核对有没有串。
+                            Text(space.displayUUID.isEmpty ? "—" : String(space.displayUUID.prefix(8)))
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .help(space.displayUUID)
                             Text(space.spaceUUID)
                                 .font(.caption.monospaced())
                                 .textSelection(.enabled)
@@ -105,7 +112,7 @@ struct DebugPanelView: View {
                 row("基准快照", state.baselinePath, mono: true)
                 row("配置文件", state.configPath, mono: true)
                 row("日志文件", state.logPath, mono: true)
-                Text("P2.5 阶段仍不会写入任何 Dock 设置；基准快照是首次运行时对 com.apple.dock 全量域的只读备份。")
+                Text("基准快照是首次运行时对 com.apple.dock 全量域的只读备份，此后不覆盖；每次真正写 Dock 之前另存一份到 backups/。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

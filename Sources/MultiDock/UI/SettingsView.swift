@@ -53,6 +53,9 @@ private struct GeneralTab: View {
                         .disabled(state.settings.defaultDock.pinnedApps.isEmpty)
                     Button("立即还原到原始 Dock") { state.restoreToBaselineNow() }
                     Button("把当前 Dock 设为新基准") { state.resetBaselineToCurrent() }
+                    Button("撤销自动回存") { state.undoLastAutoCapture() }
+                        .disabled(!state.canUndoAutoCapture())
+                        .help("撤销上一次「识别到你在真实 Dock 上的改动并回存」的覆盖（回存只落在当前活动桌面上）。")
                     Spacer()
                 }
                 Text(state.lastApplySummary)

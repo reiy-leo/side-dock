@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var debugWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var powerOffObserver: NSObjectProtocol?
+    private var screenParametersObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let state = AppState()
@@ -37,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         lifecycle.applicationDidFinishLaunching()
         observePowerOff()
+        observeScreenChanges()
     }
 
     /// toast 的接线：窗口在这里建，调度逻辑在 `ToastPresenter`，状态与命名解析仍归 `AppState`。
@@ -65,6 +67,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let token = powerOffObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(token)
         }
+        if let token = screenParametersObserver {
+            NotificationCenter.default.removeObserver(token)
+        }
     }
 
     /// 退出流程：还原未完成前不放行（计划 §3.3）。
@@ -81,6 +86,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.lifecycle.systemWillPowerOff()
+            }
+        }
+    }
+
+    /// 插拔外接显示器后桌面列表必须重读，否则新显示器上的桌面不会进菜单。
+    /// 只做刷新，不主动应用 Dock —— 屏幕变化瞬间活动空间还没定，交给轮询收敛。
+    private func observeScreenChanges() {
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.state.handleScreenParametersChanged()
             }
         }
     }
