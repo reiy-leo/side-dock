@@ -187,6 +187,95 @@ P0 只验到了"信号能让 Dock 重启、`GUID` 会被补全"。P2 把写路�
 
 ---
 
+## 实验 5（P3 落地复测，2026-09-18）：重启节流，以及一个能毁掉图形会话的 PID 陷阱
+
+P3 把"切桌面自动应用 + 预应用"接起来后，用 `DockAcceptanceTests` 做 20 次来回切换。第一次跑出来每轮耗时约 **1080 ms**，与 P0/P2 实测的 101/125–138 ms 差了近 10 倍。查下去挖出两件都要命的事。
+
+### 5.1 launchd 的重启节流：间隔 < 1 秒时 Dock 要 1 秒才回来
+
+**做法**：连续 SIGHUP 重启 Dock，只改变两次重启之间的间隔，用 `NSRunningApplication`（0.6 ms/次）测"新 PID 出现"耗时。
+
+| 两次重启的间隔 | Dock 归位耗时 |
+| --- | --- |
+| 0.3 s | **约 1070 ms** |
+| 0.6 s | **约 1066–1159 ms** |
+| 1.0 s | **76 ms** |
+| 1.5 s | 68 ms |
+| 2.0 s | 73–86 ms |
+| 3.0 s | 68–74 ms |
+| 5.0 s | 83–138 ms |
+
+**结论：阈值在 0.6–1.0 s 之间。** 距上一次重启不足约 1 秒时再次重启，Dock 要等 **约 1.07 s** 才归位；间隔满 1 秒以上只要 **约 70 ms**。
+
+- `com.apple.Dock.plist` 里**没有** `ThrottleInterval`，`launchctl print` 也不报 —— 是 launchd 的隐式节流，不是 Dock 自己的启动开销（否则不会精确到 1.07 s）。
+- 1.07 s 这个值高度一致（1020–1187 ms，20 次），不像负载导致，像固定退避。
+
+**对策（已实现）**：`DockReloader` 加 `minimumSpacing`（默认 1000 ms）。距上次**归位**不足 1 秒时，先睡到满 1 秒再重启。
+
+> 为什么"等"严格优于"立刻重启"：等待期间 **Dock 还活着、还能用**；而立刻重启会让 Dock 消失 1 秒多。
+> 等待只推迟我们自己的重启时机，不延长用户能感知的不可用时间。
+
+**效果（P3 验收实测，20 次来回切换）**：
+
+| | 修复前 | 修复后 |
+| --- | --- | --- |
+| **Dock 不可用时长** | 约 1030 ms | **45–90 ms**（最坏 90 ms） |
+| 一次应用总耗时 | 约 1030 ms | 约 1050 ms（多出来的是**主动等待**，期间 Dock 可用） |
+
+所以 `ReloadOutcome` 把两个数分开记：`elapsed` 只算 Dock 真正不可用的时间，`spacingWait` 单独记等待时长（日志里注明"期间 Dock 可用"），避免日志吓人。
+
+### 5.2 `NSRunningApplication` 会返回 `processIdentifier == -1`
+
+**怎么发现的**：写探测脚本时，一次重启后打印出 `48049 → 48100 → -1`。`-1` 不是笔误 —— `NSRunningApplication.runningApplications(withBundleIdentifier:)` 在 Dock 重启的窗口里会返回一个**正在退出**的实例，它的 `processIdentifier` 就是 `-1`。
+
+**为什么致命**：
+
+| 用法 | 语义 | 后果 |
+| --- | --- | --- |
+| `kill(-1, sig)` | 发给**当前用户的全部进程** | 用户当场丢掉所有 App，可能整个图形会话 |
+| `kill(0, sig)` | 发给**整个进程组** | 同上，范围稍小 |
+
+原实现的 `dockPID()` 直接 `runningApplications(...).first?.processIdentifier`，于是：
+
+1. `waitForRestart` 看到 `-1 != oldPID` → 立刻"成功"，`ReloadOutcome` **谎报 Dock 已回来**（其实 Dock 不在）；
+2. 兜底路径 `let dyingPID = process.dockPID() ?? oldPID; process.signal(dyingPID, SIGTERM)` 会拿到 `-1` → **`kill(-1, SIGTERM)`**。
+
+第 2 条是能毁掉用户整个图形会话的。**不是理论风险**：P3 期间实测复现了 `-1`。
+
+**修复（三道防线，都在 `DockReloader.swift`）**：
+
+1. `dockPID()` 过滤 `!isTerminated && processIdentifier > 0`；
+2. `RealDockProcessControl.signal(_:_:)` **拒绝 `pid <= 0`**，并再用 `proc_name` 确认这个 PID 的进程名真的是 `Dock` 才发信号；
+3. `DockReloader.waitForRestart` 只接受 `pid > 0`。
+
+守这条不变量的测试在 `Tests/MultiDockTests/DockProcessSafetyTests.swift`，全部用**信号 0**（空信号，只做存在性检查，不投递）断言 —— 这样万一闸门被改坏，测试是**失败**而不是把测试进程自己打死。
+
+### 5.3 `pgrep` 单次 110 ms，不能放进轮询热路径
+
+原实现用 `/usr/bin/pgrep -x Dock` 作 `NSRunningApplication` 查不到时的兜底。实测：
+
+| 查询方式 | 单次耗时 |
+| --- | --- |
+| `NSRunningApplication.runningApplications(withBundleIdentifier:)` | **0.6–1.4 ms** |
+| `/usr/bin/pgrep -x Dock`（子进程） | **109–112 ms** |
+| `proc_listpids` + `proc_name`（libproc，直接调） | **0.02 ms** |
+
+重启判定是 15 ms 一轮的轮询，每次 110 ms 会把"等 Dock 回来"拖慢一个量级。已改成 `proc_listpids(PROC_ALL_PIDS)` 扫进程表 + `proc_name` 比对名字，**不再起子进程**。`DockProcessSafetyTests` 里有一条测试专门守这个（平均耗时必须 < 20 ms）。
+
+> 注意：这一项**不是** 5.1 那 1 秒的原因。改掉之后每轮仍是约 1030 ms —— 但它是真的浪费，且和 5.1 的修复叠在一起才让 Dock 不可用时长降到 45–90 ms。
+
+### 5.4 附带确认：写入确实生效，还原干净
+
+| 观测项 | 结果 |
+| --- | --- |
+| 20 次来回切换 | 全部 `.applied`，`verifyAttempts == 1`，主路径全是 SIGHUP |
+| 每次切换后真实域 | `tilesize` / `magnification` 逐次等于目标那份 |
+| `DockWatcher` 误判 | **0 次**（我们自己的写入 + Dock 的 GUID 回写，都没被当成用户手动改动） |
+| 两桌面配置相同时 | `.skippedIdentical`，`reload == nil`，`mod-count` 不变 → 确实没重启 Dock |
+| 还原后 | 差异键 **`[]`**（连 `mod-count` 都没差），图标顺序逐项一致，键集合一致（34 键） |
+
+---
+
 ## 对 `docs/PLAN.md` 的修订清单
 
 | 位置 | 原内容 | 修订为 |
@@ -197,7 +286,10 @@ P0 只验到了"信号能让 Dock 重启、`GUID` 会被补全"。P2 把写路�
 | §3.6 | 合成 tile 用 `dock-extra:0` | 用户 App 用 `true`、启动台用 `false`（按真实域）；`_CFURLString` 必须带尾斜杠 |
 | §4 P0 行 | 三实验并列 | 已完成，结论见本文 |
 | §4 P2 行 | 待做 | ✅ 已完成（见本文实验 4 与 AGENTS.md §8 第 5 次记录） |
-| §6 | 桌面"位置"含义待确认 | 仍未确认（与本文件无关，见 AGENTS.md §6） |
+| §4 P3 行 | 待做 | ✅ 已完成（见本文实验 5 与 AGENTS.md §8 第 6 次记录） |
+| §3.5 | SIGHUP 约 101 ms 不可用 | 补上**重启节流**：距上次重启不足约 1 s 时再重启要 **约 1070 ms**；`DockReloader.minimumSpacing` 错开它，实测把 Dock 不可用时长压回 **45–90 ms** |
+| §3.4 第 8 条 | "先 apply 再切空间" | 措辞修正为"**发起**应用与切空间同一拍，不等轮询"。切空间前完成重启物理上做不到（重启 101 ms > 切空间 20 ms），见 PLAN §3.4 的 P3 实现记录 |
+| §6 | 桌面"位置"含义待确认 | ✅ 已确认：Dock 屏幕位置 + 大小（2026-09-18） |
 
 ---
 

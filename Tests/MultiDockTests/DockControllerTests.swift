@@ -167,7 +167,8 @@ final class DockControllerTests: XCTestCase {
                 process: process,
                 timeout: .milliseconds(300),
                 pollInterval: .milliseconds(2),
-                fallbackGrace: .milliseconds(20)
+                fallbackGrace: .milliseconds(20),
+                minimumSpacing: .zero   // 测试不睡那 1 秒节流窗口
             ),
             backup: backup,
             onOutcome: onOutcome

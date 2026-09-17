@@ -205,6 +205,22 @@ struct AppSettings: Codable {
 7. **防抖合并**：连击切桌面时只对最终落点执行一次；应用进行中目标又变化 → 记 `pendingTarget`，本轮结束立即补跑。
 8. **我们自己切桌面时预应用**：点击"下一个桌面"时已知目标，先 apply 再切空间，切换动画结束时 Dock 已是正确状态（不等通知回来才动）。
 
+> **P3 实现记录（2026-09-18）—— 第 8 条的准确含义（实测后修正措辞）**
+>
+> 原文"先 apply 再切空间"容易被读成"切空间之前 Dock 已经重启完"，**那物理上做不到**：
+> 一次应用要先写偏好、再重启 Dock，而 Dock 重启本身约 **101 ms**（SIGHUP，P0 实测），
+> 比 `CGSManagedDisplaySetCurrentSpace` 返回（约 20 ms）慢。任何实现都无法在切空间前完成重启。
+>
+> 第 8 条真正要保证的是：**发起**应用与切空间在同一拍，**不等 300 ms 轮询**发现变化才动。
+> 代码里 `AppState.switchToNextDesktop()` / `switchTo(_:)` 先调 `switcher.target(_:)` 算出目标、
+> `applyConfigForDesktop(target)`（同步建好 `DockController` 的 drain 任务），再调 `switcher.switchTo(target)`。
+> 于是写偏好 + 重启 Dock 与系统切换动画（约 300 ms）重叠，动画结束时 Dock 已经是对的。
+>
+> 验证方式：`DockController.isApplying` 在 `switchToNextDesktop()` 返回后立刻为 `true`
+> （`request()` 同步建任务），且**整个切换过程只写一次** ——
+> 预应用与"切完后 observer 回调"两次请求被 `request()` 的单槽位合并成一次，不会重启两次 Dock。
+> 单测：`testPreApplyAppliesTheTargetDockWithoutWaitingForThePoll`。
+
 > **P2 实现记录（2026-09-18）** —— 第 1、2、7、8 条中，**1 已实现**（`AppState.applyDock(_:reason:)` 目前只喂 `settings.defaultDock`；`binding.override` 的选取属 P3）、**2 / 7 已实现**、**8 待 P3**（切桌面时预应用）。
 >
 > 实现上的几处具体化：
@@ -299,7 +315,15 @@ struct AppSettings: Codable {
 >
 > - **默认 Dock 为空时不自动抓取**：避免首启就写盘、更避免"用户没配过就点应用 → Dock 被清空"。改为显示橙色警告 + 禁用「立即应用」，引导用户先点「从当前 Dock 抓取」。这是与计划原文的一处**有意加严**（见 §6）。
 > - **退出还原只在"本次运行改过 Dock"时才执行**（`LifecycleController.sessionChangedDock`）。不能无条件还原——用户可能在运行期间自己拖了图标，写回基准会把他的改动一起抹掉。另外还原前会比一次白名单键，已经与基准一致就跳过，省掉一次没必要的 Dock 重启。
-> - **`AppState` 的依赖全部可注入**（`dockController` / `configStore` / `baselineStore`），且 AppState 内部**不直接调 `DockPreferences.readDomain()` 这类静态入口**——那会绕过注入点，测试里会读到真实系统的偏好域。要读就走 `DockController.readDomain()` / `captureLiveConfig()`。
+> - **`AppState` 的依赖全部可注入**（`dockController` / `configStore` / `baselineStore`），且 AppState 内部**不直接调 `DockPreferences.readDomain()` 这类静态入口**——那会绕过注入点，测试里会读到真实系统的偏好域。要读就走 `DockController.readDomain()` / `captureLiveDockConfig()`。
+>
+> **P3 实现记录（2026-09-18）** —— 两个 Tab 的形状与计划一致，具体落地如下：
+>
+> - **通用 Tab**：默认 Dock 编辑条 + **默认 Dock 的外观**（`DockAppearanceEditor`）+ 应用区（立即应用 / 立即还原到原始 Dock / 把当前 Dock 设为新基准 + 应用摘要）+ 菜单栏交互 + 桌面切换 toast 开关 + 退出行为 + Dock 应用开关（编辑后立即应用 / 识别手动改动并回存 / 重载方式）+ 本机不支持键。**`mru-spaces` 开关仍未做（P4）**。
+> - **桌面 Tab**：由 `UI/DesktopListView.swift` 承载 —— 左侧桌面列表（就地改名 + `n/10` 计数 + 「独立 Dock / 沿用默认」徽标 + 当前桌面标记 + 刷新按钮），右侧详情（沿用默认开关 → 无 override 时给「复制默认 Dock 到本桌面」提示，有 override 时给完整图标条 + 外观编辑器 + 「立即应用」/「从当前真实 Dock 抓取」/「重置为默认」）。**「位置」= Dock 屏幕位置 + 大小**（用户已确认，见 §6）。
+> - **菜单栏下拉**：桌面列表（当前项打勾，点选即切）→「下一个桌面」→**「用当前 Dock 重置本桌面配置」**→「刷新桌面列表」→ 调试面板… / 设置… → **「退出并还原 Dock」**（标题写清会还原，避免误解）。
+>   - 「用当前 Dock 重置本桌面配置」的语义是**不新增绑定**：当前桌面有独立 Dock 就覆盖它，没有就覆盖**默认 Dock**（凭空造 override 会让该桌面悄悄脱离默认）。
+> - **编辑器的读写必须分开**：`AppState.setDockConfigInMemory` / `setDockAppearanceInMemory` 只改内存，`dockEdited(_:reason:)` 才落盘 + 按开关应用；默认 Dock 与逐桌面 override 共用 `DockEditTarget`（`.defaultDock` / `.desktop(space)`）一套入口。`DockAppearanceEditor.onCommit` 只在**滑杆松手 / 开关值变化**时提交 —— 逐帧落盘会让拖一次滑杆重启几十次 Dock。
 
 ### 3.8 手动改动的自动回存（DockWatcher）
 
@@ -308,6 +332,27 @@ struct AppSettings: Codable {
 - 指纹变化且不在 3 秒保护窗口内（我们自己刚写完）→ 判定为用户在真实 Dock 上手动改动 → 覆盖当前桌面的配置（用默认 Dock 的桌面则更新默认 Dock），覆盖前存一份历史版本。
 - 可在设置里关闭自动回存；关闭后只认 App 内的编辑。
 - **与还原的边界**：还原期间（退出流程中）Watcher 必须停止，否则会把还原动作误判成用户改动写进配置。
+
+> **P3 实现记录（2026-09-18）—— 判据与计划原文不同，以这里为准**
+>
+> 计划原文写的是"3 秒保护窗口"，实现时改成了**更准的判据**：不比时间，比**内容**。
+>
+> 每轮取当前真实 Dock 的**可比指纹**（`DockController.currentComparableFingerprint()` —— 与写入校验同一口径：只算白名单里**当前域中真实存在**的键），与上一轮比：
+>
+> | 情形 | 处理 |
+> | --- | --- |
+> | 没变 | 什么都不做 |
+> | 变了，且等于 `appliedComparableFingerprint`（我们上次写下去的那份） | **我们自己的写入**，忽略 |
+> | 变了，且不等于 | **用户改的** → 回存 |
+> | 本次运行还没写过任何东西（`appliedComparableFingerprint == nil`） | **一律不动** |
+>
+> 为什么放弃"时间窗口"：Dock 重启后会把我们写下去的内容**规范化回写**（补 `GUID` 等），指纹必然变化；用时间猜"这是不是我造成的"不可靠，用内容比则确定。实测 20 次来回切换**误判 0 次**。
+>
+> 另外两处保护：`AppState.handleDockOutcome` 在 `.applied` 时 `acknowledge` 一次；`handleUserDockEdit` 回存期间**停掉 watcher**，写完再开。都是为了避免把自己的写入当成用户改动。
+>
+> **回存落点**：当前桌面有 override → 覆盖它；没有 → 覆盖**默认 Dock**（不凭空造 override）。当前不在用户桌面上（例如正处在全屏 App 里）→ 覆盖默认 Dock。
+>
+> **仍未做的**：计划里写的"覆盖前存一份历史版本"没实现（备份轮转只覆盖基准快照层面）。记录在 `AGENTS.md` §6.3 B3。
 
 ### 3.9 登录启动与自愈
 
@@ -372,7 +417,7 @@ struct AppSettings: Codable {
 | **P1 骨架 + 识别 + 菜单栏（✅ 已完成 2026-09-18）** | SwiftPM 包、`build-app.sh`、SkyLightBridge、SpaceObserver、SpaceSwitcher、菜单栏下拉与单击切换、调试面板、基准快照 + 会话标记骨架。**不改任何 Dock 设置** | ✅ 全部达成：`swift build` / `swift test`（37 个测试全绿）/ `build-app.sh` 通过；**切桌面 10 次全部被记录、spaceUUID 全对、无漏报无重复**；菜单栏图标已创建（layer 25）；全屏空间不触发切换（单元测试覆盖）；`baseline.plist` 与运行时 `com.apple.dock` **34 键逐键相同**；运行前后 Dock 除 `recent-apps`/`mod-count`（系统自管，已在排除清单）外无任何差异 |
 | **P2 编辑条 + 应用（✅ 已完成 2026-09-18）** | DockPreferences 读写、ConfigStore、备份轮转、`DockReloader`、`DockController`、`DockStripRules`、`DockStripEditor`、通用 Tab、手动「立即应用」、**「立即还原到原始 Dock」按钮** | ✅ **全部达成**（`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --filter DockAcceptanceTests`，真实 Dock）：apply 后与操作前全量域 diff，**变化的键只有 `["magnification","persistent-apps","tilesize"]`**（全部在白名单内，白名单外的键一个没动）；**Dock 给新写入的条目补上了 `GUID`（`i:1414651200`）** → 写入真的被读进去并重建了 Dock；还原后图标顺序逐项回到原样、白名单键逐键一致、键集合一致（34 键），**仅剩 `["mod-count","recent-apps"]`**（Dock 自己的计数器）。SIGHUP **125–138 ms**。Finder/Launchpad 无法被拖出（编辑条里没有拖拽手柄 + `DockStripRules` 保证启动台在首位）。**142 个测试全绿、零警告** |
 | **P2.5 桌面命名 + 切换 toast（不写 Dock）✅ 已完成 2026-09-18** | `DesktopNaming`（归一化 + 显示名解析 + 改名规则）、`AppState.displayName(for:)` 并替换所有调用点、桌面页改名输入框、`ToastPresenter`（纯逻辑）、`DesktopNameToastWindow`（AppKit 窗口）、设置开关、调试面板「测试 toast」、`scripts/check-toast-window.sh` | ✅ 全部达成：**70 个测试全绿**、零警告；`check-toast-window.sh --watch` 实测窗口 `layer=25 alpha=1.00 x=916 y=80 w=87 h=39`（中心 959.5 = 主屏 midX 960，距可见区顶部 80 pt），出现到消失 **983 / 987 ms**；日志 `toast 显示` → `toast 隐藏` 间隔 **1.014–1.098 s**；改 12 字名字 → 加载后截到 10 字并原样显示在 toast 里（`toast 显示「一二三四五六七八九十」`）；无名字的桌面回落「桌面 1」；空绑定行被自动清理；**切 4 次桌面（含 4 次 toast）前后 `defaults read com.apple.dock` 逐键相同** |
-| **P3 桌面页 + 自动切换** | 桌面 Tab 的 Dock 部分（绑定与 override）、切换时自动应用、防抖合并、内容相同跳过、预应用、自动回存 | 桌面 1 与桌面 2 配置不同，来回切 20 次结果稳定（脚本断言）；两桌面配置相同时切换无 Dock 刷新；在真实 Dock 手动拖入一个图标，切走再切回仍在；还原期间不产生误回存 |
+| **P3 桌面页 + 自动切换（✅ 已完成 2026-09-18）** | 桌面 Tab 的 Dock 部分（绑定与 override）、切换时自动应用、防抖合并、内容相同跳过、预应用、自动回存 | ✅ **全部达成**（`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --filter DockAcceptanceTests`，真实 Dock）：两个桌面两套配置**来回切 20 次全部成功**，每次真实域的 `tilesize`/`magnification` 都等于目标那份；**Dock 不可用时长 45–90 ms**（最坏 90 ms，见 `spikes.md` 实验 5 的节流修复）；两桌面配置相同时 `.skippedIdentical` + `reload == nil` + `mod-count` 不变（确实没重启 Dock）；`DockWatcher` **误判 0 次**；还原后差异键 **`[]`**、图标顺序逐项一致、键集合一致（34 键）。**195 个测试全绿、零警告** |
 | **P4 无痕与自愈** | 退出还原全链路（菜单退出 / Cmd+Q / 注销关机）、退出前等待重载完成、`session.state` 残留检测、登录启动、Dock 未归位兜底、备份恢复 UI、`mru-spaces` 开关 | ① 正常退出后 `com.apple.dock` 逐键等于 baseline；② `kill -9` 强杀后重启 App，自动还原 baseline 并给出提示；③ 注销/重启后 Dock 为 baseline；④ 人为杀掉 Dock 后 3 秒内自动恢复；⑤ 连开三次 App 并每次还原，结果稳定幂等 |
 | **P5 收尾** | 多显示器与热插拔、全屏过滤回归、README（含完全卸载与还原步骤） | 插拔外接显示器后映射不串；README 还原步骤实测可让 Dock 回到初始状态 |
 
@@ -385,6 +430,9 @@ struct AppSettings: Codable {
 | 主动切桌面的私有 API 失效 | 菜单栏切换不可用 | ✅ P0 已验证可用（20 ms）。仍保留 `SpaceProvider`/`SpaceSwitcher` 协议隔离，失效时降级为"仅跟随 + 手动改 Dock"并在 UI 报警 |
 | **切桌面后收不到空间变化通知** | 跟随滞后或漏更新 | ✅ P0 已确认（程序化切换不触发通知）→ 事件源改为 **300 ms 轮询为主**；自己发起的切换一律**预应用**，不等通知 |
 | 无热重载，切桌面必然重启 Dock | 切桌面 Dock 闪一下 | ✅ P0 实测仅 **约 101 ms**（SIGHUP）。内容相同直接跳过；连击合并；预应用；UI/README 明示"约 0.1 秒" |
+| **launchd 的重启节流**：距上次重启不足约 1 s 时再重启，Dock 要 **约 1070 ms** 才归位（`spikes.md` 实验 5） | 连续切桌面时 Dock 消失一秒多 | ✅ 已实现 `DockReloader.minimumSpacing`（默认 1 s）：先等满窗口再重启，**等待期间 Dock 可用**。实测把 Dock 不可用时长压到 **45–90 ms**；`ReloadOutcome` 把 `elapsed`（不可用）与 `spacingWait`（可用等待）分开记 |
+| **`NSRunningApplication` 在 Dock 重启窗口返回 `processIdentifier == -1`** | ① 误判"Dock 已回来"；② `kill(-1, SIGTERM)` = **杀掉当前用户的所有进程** | ✅ 三道防线：`dockPID()` 过滤 `> 0`；`signal()` 拒绝 `pid <= 0` 且用 `proc_name` 确认身份；`waitForRestart` 只接受 `pid > 0`。测试在 `DockProcessSafetyTests`，全部用**信号 0** 断言（闸门坏了是测试失败，不会打死测试进程） |
+| `pgrep` 子进程单次约 **110 ms**，被放进 15 ms 轮询热路径 | 每次重启判定被拖慢一个量级 | ✅ 改用 `proc_listpids` + `proc_name`（**0.02 ms**），不再起子进程；`DockProcessSafetyTests` 有测试守平均耗时 |
 | **SIGTERM 的 255 ms 清理窗口覆盖我们的写入** | 应用不生效 | ✅ 已实现：应用后读回校验，不一致重试一次（SIGTERM 仅作 SIGHUP 的兜底）。P2 实测 SIGHUP 路径每次一次过，重试由单测覆盖 |
 | **Dock 回写 `GUID` 是异步的** | 拿"GUID 是否被补全"当判据时会误判成"写入没生效" | 判据必须配轮询（P2 实测 apply 返回后立刻读还是 nil，200 ms 内出现） |
 | **验收窗口期内用户手动改 Dock** | 验收报假失败（实测踩过一次） | 验收测试开头 dump 全量域、结尾比对；判据放宽成"差异只能落在白名单键或 `{mod-count, recent-apps, trash-full}` 上"；文档明示别在跑的时候改 Dock |

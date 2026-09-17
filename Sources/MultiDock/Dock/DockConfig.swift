@@ -280,6 +280,35 @@ struct DesktopBinding: Codable, Hashable, Sendable {
     var override: DockConfig?
 
     var id: String { "\(displayUUID)#\(spaceUUID)" }
+
+    /// 绑定列表的**唯一**改法：改一条（不存在就插入），改完若「既无名字又无 override」就删掉，不留空行。
+    ///
+    /// 抽出来是因为改名（`DesktopNaming`）与改 Dock（`AppState.setOverride`）用的是同一套
+    /// 插入/清理规则，两处各写一遍迟早会不一致（例如一边删空绑定、另一边不删）。
+    static func updating(
+        _ bindings: [DesktopBinding],
+        for space: DesktopSpace,
+        _ mutate: (inout DesktopBinding) -> Void
+    ) -> [DesktopBinding] {
+        var result = bindings
+        if let index = result.firstIndex(where: { $0.id == space.id }) {
+            mutate(&result[index])
+            if result[index].customName == nil, result[index].override == nil {
+                result.remove(at: index)
+            }
+            return result
+        }
+        var fresh = DesktopBinding(
+            displayUUID: space.displayUUID,
+            spaceUUID: space.spaceUUID,
+            customName: nil,
+            override: nil
+        )
+        mutate(&fresh)
+        guard fresh.customName != nil || fresh.override != nil else { return result }
+        result.append(fresh)
+        return result
+    }
 }
 
 enum ClickAction: String, Codable, Sendable, CaseIterable {

@@ -13,7 +13,8 @@ final class DockReloaderTests: XCTestCase {
             process: process,
             timeout: .milliseconds(200),
             pollInterval: .milliseconds(2),
-            fallbackGrace: .milliseconds(20)
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .zero   // 测试不睡那 1 秒节流窗口
         )
     }
 
@@ -117,5 +118,158 @@ final class DockReloaderTests: XCTestCase {
         XCTAssertEqual(first.method, .sighup)
         XCTAssertEqual(second.method, .sighup)
         XCTAssertNotEqual(first.newPID, second.newPID, "每次都要真的换一个进程")
+    }
+
+    // MARK: - 非正数 PID 不能被当成"新 Dock 回来了"
+
+    /// 谎报 -1 的替身：Dock 重启窗口里 `NSRunningApplication` 真的会返回 `processIdentifier == -1`。
+    ///
+    /// 如果 `waitForRestart` 把 -1 当成新 PID，`ReloadOutcome` 就会**谎报成功**
+    /// （实际 Dock 还没回来），调用方会以为可以继续；更糟的是这个 -1 会被传进
+    /// `signal(_:_:)`，而 `kill(-1, sig)` 是"发给当前用户的全部进程"。
+    private final class LyingProcess: DockProcessControlling, @unchecked Sendable {
+        private let lock = NSLock()
+        private var lies: Int
+        private var pid: pid_t
+        private var nextPID: pid_t
+        private var seenFirstCall = false
+
+        init(pid: pid_t = 100, lies: Int = 2) {
+            self.pid = pid
+            self.nextPID = pid
+            self.lies = lies
+        }
+
+        func dockPID() -> pid_t? {
+            lock.withLock {
+                // 第一次调用是 reload() 开头取 oldPID，必须给真值。
+                guard seenFirstCall else {
+                    seenFirstCall = true
+                    return pid
+                }
+                if lies > 0 {
+                    lies -= 1
+                    return -1
+                }
+                nextPID += 1
+                return nextPID
+            }
+        }
+
+        @discardableResult func signal(_ pid: pid_t, _ sig: Int32) -> Bool { true }
+        @discardableResult func kickstart() -> Bool { true }
+    }
+
+    func testReloaderSkipsNegativePIDAndFindsTheRealRestart() async {
+        let process = LyingProcess(pid: 100, lies: 2)
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(300),
+            pollInterval: .milliseconds(2),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .zero   // 测试不睡那 1 秒节流窗口
+        )
+
+        let outcome = await reloader.reload(strategy: .auto)
+
+        XCTAssertEqual(outcome.method, .sighup, "谎报的 -1 不该让我们掉进兜底路径")
+        XCTAssertEqual(outcome.newPID, 101, "应当跳过 -1，等到真正的 101")
+        XCTAssertGreaterThan(outcome.newPID ?? -1, 0)
+        XCTAssertTrue(outcome.succeeded)
+    }
+
+    func testReloaderFailsRatherThanAcceptingNegativePIDForever() async {
+        // 一直谎报 -1 → 必须报失败，绝不能拿 -1 当成功。
+        let process = LyingProcess(pid: 100, lies: .max)
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(120),
+            pollInterval: .milliseconds(2),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .zero   // 测试不睡那 1 秒节流窗口
+        )
+
+        let outcome = await reloader.reload(strategy: .auto)
+
+        XCTAssertFalse(outcome.succeeded)
+        XCTAssertNil(outcome.newPID)
+        XCTAssertEqual(outcome.method, .failed)
+    }
+
+    // MARK: - 重启节流（`docs/spikes.md` 实验 5）
+
+    func testSecondReloadWaitsOutTheThrottleWindow() async {
+        // 实测：两次重启间隔 < 1 s 时 Dock 要等约 1070 ms 才归位，间隔 ≥ 1 s 时只要约 70 ms。
+        // 所以第二次重启必须先等满窗口 —— 等待期间 Dock 还是可用的。
+        let process = FakeDockProcess(restartsOn: [SIGHUP])
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(200),
+            pollInterval: .milliseconds(2),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .milliseconds(120)
+        )
+
+        let first = await reloader.reload(strategy: .auto)
+        XCTAssertEqual(first.spacingWait, 0, "第一次没有上一次可错开，不该等")
+
+        let started = Date()
+        let second = await reloader.reload(strategy: .auto)
+        let wallClock = Date().timeIntervalSince(started)
+
+        XCTAssertGreaterThan(second.spacingWait, 0.05, "第二次必须等掉剩下的节流窗口")
+        XCTAssertGreaterThan(wallClock, 0.1)
+        // 关键：等待时间**不算进 Dock 不可用时长**，否则日志会吓人。
+        XCTAssertLessThan(second.elapsed, second.spacingWait,
+                          "elapsed 只该含 Dock 真正不可用的时间")
+        XCTAssertTrue(second.description.contains("期间 Dock 可用"),
+                      "日志要说清这段等待里 Dock 是可用的：\(second.description)")
+    }
+
+    func testFirstReloadNeverWaits() async {
+        let process = FakeDockProcess(restartsOn: [SIGHUP])
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(200),
+            pollInterval: .milliseconds(2),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .seconds(30)   // 故意设得极大：第一次也必须立刻走
+        )
+
+        let started = Date()
+        let outcome = await reloader.reload(strategy: .auto)
+
+        XCTAssertEqual(outcome.method, .sighup)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.0, "第一次重启不该等节流窗口")
+        XCTAssertEqual(outcome.spacingWait, 0)
+    }
+
+    func testFailedReloadDoesNotArmTheThrottleWindow() async {
+        // 重启失败时没有"新 Dock 归位"的时刻，所以不该记窗口 ——
+        // 否则下一次重试会被毫无理由地推迟。
+        let process = FakeDockProcess(restartsOn: [], kickstartRestarts: false)
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(80),
+            pollInterval: .milliseconds(2),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .milliseconds(200)
+        )
+
+        let startedFirst = Date()
+        let first = await reloader.reload(strategy: .auto)
+        let firstWall = Date().timeIntervalSince(startedFirst)
+        XCTAssertFalse(first.succeeded)
+
+        let started = Date()
+        let second = await reloader.reload(strategy: .auto)
+        let secondWall = Date().timeIntervalSince(started)
+
+        XCTAssertFalse(second.succeeded)
+        XCTAssertEqual(second.spacingWait, 0, "上次没成功归位就不该等")
+        // 失败路径本身要花时间（SIGHUP 超时 + 宽限 + kickstart 超时），所以不能设死上限，
+        // 只能要求"第二次没有比第一次多出一个节流窗口"。
+        XCTAssertLessThan(secondWall, firstWall + 0.1,
+                          "第二次多等了：第一次 \(Int(firstWall * 1000)) ms，第二次 \(Int(secondWall * 1000)) ms")
     }
 }

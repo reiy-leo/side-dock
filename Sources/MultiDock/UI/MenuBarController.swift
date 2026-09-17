@@ -125,6 +125,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         next.isEnabled = state.spaceProviderAvailable && state.desktops.count > 1
         menu.addItem(next)
 
+        // 计划 §3.7 菜单栏下拉：把此刻真实 Dock 抓下来覆盖当前桌面的配置。
+        let resetFromLive = NSMenuItem(
+            title: "用当前 Dock 重置本桌面配置",
+            action: #selector(resetFromLiveDock),
+            keyEquivalent: ""
+        )
+        resetFromLive.target = self
+        menu.addItem(resetFromLive)
+
         let refresh = NSMenuItem(title: "刷新桌面列表", action: #selector(refreshDesktops), keyEquivalent: "")
         refresh.target = self
         menu.addItem(refresh)
@@ -141,7 +150,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let quit = NSMenuItem(title: "退出 MultiDock", action: #selector(quit), keyEquivalent: "q")
+        // 标题写清"退出会还原"：无痕原则是硬约束，别让用户以为退出后 Dock 会留在改动后的状态。
+        let quit = NSMenuItem(title: "退出并还原 Dock", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
     }
@@ -154,6 +164,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func goNextDesktop() { state.switchToNextDesktop() }
+    @objc private func resetFromLiveDock() { state.resetActiveDesktopConfigFromLiveDock() }
     @objc private func refreshDesktops() { state.refreshDesktops() }
     @objc private func openDebugPanel() { onOpenDebugPanel?() }
     @objc private func openSettings() { onOpenSettings?() }

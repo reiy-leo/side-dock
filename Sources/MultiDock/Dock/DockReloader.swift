@@ -20,43 +20,74 @@ struct RealDockProcessControl: DockProcessControlling {
     static let dockBundleIdentifier = "com.apple.dock"
     /// `launchctl` 的服务名。Dock 由这个 LaunchAgent 拉起。
     static let dockServiceName = "com.apple.Dock.agent"
+    /// Dock 的进程名，用于发信号前的身份确认。
+    static let dockProcessName = "Dock"
 
     func dockPID() -> pid_t? {
-        // 首选：LaunchServices 查询。在 .app 里最可靠。
-        if let pid = NSRunningApplication
+        // 首选：LaunchServices 查询（实测单次 0.6–1.4 ms）。
+        //
+        // **必须过滤 `processIdentifier > 0`**：实测在 Dock 重启的窗口里，这里会返回一个
+        // **正在退出**的实例，它的 `processIdentifier` 是 **-1**。把 -1 当成有效 PID 的后果
+        // 见 `signal(_:_:)` 里的安全闸门说明 —— 那是能毁掉用户整个图形会话的。
+        if let app = NSRunningApplication
             .runningApplications(withBundleIdentifier: Self.dockBundleIdentifier)
-            .first?
-            .processIdentifier {
-            return pid
+            .first(where: { !$0.isTerminated && $0.processIdentifier > 0 }) {
+            return app.processIdentifier
         }
         // 兜底：非 .app 进程（例如 `swift test` 的 xctest runner）里上一条可能查不到，
-        // 但 Dock 一定在跑。用 pgrep 按进程名找，避免误判成"Dock 不在"。
-        return Self.pgrepDockPID()
+        // 但 Dock 一定在跑。直接扫进程表，避免误判成"Dock 不在"。
+        return Self.scanForDockPID()
     }
 
-    private static func pgrepDockPID() -> pid_t? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        process.arguments = ["-x", "Dock"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return nil }
-            let text = String(decoding: data, as: UTF8.self)
-                .split(whereSeparator: \.isNewline).first
-            return text.flatMap { pid_t($0) }
-        } catch {
+    /// 扫进程表找 Dock。
+    ///
+    /// **不用 `pgrep` 子进程**：实测 `/usr/bin/pgrep` 单次约 **110 ms**，
+    /// 而 `proc_listpids` + `proc_name` 只要 **0.02 ms**。重启判定是 15 ms 一轮的轮询热路径，
+    /// 每次 110 ms 会把"等 Dock 回来"从 0.1 秒拖到 1 秒以上（实测踩过：连切 20 次每次约 1.08 s）。
+    private static func scanForDockPID() -> pid_t? {
+        // 进程数会变，所以拿到的字节数等于缓冲上限时加倍重试，而不是直接放弃。
+        var capacity = 1024
+        for _ in 0..<3 {
+            var buffer = [pid_t](repeating: 0, count: capacity)
+            let bytes = buffer.withUnsafeMutableBytes { raw in
+                proc_listpids(UInt32(PROC_ALL_PIDS), 0, raw.baseAddress, Int32(raw.count))
+            }
+            guard bytes > 0 else { return nil }
+            let count = Int(bytes) / MemoryLayout<pid_t>.size
+            if count >= capacity {
+                capacity = count * 2
+                continue
+            }
+            for pid in buffer.prefix(count) where pid > 0 {
+                if processName(of: pid) == dockProcessName { return pid }
+            }
             return nil
         }
+        return nil
+    }
+
+    /// 进程名。拿不到（进程已死、无权限）返回 nil。
+    private static func processName(of pid: pid_t) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let length = proc_name(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return nil }
+        // 先截到 NUL 再解码：`String(cString:)` 已废弃。
+        let name = buffer.prefix(Int(length)).prefix { $0 != 0 }
+        guard !name.isEmpty else { return nil }
+        return String(decoding: name.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 
     @discardableResult
     func signal(_ pid: pid_t, _ sig: Int32) -> Bool {
-        Darwin.kill(pid, sig) == 0
+        // ⚠️ **安全闸门，绝不能去掉。**
+        //
+        // `kill(-1, sig)` 的语义是"发给**当前用户的全部进程**"，`kill(0, sig)` 是"发给整个进程组"。
+        // 一次误传就可能让用户当场丢掉整个图形会话。而 `NSRunningApplication` 在 Dock 重启
+        // 窗口里**真的会**返回 -1（实测复现），所以这个值不是理论风险。
+        guard pid > 0 else { return false }
+        // 再确认一次这个 PID 真的是 Dock。只对确认过身份的 PID 发信号。
+        guard Self.processName(of: pid) == Self.dockProcessName else { return false }
+        return Darwin.kill(pid, sig) == 0
     }
 
     @discardableResult
@@ -95,17 +126,24 @@ struct ReloadOutcome: Sendable, Equatable {
     var method: Method
     var oldPID: pid_t?
     var newPID: pid_t?
+    /// **Dock 真正不可用的时长**（不含 `spacingWait`）。
     var elapsed: TimeInterval
+    /// 为了错开 launchd 的重启节流而主动等待的时间。这段等待里 **Dock 是可用的**，
+    /// 所以不能算进"不可用时长"，否则日志会吓人。
+    var spacingWait: TimeInterval = 0
 
     var succeeded: Bool { newPID != nil }
 
     var description: String {
+        let wait = spacingWait > 0.01
+            ? String(format: "（先等了 %.0f ms 错开节流，期间 Dock 可用）", spacingWait * 1000)
+            : ""
         guard succeeded else {
-            return String(format: "%@ 失败（%.0f ms，旧 PID %@）", method.rawValue, elapsed * 1000,
-                          oldPID.map(String.init) ?? "无")
+            return String(format: "%@ 失败（%.0f ms，旧 PID %@）%@", method.rawValue, elapsed * 1000,
+                          oldPID.map(String.init) ?? "无", wait)
         }
-        return String(format: "%@ 成功：PID %@ → %@，用时 %.0f ms",
-                      method.rawValue, oldPID.map(String.init) ?? "?", String(newPID!), elapsed * 1000)
+        return String(format: "%@ 成功：PID %@ → %@，Dock 不可用 %.0f ms%@",
+                      method.rawValue, oldPID.map(String.init) ?? "?", String(newPID!), elapsed * 1000, wait)
     }
 }
 
@@ -117,6 +155,15 @@ struct ReloadOutcome: Sendable, Equatable {
 /// ⚠️ **绝不用 AppleEvent 优雅退出**：`/System/Library/LaunchAgents/com.apple.Dock.plist` 是
 /// `KeepAlive = {AfterInitialDemand:1, SuccessfulExit:0}`，退出码 0 时 launchd **不会**把 Dock 拉回来，
 /// 用户会当场失去 Dock。只走信号路径。
+///
+/// ⚠️ **只对确认过身份的 PID 发信号**。`kill(-1, sig)` 会发给当前用户的全部进程，
+/// `kill(0, sig)` 会发给整个进程组 —— 而 Dock 重启窗口里 `NSRunningApplication` 真的会返回 -1。
+/// 闸门在 `RealDockProcessControl.signal(_:_:)`，改动时不要绕过它。
+///
+/// ⚠️ **重启要错开 `minimumSpacing`**。实测（`docs/spikes.md` 实验 5）：
+/// 两次重启间隔 **< 1 s** 时 Dock 要等 **约 1070 ms** 才归位；间隔 **≥ 1 s** 时只要 **约 70 ms**。
+/// 这是 launchd 的重启节流。所以"先等一会儿再重启"严格优于"立刻重启" ——
+/// 等待期间 Dock 还能用，而立刻重启会让 Dock 消失一秒多。
 @MainActor
 final class DockReloader {
 
@@ -126,17 +173,23 @@ final class DockReloader {
     /// 发完 SIGTERM 后、动 `kickstart` 之前给的宽限。等的是「launchd 自己把 Dock 拉回来」，
     /// 免得正常机器上也白等一次 `kickstart`。
     private let fallbackGrace: Duration
+    /// 两次重启之间的最小间隔，用来错开 launchd 的重启节流（见类文档）。
+    private let minimumSpacing: Duration
+    /// 上一次重启**归位**的时刻。节流窗口从这一刻算起。
+    private var lastRestartAt: ContinuousClock.Instant?
 
     init(
         process: any DockProcessControlling = RealDockProcessControl(),
         timeout: Duration = .seconds(5),
         pollInterval: Duration = .milliseconds(15),
-        fallbackGrace: Duration = .milliseconds(500)
+        fallbackGrace: Duration = .milliseconds(500),
+        minimumSpacing: Duration = .milliseconds(1000)
     ) {
         self.process = process
         self.timeout = timeout
         self.pollInterval = pollInterval
         self.fallbackGrace = fallbackGrace
+        self.minimumSpacing = minimumSpacing
     }
 
     /// 重启 Dock。
@@ -144,21 +197,27 @@ final class DockReloader {
     /// - Parameter strategy: `.auto` 先 SIGHUP；`.sigterm` 直接走 SIGTERM。
     ///   两条路失败都落到 `kickstart`。
     func reload(strategy: ReloadStrategy = .auto) async -> ReloadOutcome {
+        // 先错开节流窗口。这段时间 Dock 是**可用**的，所以不计入"不可用时长"。
+        let spacingWait = await waitForSpacing()
+
         let started = Date()
         guard let oldPID = process.dockPID() else {
             return ReloadOutcome(method: .failed, oldPID: nil, newPID: nil,
-                                 elapsed: Date().timeIntervalSince(started))
+                                 elapsed: Date().timeIntervalSince(started),
+                                 spacingWait: spacingWait)
         }
 
         if strategy == .auto {
             process.signal(oldPID, SIGHUP)
             if let newPID = await waitForRestart(after: oldPID) {
-                return outcome(.sighup, oldPID: oldPID, newPID: newPID, started: started)
+                return outcome(.sighup, oldPID: oldPID, newPID: newPID,
+                               started: started, spacingWait: spacingWait)
             }
         } else {
             process.signal(oldPID, SIGTERM)
             if let newPID = await waitForRestart(after: oldPID) {
-                return outcome(.sigterm, oldPID: oldPID, newPID: newPID, started: started)
+                return outcome(.sigterm, oldPID: oldPID, newPID: newPID,
+                               started: started, spacingWait: spacingWait)
             }
         }
 
@@ -167,28 +226,57 @@ final class DockReloader {
         process.signal(dyingPID, SIGTERM)
         // 给它一点时间死透；这段时间内 launchd 可能自己就把它拉回来了。
         if let newPID = await waitForRestart(after: dyingPID, timeout: fallbackGrace) {
-            return outcome(.sigterm, oldPID: oldPID, newPID: newPID, started: started)
+            return outcome(.sigterm, oldPID: oldPID, newPID: newPID,
+                           started: started, spacingWait: spacingWait)
         }
         process.kickstart()
         if let newPID = await waitForRestart(after: dyingPID) {
-            return outcome(.kickstart, oldPID: oldPID, newPID: newPID, started: started)
+            return outcome(.kickstart, oldPID: oldPID, newPID: newPID,
+                           started: started, spacingWait: spacingWait)
         }
 
         return ReloadOutcome(method: .failed, oldPID: oldPID, newPID: nil,
-                             elapsed: Date().timeIntervalSince(started))
+                             elapsed: Date().timeIntervalSince(started),
+                             spacingWait: spacingWait)
+    }
+
+    /// 睡到距上次重启归位满 `minimumSpacing` 为止。返回实际等待时长。
+    private func waitForSpacing() async -> TimeInterval {
+        guard let last = lastRestartAt else { return 0 }
+        let target = last + minimumSpacing
+        let remaining = ContinuousClock.now.duration(to: target)
+        guard remaining > .zero else { return 0 }
+        let started = Date()
+        try? await Task.sleep(for: remaining)
+        return Date().timeIntervalSince(started)
     }
 
     /// 轮询等待一个**不同于** `oldPID` 的 Dock 进程出现。
+    ///
+    /// 只接受**正数** PID：`NSRunningApplication` 在 Dock 重启窗口里会返回 -1，
+    /// 若把它当成"新 Dock 回来了"，`ReloadOutcome` 会谎报成功（Dock 其实还没回来）。
+    /// `RealDockProcessControl` 里已有一道闸门，这里是第二道 —— 两层都便宜，都留着。
     private func waitForRestart(after oldPID: pid_t, timeout: Duration? = nil) async -> pid_t? {
         let deadline = ContinuousClock.now + (timeout ?? self.timeout)
         while ContinuousClock.now < deadline {
-            if let pid = process.dockPID(), pid != oldPID { return pid }
+            if let pid = process.dockPID(), pid > 0, pid != oldPID {
+                // 节流窗口从"新 Dock 归位"这一刻算起。
+                lastRestartAt = ContinuousClock.now
+                return pid
+            }
             try? await Task.sleep(for: pollInterval)
         }
         return nil
     }
 
-    private func outcome(_ method: ReloadOutcome.Method, oldPID: pid_t, newPID: pid_t, started: Date) -> ReloadOutcome {
-        ReloadOutcome(method: method, oldPID: oldPID, newPID: newPID, elapsed: Date().timeIntervalSince(started))
+    private func outcome(
+        _ method: ReloadOutcome.Method,
+        oldPID: pid_t,
+        newPID: pid_t,
+        started: Date,
+        spacingWait: TimeInterval
+    ) -> ReloadOutcome {
+        ReloadOutcome(method: method, oldPID: oldPID, newPID: newPID,
+                      elapsed: Date().timeIntervalSince(started), spacingWait: spacingWait)
     }
 }

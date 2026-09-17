@@ -70,6 +70,13 @@ final class DockController {
 
     /// 最近一次成功应用的配置指纹。用于「内容相同则短路」。
     private(set) var appliedFingerprint: String?
+    /// 最近一次成功应用后，**读回口径**的指纹（只算白名单里当前域中真实存在的键）。
+    ///
+    /// `DockWatcher` 用它判断"当前真实 Dock 还是不是我们写的那份"。
+    /// 与写入校验同一口径，所以可以直接比字符串。
+    private(set) var appliedComparableFingerprint: String?
+    /// 最近一次成功写入的时间。给"别把自己的写入当成用户改动"用。
+    private(set) var appliedAt: Date?
 
     /// 待应用的目标。连击时只保留最后一个（计划 §3.4 第 7 条）。
     private var pending: (config: DockConfig, reason: String, force: Bool, strategy: ReloadStrategy)?
@@ -106,6 +113,35 @@ final class DockController {
         return DockConfig.read(from: domain)
     }
 
+    /// 把"此刻真实 Dock 的内容"记成已应用状态。
+    ///
+    /// 启动时调用：如果真实 Dock 已经等于要应用的那份配置，`apply` 会被指纹短路，
+    /// 于是**不写、不重启 Dock**。这不改变无痕语义 —— 只是避免一次毫无必要的重启。
+    ///
+    /// 注意**不设 `appliedAt`**：这不是我们写的，不该被当成"我们自己刚写完"。
+    func adoptLiveDockAsApplied() {
+        guard let live = captureLiveConfig() else { return }
+        appliedFingerprint = live.fingerprint
+        appliedComparableFingerprint = comparableFingerprint(of: live)
+    }
+
+    /// 一套配置在**读回口径**下的指纹：只算白名单里**当前域中真实存在**的键。
+    ///
+    /// 与 `verify` 用的是同一套口径，所以「Dock 是否还是我们写的那份」可以直接比字符串。
+    /// 本机缺失的外观键（`show-process-indicators`）两边都不参与，不会产生假差异。
+    func comparableFingerprint(of config: DockConfig) -> String {
+        let present = Set(preferences.readDomain().keys)
+        let keys = Set(Self.entries(for: config, restrictedTo: present).keys)
+        return config.fingerprint(restrictedTo: keys)
+    }
+
+    /// 当前真实 Dock 在读回口径下的指纹。域读不到时返回 nil。
+    func currentComparableFingerprint() -> String? {
+        let domain = preferences.readDomain()
+        guard !domain.isEmpty else { return nil }
+        return comparableFingerprint(of: DockConfig.read(from: domain))
+    }
+
     /// 请求应用。连击时只对**最终落点**执行一次；应用进行中又有新目标，本轮结束立即补跑。
     func request(_ config: DockConfig, reason: String, strategy: ReloadStrategy, force: Bool = false) {
         pending = (config, reason, force, strategy)
@@ -122,6 +158,12 @@ final class DockController {
             await task.value
         }
     }
+
+    /// 是否有待办正在排队/执行。
+    ///
+    /// `request()` 会**同步**建好任务，所以调用方在 `request()` 返回后立刻读它是 `true`。
+    /// 「预应用」正是靠这一点验证"切空间之前就已经发起应用，没等轮询"。
+    var isApplying: Bool { drainTask != nil }
 
     private func drain() async {
         while let next = pending {
@@ -183,7 +225,11 @@ final class DockController {
             if verified { break }
         }
 
-        if verified { appliedFingerprint = config.fingerprint }
+        if verified {
+            appliedFingerprint = config.fingerprint
+            appliedComparableFingerprint = config.fingerprint(restrictedTo: comparableKeys)
+            appliedAt = Date()
+        }
 
         return Outcome(
             result: verified ? .applied : .failed,

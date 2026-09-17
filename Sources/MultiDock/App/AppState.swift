@@ -27,6 +27,15 @@ struct LogEntry: Identifiable, Sendable {
     }
 }
 
+/// Dock 编辑的目标：通用页的**默认 Dock**，或某个桌面的**独立 Dock**。
+///
+/// 抽出来是为了让编辑器只有一套读写口径 —— 图标条与外观控件都按 `(目标)` 取配置、
+/// 写配置、提交改动。否则通用页与桌面页会各写一遍「只改内存 / 一次落盘」的逻辑，迟早不一致。
+enum DockEditTarget: Hashable {
+    case defaultDock
+    case desktop(DesktopSpace)
+}
+
 /// 全局状态。UI 只读它，改状态都走这里的方法。
 ///
 /// 空间相关的值**不复制**，直接转发给 `observer` —— 否则两份状态会不同步。
@@ -72,6 +81,9 @@ final class AppState {
     /// 当前 Dock 域里存在、可安全写入的白名单键。**缓存**，避免每次渲染都读一遍偏好域。
     private(set) var availableWhitelistedKeys: Set<String> = []
 
+    /// 监视真实 Dock 上的人工改动（P3）。`autoCaptureUserEdits` 关闭时不创建。
+    private(set) var dockWatcher: DockWatcher?
+
     /// 由 `AppDelegate` 接到 `LifecycleController.noteDockApplied`，把"改过 Dock"记进会话标记。
     var onDockApplied: (@MainActor (String) -> Void)?
 
@@ -79,14 +91,17 @@ final class AppState {
     private let baselineStore: BaselineStore
     private let maxLogEntries = 400
 
-    /// 依赖全部可注入：`DockController` 与两个 Store 都能换成测试替身，
-    /// 这样「立即应用 / 还原」这条路径不必真的动用户的 Dock 也能测。
+    /// 依赖全部可注入：`DockController`、两个 Store、以及空间提供者都能换成测试替身，
+    /// 这样「立即应用 / 还原 / 切桌面预应用」这几条路径不必真的动用户的 Dock 也能测。
+    ///
+    /// `provider` 也要可注入，否则「预应用先于切换」只能靠真实桌面来验，没法写成断言。
     init(
         dockController: DockController = DockController(),
         configStore: ConfigStore = ConfigStore(),
-        baselineStore: BaselineStore = BaselineStore()
+        baselineStore: BaselineStore = BaselineStore(),
+        provider: (any SpaceProviding)? = nil
     ) {
-        let provider = SpaceProviderFactory.make()
+        let provider = provider ?? SpaceProviderFactory.make()
         spaceProviderAvailable = provider.isAvailable
         spaceProviderWarning = provider.unavailableReason
         observer = SpaceObserver(provider: provider)
@@ -102,9 +117,162 @@ final class AppState {
                 self.append(.info, "活动空间不是用户桌面（可能是全屏 App），不触发切换")
             }
             self.toastPresenter?.handleActiveSpaceChanged(space)
+            // 桌面切换后把该桌面的 Dock 推下去（内容相同会被指纹短路，不会白重启 Dock）。
+            if let space { self.applyConfigForDesktop(space, reason: "切到 \(self.displayName(for: space))") }
         }
         // 必须在最后：闭包要捕获 `self`，而所有存储属性得先初始化完。
         dockController.onOutcome = { [weak self] outcome in self?.handleDockOutcome(outcome) }
+    }
+
+    // MARK: - Dock 配置与桌面的绑定（计划 §3.2 / §3.7）
+
+    /// 某个桌面的绑定（可能不存在）。
+    func binding(for space: DesktopSpace) -> DesktopBinding? {
+        bindings.first { $0.id == space.id }
+    }
+
+    /// 某个桌面实际生效的 Dock：有自己的 override 就用它，否则用默认 Dock。
+    func effectiveConfig(for space: DesktopSpace) -> DockConfig {
+        binding(for: space)?.override ?? settings.defaultDock
+    }
+
+    func hasOverride(for space: DesktopSpace) -> Bool {
+        binding(for: space)?.override != nil
+    }
+
+    /// 设置/取消某个桌面的独立 Dock。`nil` = 沿用默认。
+    func setOverride(_ config: DockConfig?, for space: DesktopSpace, reason: String) {
+        let updated = DesktopNaming.updatingBindings(bindings, override: config, for: space)
+        guard updated != bindings else { return }
+        bindings = updated
+        persistConfiguration()
+        append(.info, "\(displayName(for: space))：\(reason)")
+        if settings.autoApplyOnEdit { applyConfigForDesktop(space, reason: reason) }
+    }
+
+    /// 把默认 Dock 复制一份给某个桌面作为独立配置。
+    func copyDefaultToOverride(for space: DesktopSpace) {
+        setOverride(settings.defaultDock, for: space, reason: "复制默认 Dock 到本桌面")
+    }
+
+    /// 编辑器专用：只改内存，不落盘（理由同 `setDefaultDock`）。
+    func setOverrideInMemory(_ config: DockConfig, for space: DesktopSpace) {
+        bindings = DesktopNaming.updatingBindings(bindings, override: config, for: space)
+    }
+
+    /// 一次编辑结束：落盘一次，并按开关决定是否立即应用。
+    func overrideEdited(for space: DesktopSpace, reason: String) {
+        persistConfiguration()
+        append(.info, "\(displayName(for: space)) 的 Dock 已修改：\(reason)")
+        guard settings.autoApplyOnEdit else {
+            append(.info, "「编辑后立即应用」已关闭，改动只存在本地配置里")
+            return
+        }
+        applyConfigForDesktop(space, reason: reason)
+    }
+
+    /// 应用某个桌面实际生效的 Dock。
+    func applyConfigForDesktop(_ space: DesktopSpace, reason: String) {
+        let config = effectiveConfig(for: space)
+        guard !config.pinnedApps.isEmpty else {
+            append(.warning, "\(displayName(for: space)) 的 Dock 是空的，跳过应用 —— 先给它配一套图标")
+            return
+        }
+        dockController.request(config, reason: reason, strategy: settings.reloadStrategy)
+    }
+
+    /// 用户手动改了真实 Dock → 回存到当前桌面的配置（计划 §3.8）。
+    func handleUserDockEdit(_ config: DockConfig) {
+        guard settings.autoCaptureUserEdits else {
+            append(.info, "「识别手动改动并回存」已关闭，忽略这次改动")
+            return
+        }
+        // 回存期间不能让 watcher 把这次写入又当成新的用户改动。
+        dockWatcher?.stop()
+        defer {
+            dockWatcher?.acknowledge(dockController.appliedComparableFingerprint)
+            dockWatcher?.start()
+        }
+
+        guard let space = activeSpace else {
+            updateSettings { $0.defaultDock = config }
+            append(.info, "手动改动已回存到默认 Dock（当前不在用户桌面上）")
+            return
+        }
+
+        if hasOverride(for: space) {
+            setOverride(config, for: space, reason: "回存手动改动：\(config.pinnedApps.count) 个图标")
+        } else {
+            updateSettings { $0.defaultDock = config }
+            append(.info, "手动改动已回存到默认 Dock：\(config.pinnedApps.count) 个图标")
+        }
+    }
+
+    // MARK: - 编辑器统一入口（默认 Dock 与逐桌面独立 Dock 共用）
+
+    /// 目标当前生效的配置。
+    func dockConfig(for target: DockEditTarget) -> DockConfig {
+        switch target {
+        case .defaultDock: return settings.defaultDock
+        case .desktop(let space): return effectiveConfig(for: space)
+        }
+    }
+
+    func dockAppearance(for target: DockEditTarget) -> DockAppearance {
+        dockConfig(for: target).appearance
+    }
+
+    /// **只改内存**，不落盘、不应用。
+    ///
+    /// 编辑器必须走它：拖拽排序的每次 `dropEntered`、滑杆的每一步都会赋值，
+    /// 若顺手落盘 + 重启 Dock，拖过一个图标就会写一次盘、闪一次 Dock。
+    func setDockConfigInMemory(_ config: DockConfig, for target: DockEditTarget) {
+        switch target {
+        case .defaultDock:
+            settings.defaultDock = config
+        case .desktop(let space):
+            setOverrideInMemory(config, for: space)
+        }
+    }
+
+    func setDockAppearanceInMemory(_ appearance: DockAppearance, for target: DockEditTarget) {
+        var config = dockConfig(for: target)
+        config.appearance = appearance
+        setDockConfigInMemory(config, for: target)
+    }
+
+    /// 一次编辑结束：**落盘一次**，并按「编辑后立即应用」开关决定要不要推给真实 Dock。
+    func dockEdited(_ target: DockEditTarget, reason: String) {
+        switch target {
+        case .defaultDock:
+            dockConfigEdited(reason: reason)
+        case .desktop(let space):
+            overrideEdited(for: space, reason: reason)
+        }
+    }
+
+    /// 这个目标是否已经有独立于默认 Dock 的内容（决定 UI 显示"独立"还是"沿用默认"）。
+    func isOverridden(_ target: DockEditTarget) -> Bool {
+        switch target {
+        case .defaultDock: return false
+        case .desktop(let space): return hasOverride(for: space)
+        }
+    }
+
+    private func startDockWatcher() {
+        guard settings.autoCaptureUserEdits else {
+            append(.info, "「识别真实 Dock 上的手动改动并回存」已关闭，不启动监视")
+            return
+        }
+        let watcher = DockWatcher(
+            currentFingerprint: { [weak self] in self?.dockController.currentComparableFingerprint() },
+            appliedFingerprint: { [weak self] in self?.dockController.appliedComparableFingerprint },
+            readLiveConfig: { [weak self] in self?.dockController.captureLiveConfig() },
+            onUserEdit: { [weak self] config in self?.handleUserDockEdit(config) },
+            log: { [weak self] message in self?.append(.info, message) }
+        )
+        watcher.start()
+        dockWatcher = watcher
     }
 
     func attachToastPresenter(_ presenter: ToastPresenter) {
@@ -126,19 +294,27 @@ final class AppState {
         runStartupSelfCheck()
         loadConfiguration()
 
+        // 把"此刻真实 Dock 的内容"记成已应用状态：如果它已经等于要应用的那份配置，
+        // 下面的自动应用就会被指纹短路，启动时不会白重启一次 Dock。
+        dockController.adoptLiveDockAsApplied()
+
         observer.start()
         append(.info, "桌面观察已启动（300 ms 轮询 + 通知）")
         append(.info, "识别到 \(observer.desktops.count) 个用户桌面")
         for space in observer.desktops {
-            append(.info, "  · \(displayName(for: space)) uuid=\(space.spaceUUID) id64=\(space.id64)")
+            append(.info, "  · \(displayName(for: space)) uuid=\(space.spaceUUID) id64=\(space.id64)"
+                + (hasOverride(for: space) ? "（独立 Dock）" : "（沿用默认）"))
         }
         if let active = observer.activeSpace {
             append(.info, "当前桌面：\(displayName(for: active)) / id64=\(active.id64)")
         }
+
+        startDockWatcher()
     }
 
     func stop() {
         observer.stop()
+        dockWatcher?.stop()
         append(.info, "桌面观察已停止")
     }
 
@@ -195,8 +371,15 @@ final class AppState {
             append(.error, "桌面切换不可用：\(spaceProviderWarning ?? "未知原因")")
             return
         }
-        guard let target = switcher.step(.next) else {
+        // **预应用**（计划 §3.4 第 8 条）：先算出目标、把它的 Dock 推下去，再切空间 ——
+        // 切换动画结束时 Dock 已经是正确状态，不用等轮询发现变化才动。
+        guard let target = switcher.target(.next) else {
             append(.warning, "没有可切换的下一个桌面（当前显示器只有 1 个桌面，或尚未识别到活动桌面）")
+            return
+        }
+        applyConfigForDesktop(target, reason: "预应用：切到 \(displayName(for: target))")
+        guard switcher.switchTo(target) != nil else {
+            append(.warning, "切换到 \(displayName(for: target)) 失败")
             return
         }
         append(.info, "切换到 \(displayName(for: target))（id64=\(target.id64)）")
@@ -207,6 +390,7 @@ final class AppState {
             append(.error, "桌面切换不可用：\(spaceProviderWarning ?? "未知原因")")
             return
         }
+        applyConfigForDesktop(space, reason: "预应用：切到 \(displayName(for: space))")
         guard switcher.switchTo(space) != nil else {
             append(.warning, "切换到 \(displayName(for: space)) 失败")
             return
@@ -270,6 +454,25 @@ final class AppState {
             return nil
         }
         return live
+    }
+
+    /// 菜单栏的「用当前 Dock 重置本桌面配置」（计划 §3.7 菜单栏下拉）。
+    ///
+    /// 语义：**不新增绑定**。当前桌面有独立 Dock 就覆盖它；没有就覆盖默认 Dock ——
+    /// 因为那个桌面本来就在用默认 Dock，凭空造一条 override 会让它悄悄脱离默认。
+    func resetActiveDesktopConfigFromLiveDock() {
+        guard let live = captureLiveDockConfig() else { return }
+        guard let space = activeSpace else {
+            updateSettings { $0.defaultDock = live }
+            append(.info, "当前不在用户桌面上，已用当前 Dock 重置默认 Dock")
+            return
+        }
+        if hasOverride(for: space) {
+            setOverride(live, for: space, reason: "用当前 Dock 重置本桌面配置")
+        } else {
+            updateSettings { $0.defaultDock = live }
+            append(.info, "\(displayName(for: space)) 沿用默认 Dock，已用当前 Dock 重置默认 Dock")
+        }
     }
 
     func captureCurrentDockAsDefault() {
@@ -355,6 +558,8 @@ final class AppState {
             }
             hasAppliedDockConfig = true
             onDockApplied?(outcome.fingerprint)
+            // 告诉 watcher「这次变化是我们自己造成的」，别当成用户手动改动。
+            dockWatcher?.acknowledge(dockController.appliedComparableFingerprint)
             refreshDockCapabilities()
         case .skippedIdentical:
             append(.info, "Dock 内容与当前一致，未写入也未重启（\(outcome.reason)）")

@@ -80,3 +80,76 @@ final class FakeDockProcess: DockProcessControlling, @unchecked Sendable {
     var signals: [Int32] { lock.withLock { signalsSent.map(\.sig) } }
     var kickstartCount: Int { lock.withLock { kickstarts } }
 }
+
+/// 可编程的假空间提供者。
+///
+/// 存在的意义：`AppState.switchToNextDesktop` 要求**先预应用 Dock、再切空间**，
+/// 这个顺序只能靠假提供者把 `setCurrentSpace` 记进事件流来断言（见 `AppStateDockTests`）。
+final class FakeSpaceProvider: SpaceProviding, @unchecked Sendable {
+
+    private let lock = NSLock()
+    private var desktops: [DesktopSpace]
+    private var activeID: UInt64
+    private var switches: [UInt64] = []
+    private var switchesSucceed: Bool
+    /// 与 `FakePreferences` 共用的顺序记录，用来断言"预应用先于切换"。
+    var events: Box<[String]>?
+
+    let isAvailable: Bool
+    let unavailableReason: String?
+
+    init(
+        desktops: [DesktopSpace] = [],
+        activeSpaceID: UInt64 = 0,
+        isAvailable: Bool = true,
+        reason: String? = nil,
+        switchesSucceed: Bool = true,
+        events: Box<[String]>? = nil
+    ) {
+        self.desktops = desktops
+        self.activeID = activeSpaceID
+        self.isAvailable = isAvailable
+        self.unavailableReason = reason
+        self.switchesSucceed = switchesSucceed
+        self.events = events
+    }
+
+    func userDesktops() -> [DesktopSpace] { lock.withLock { desktops } }
+
+    func activeSpaceID() -> UInt64 { lock.withLock { activeID } }
+
+    @discardableResult
+    func setCurrentSpace(_ space: DesktopSpace) -> Bool {
+        let accepted = lock.withLock {
+            guard switchesSucceed else { return false }
+            switches.append(space.id64)
+            activeID = space.id64
+            return true
+        }
+        guard accepted else { return false }
+        events?.value.append("switch:\(space.id64)")
+        return true
+    }
+
+    /// 被切到过的桌面 id64 序列。
+    var switchTargets: [UInt64] { lock.withLock { switches } }
+
+    func setDesktops(_ list: [DesktopSpace]) { lock.withLock { desktops = list } }
+
+    /// 造一批同一显示器上的用户桌面，序号从 1 起。
+    static func desktops(
+        count: Int,
+        displayUUID: String = "DISP-1",
+        baseID: UInt64 = 100
+    ) -> [DesktopSpace] {
+        (1...count).map { index in
+            DesktopSpace(
+                displayUUID: displayUUID,
+                spaceUUID: "SPACE-\(index)",
+                id64: baseID + UInt64(index),
+                type: 0,
+                ordinal: index
+            )
+        }
+    }
+}

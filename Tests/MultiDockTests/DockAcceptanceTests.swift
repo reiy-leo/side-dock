@@ -64,6 +64,128 @@ final class DockAcceptanceTests: XCTestCase {
     /// Dock 自己会改、我们从不写的键。重启 Dock 就会动。
     private static let dockSelfMutatingKeys: Set<String> = ["mod-count", "recent-apps", "trash-full"]
 
+    // MARK: - P3 验收：两个桌面来回切，结果稳定
+
+    /// P3 验收标准（`docs/PLAN.md` §4 的 P3 行）里可脚本化的部分：
+    /// - 桌面 1 与桌面 2 配置不同，来回切 20 次，**每次真实 Dock 都等于目标那份**；
+    /// - 两桌面配置相同时切换**无 Dock 刷新**（`mod-count` 不动）；
+    /// - 我们自己的写入**不会被 `DockWatcher` 误判成用户手动改动**（这会让配置被污染）。
+    ///
+    /// 无法脚本化的两条（需要真的拖图标）留在 `AGENTS.md` §6.3 交给用户手测。
+    func testSwitchingBetweenTwoDesktopConfigsIsStable() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment[Self.enableFlag] == "1",
+            "会真的重启 Dock；设 \(Self.enableFlag)=1 才跑"
+        )
+
+        let before = DockPreferences.readDomain()
+        XCTAssertFalse(before.isEmpty, "读不到 com.apple.dock，验收无意义")
+        try Self.dump(before, named: "p3-before")
+
+        do {
+            try await runDesktopSwitchPhase(before: before)
+        } catch {
+            await Self.writeBack(before, label: "异常还原")
+            throw error
+        }
+
+        let restored = await Self.writeBack(before, label: "P3 验收结束还原")
+        try Self.dump(restored, named: "p3-after-restore")
+
+        let illegal = Self.differences(between: before, and: restored)
+            .subtracting(DockPreferences.whitelistedKeys)
+            .subtracting(Self.dockSelfMutatingKeys)
+        XCTAssertTrue(illegal.isEmpty, "还原后白名单外的键仍有差异：\(illegal.sorted())")
+        XCTAssertEqual(Set(before.keys), Set(restored.keys), "键集合必须完全一致")
+        print("""
+        [P3 验收] 还原后差异键：\(Self.differences(between: before, and: restored).sorted())
+        [P3 验收] 图标顺序 after-restore：\(Self.labels(of: restored))
+        """)
+    }
+
+    private func runDesktopSwitchPhase(before: [String: PlistValue]) async throws {
+        let controller = DockController(backup: {})   // 验收不写 App 的备份目录
+
+        // 用真的 `DockWatcher`，但轮询周期拉长到 60 s —— 我们手动 `tick()`，
+        // 这样"它有没有把我们的写入误判成用户改动"是确定性的，不受轮询时机影响。
+        let misdetected = Box<[DockConfig]>([])
+        let watcher = DockWatcher(
+            pollInterval: .seconds(60),
+            currentFingerprint: { controller.currentComparableFingerprint() },
+            appliedFingerprint: { controller.appliedComparableFingerprint },
+            readLiveConfig: { controller.captureLiveConfig() },
+            onUserEdit: { misdetected.value.append($0) }
+        )
+
+        // ---- 两套明显不同的配置：图标大小与放大效果都不同 ----
+        let base = DockConfig.read(from: before)
+        var desktop1 = base
+        desktop1.appearance.tilesize = 40
+        desktop1.appearance.magnification = false
+        var desktop2 = base
+        desktop2.appearance.tilesize = 60
+        desktop2.appearance.magnification = true
+        XCTAssertNotEqual(desktop1.fingerprint, desktop2.fingerprint)
+
+        let targets = [desktop1, desktop2]
+        var switches = 0
+        /// Dock **真正不可用**的时长（重载本身）。这才是用户能感觉到的那个数。
+        var dockDownTimings: [Int] = []
+        /// 一次应用的**总**耗时。包含为错开 launchd 节流而主动等待的时间（期间 Dock 可用）。
+        var totalTimings: [Int] = []
+        var lastApplied = desktop1
+
+        // ---- 来回切 20 次，每次都核对真实 Dock 是否等于目标那份 ----
+        for round in 0..<20 {
+            let target = targets[round % targets.count]
+            let outcome = await controller.apply(target, reason: "P3 验收 第 \(round + 1) 次")
+            switches += 1
+            lastApplied = target
+            dockDownTimings.append(Int((outcome.reload?.elapsed ?? 0) * 1000))
+            totalTimings.append(Int(outcome.elapsed * 1000))
+
+            XCTAssertEqual(outcome.result, .applied, "第 \(round + 1) 次应用失败：\(outcome.summary)")
+            XCTAssertEqual(outcome.verifyAttempts, 1, "第 \(round + 1) 次需要重试，不该发生")
+            XCTAssertEqual(outcome.reload?.method, .sighup, "主路径必须是 SIGHUP")
+            // 节流窗口错开后，Dock 每次只该消失几十毫秒。
+            // 若这里出现约 1000 ms，说明 minimumSpacing 失效了，用户会看到 Dock 消失一秒。
+            XCTAssertLessThan(outcome.reload?.elapsed ?? 99, 0.3,
+                              "第 \(round + 1) 次 Dock 不可用 \(Int((outcome.reload?.elapsed ?? 0) * 1000)) ms，节流没被错开")
+
+            let live = DockPreferences.readDomain()
+            XCTAssertEqual(live["tilesize"]?.doubleValue, target.appearance.tilesize,
+                           "第 \(round + 1) 次切换后真实 Dock 的 tilesize 不对")
+            XCTAssertEqual(live["magnification"]?.boolValue, target.appearance.magnification,
+                           "第 \(round + 1) 次切换后真实 Dock 的 magnification 不对")
+
+            // 关键：我们刚写完，Dock 会规范化回写（补 GUID 等）。
+            // 这次"变化"绝不能被当成用户手动改动 —— 否则配置会被污染成 Dock 的规范化结果。
+            watcher.tick()
+            watcher.acknowledge(controller.appliedComparableFingerprint)
+        }
+
+        XCTAssertEqual(switches, 20)
+        XCTAssertEqual(misdetected.value.count, 0,
+                       "我们的写入被误判成用户手动改动 \(misdetected.value.count) 次")
+        XCTAssertEqual(watcher.detectedCount, 0)
+        print("""
+        [P3 验收] 来回切 \(switches) 次全部成功
+        [P3 验收] Dock 不可用时长（ms）：\(dockDownTimings)　最坏 \(dockDownTimings.max() ?? 0) ms
+        [P3 验收] 应用总耗时（ms）　：\(totalTimings)　最坏 \(totalTimings.max() ?? 0) ms
+        [P3 验收] DockWatcher 误判次数：\(watcher.detectedCount)（必须为 0）
+        """)
+
+        // ---- 两桌面配置相同时，切换必须零开销（不重启 Dock） ----
+        // 用循环里最后落点那份来试，它此刻正是真实 Dock 的内容。
+        let modCountBefore = DockPreferences.readDomain()["mod-count"]?.intValue
+        let identical = await controller.apply(lastApplied, reason: "P3 验收 内容相同")
+        XCTAssertEqual(identical.result, .skippedIdentical, "内容相同必须短路")
+        XCTAssertNil(identical.reload, "短路时不该重启 Dock")
+        XCTAssertEqual(DockPreferences.readDomain()["mod-count"]?.intValue, modCountBefore,
+                       "短路时 mod-count 不该变 —— 变了说明 Dock 其实被重启了")
+        print("[P3 验收] 内容相同时短路：\(identical.summary)")
+    }
+
     /// 写入 + 校验 + 差异核对。
     private func runApplyPhase(before: [String: PlistValue]) async throws {
         // ---- 1. 构造一套与现状不同的配置 ----

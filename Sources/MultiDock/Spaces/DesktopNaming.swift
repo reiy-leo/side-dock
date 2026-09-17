@@ -44,32 +44,26 @@ enum DesktopNaming {
 
     /// 改名。**只动 `customName`，绝不碰 `override`**。
     /// 名字清空且该桌面没有 Dock override 时删掉整条绑定，不留空行。
+    ///
+    /// 插入/清理规则统一由 `DesktopBinding.updating` 负责（与改 Dock 共用一套）。
     static func updatingBindings(
         _ bindings: [DesktopBinding],
         name raw: String,
         for space: DesktopSpace
     ) -> [DesktopBinding] {
         let name = normalizedOrNil(raw)
-        var result = bindings
+        return DesktopBinding.updating(bindings, for: space) { $0.customName = name }
+    }
 
-        if let index = result.firstIndex(where: { $0.id == space.id }) {
-            result[index].customName = name
-            if result[index].customName == nil, result[index].override == nil {
-                result.remove(at: index)
-            }
-            return result
-        }
-
-        guard let name else { return result }
-        result.append(
-            DesktopBinding(
-                displayUUID: space.displayUUID,
-                spaceUUID: space.spaceUUID,
-                customName: name,
-                override: nil
-            )
-        )
-        return result
+    /// 改 Dock override。**只动 `override`，绝不碰 `customName`**。
+    ///
+    /// - Parameter config: nil = 该桌面「沿用默认 Dock」。
+    static func updatingBindings(
+        _ bindings: [DesktopBinding],
+        override config: DockConfig?,
+        for space: DesktopSpace
+    ) -> [DesktopBinding] {
+        DesktopBinding.updating(bindings, for: space) { $0.override = config }
     }
 
     /// 加载配置后统一归一化一遍：截断超长名，并清掉「既无名字又无 override」的空绑定。
