@@ -140,12 +140,18 @@ struct RealDockProcessControl: DockProcessControlling {
         // 而这条调用跑在 `@MainActor` 上 —— 整个 App 连带冻住那么久，存活监视器、桌面轮询、
         // toast、设置窗口全部停摆（表现为「切一次桌面，Dock 消失两分钟」）。
         // 返回值只说明"命令发出去了"，Dock 有没有回来由调用方轮询判定。
+        //
+        // ⚠️ **不带 `-k`。** `man launchctl`：`-k` = "若服务已在运行，先杀掉正在跑的实例再重启"。
+        // 而这条兜底只在"我们已经把 Dock 弄没了、launchd 可能正要把它拉回来"时才会走到 ——
+        // 带上 `-k` 就等于把 launchd 刚拉活的 Dock 再杀一次，并加深它的递增退避。
+        // 真机 2026-09-19 那天每次 100–126 s 的 Dock 死亡都起源于这样一发。
+        // 不带 `-k` 时这条命令只做一件事：让没在跑的服务立刻跑起来。
         guard !LaunchctlParking.shared.hasOutstanding else { return false }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         process.arguments = [
-            "kickstart", "-k",
+            "kickstart",
             "gui/\(getuid())/\(Self.dockServiceName)",
         ]
         process.standardOutput = FileHandle.nullDevice
@@ -170,6 +176,34 @@ struct RealDockProcessControl: DockProcessControlling {
         // 尺寸对不上说明结构体布局变了（跨系统版本），宁可返回 nil 也别读错字段。
         guard written == Int32(size) else { return nil }
         return TimeInterval(info.pbi_start_tvsec) + TimeInterval(info.pbi_start_tvusec) / 1_000_000
+    }
+}
+
+/// 退出流程里一次重启的结果。见 `DockReloader.reloadForQuit(strategy:deadline:)`。
+enum QuitRestart: Sendable, Equatable {
+    /// Dock 在期限内归位了。
+    case revived(oldPID: pid_t, newPID: pid_t, elapsed: TimeInterval)
+    /// 信号发了，期限内没看到新 Dock。偏好已经落盘，launchd 把 Dock 拉回来时会读到它 ——
+    /// 所以这**不是失败**，只是"我们没来得及看一眼"。
+    case signaled(oldPID: pid_t)
+    /// Dock 进程本来就不在：什么信号都不发（发也没对象），也不 `kickstart`。
+    case dockWasDown
+    /// 信号没发出去（PID 身份确认失败）。偏好仍然已经落盘。
+    case notDelivered(oldPID: pid_t)
+
+    /// 给日志用的一句话。
+    var description: String {
+        switch self {
+        case let .revived(oldPID, newPID, elapsed):
+            return String(format: "SIGHUP 成功：PID %d → %d，Dock 不可用 %.0f ms", oldPID, newPID, elapsed * 1000)
+        case let .signaled(oldPID):
+            return "已发出重启信号，但 1.5 秒内没看到 Dock 归位（launchd 多半在退避）；"
+                + "偏好已写回基准，Dock 下次启动会直接读到（旧 PID \(oldPID)）"
+        case .dockWasDown:
+            return "Dock 进程本来就不在，没有可重启的对象；偏好已写回基准，launchd 拉起时即生效"
+        case let .notDelivered(oldPID):
+            return "重启信号没能发出去（PID \(oldPID)）；偏好已写回基准，等 Dock 下次启动生效"
+        }
     }
 }
 
@@ -314,6 +348,35 @@ final class DockReloader {
         return ReloadOutcome(method: .failed, oldPID: oldPID, newPID: nil,
                              elapsed: Date().timeIntervalSince(started),
                              spacingWait: spacingWait)
+    }
+
+    /// 退出流程专用的重启：**只发一发信号，最多看它一眼，绝不升级**。
+    ///
+    /// 为什么不能复用 `reload()`：那条路是"发信号 → 等归位（30 s）→ 升级到 SIGTERM →
+    /// 再 `kickstart` → 再等 30 s"。真机 2026-09-19 那天 launchd 处在递增退避里，
+    /// 退出还原照这条走完就是 **53–54 秒**（用户看到的"退出时卡住、没有 Dock"）。
+    /// 而退出场景里等归位**换不到任何东西**：
+    /// - 偏好是原子写到 `com.apple.dock` 域里的，我们走了之后它还在；
+    /// - Dock 每次启动都重读这个域 —— launchd 把它拉回来那一刻，读到的就是基准；
+    /// - 唯一能纠正"升级也没用"的手段是**下次启动的自检**，而它不看这次等了多久。
+    ///
+    /// 所以这里只做三件事：发一发信号、最多等 `deadline` 看一眼、把结论如实带回去。
+    /// **不等节流**（`minimumSpacing`）：那最多 1 秒的等待只为了让 Dock 少闪一下，
+    /// 而我们正要离开，用户看不到；**不 `kickstart`**：Dock 不在时 launchd 自己会拉，
+    /// 我们插一发只会加深退避。
+    func reloadForQuit(
+        strategy: ReloadStrategy = .auto,
+        deadline: Duration = .milliseconds(1500)
+    ) async -> QuitRestart {
+        guard let oldPID = process.dockPID(), oldPID > 0 else { return .dockWasDown }
+        let started = Date()
+        guard process.signal(oldPID, strategy == .sigterm ? SIGTERM : SIGHUP) else {
+            return .notDelivered(oldPID: oldPID)
+        }
+        if let newPID = await waitForRestart(after: oldPID, timeout: deadline) {
+            return .revived(oldPID: oldPID, newPID: newPID, elapsed: Date().timeIntervalSince(started))
+        }
+        return .signaled(oldPID: oldPID)
     }
 
     /// 睡到 Dock 的「年龄」超过 `minimumSpacing` 为止。返回实际等待时长。

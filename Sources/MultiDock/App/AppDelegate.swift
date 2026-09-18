@@ -29,7 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lifecycle?.noteDockApplied(fingerprint: fingerprint)
         }
         lifecycle.restoreHandler = { [weak state] in
-            await state?.restoreToBaseline()
+            // 只有退出/关机这两条路走这里 —— 所以一律 `forQuit`：写完偏好、发一发 SIGHUP 就走，
+            // 不等 Dock 归位。等满降级链在 launchd 退避期间是几十秒（真机 2026-09-19）。
+            await state?.restoreToBaseline(forQuit: true)
         }
         menuBar = MenuBarController(state: state)
         menuBar.onOpenDebugPanel = { [weak self] in self?.showDebugPanel() }

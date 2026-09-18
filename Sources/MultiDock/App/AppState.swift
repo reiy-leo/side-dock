@@ -124,17 +124,26 @@ final class AppState {
     private let maxLogEntries = 400
     /// 自愈任务。留着句柄有两个用处：保证只发起一次；退出前可以等它跑完。
     private var selfHealTask: Task<Void, Never>?
+    /// 自愈任务是否已经跑完。**退出前的等待靠轮询这个标志**，
+    /// 而不是 `await selfHealTask.value` —— 见 `settleSelfHeal(within:)`。
+    private var selfHealFinished = false
 
     /// 依赖全部可注入：`DockController`、两个 Store、以及空间提供者都能换成测试替身，
     /// 这样「立即应用 / 还原 / 切桌面预应用」这几条路径不必真的动用户的 Dock 也能测。
     ///
     /// `provider` 也要可注入，否则「预应用先于切换」只能靠真实桌面来验，没法写成断言。
+    ///
+    /// `fileLog` 也必须可注入：它默认写 `~/Library/Application Support/MultiDock/multidock.log`，
+    /// 而那份日志是**用户核对真机行为的唯一凭据**（无屏幕录制、`log show` 在沙箱里读不到）。
+    /// 测试里不换掉它，一次 `swift test` 就会往那份日志灌进几千行假记录（假 PID 100 → 1001），
+    /// 把"连切十次看 `Dock 不可用` 是不是回到 100 ms"这类核对整个污染掉。
     init(
         dockController: DockController = DockController(),
         configStore: ConfigStore = ConfigStore(),
         baselineStore: BaselineStore = BaselineStore(),
         provider: (any SpaceProviding)? = nil,
-        presenceMonitor: DockPresenceMonitor? = nil
+        presenceMonitor: DockPresenceMonitor? = nil,
+        fileLog: FileLogSink = FileLogSink()
     ) {
         let provider = provider ?? SpaceProviderFactory.make()
         spaceProviderAvailable = provider.isAvailable
@@ -145,6 +154,7 @@ final class AppState {
         self.configStore = configStore
         self.baselineStore = baselineStore
         self.injectedPresenceMonitor = presenceMonitor
+        self.fileLog = fileLog
         observer.onActiveSpaceChanged = { [weak self] space in
             guard let self else { return }
             if let space {
@@ -419,17 +429,43 @@ final class AppState {
         append(.info, "桌面观察已停止")
     }
 
-    /// 退出前的准备工作：停掉会跟还原抢写入的监视器，并等所有排队的应用跑完。
+    /// 退出前的准备工作：停掉会跟还原抢写入的监视器，丢掉还没起跑的待办，
+    /// 并**带上限地**等已经在跑的应用落地。返回 `true` = 真的干净了。
     ///
-    /// **这一步不能省**。`DockController.request` 是异步排队的：如果还原之前还有一笔待办
-    /// 没落地，它会在还原**之后**才写进去 —— 用户看到的结果是"退出时还原了，Dock 却还是错的"。
-    func prepareForTermination() async {
+    /// **不能省，但也不能等满**：
+    /// - 省掉 → 那笔待办会在还原**之后**才写进去，用户看到"退出时还原了，Dock 却还是错的"；
+    /// - 等满 → 一次在飞的应用最坏走完整条降级链，launchd 退避期间实测几十秒，
+    ///   那就是用户看到的"每次退出都卡住"。所以这里只等 `settleLimit`（默认 2 秒），
+    ///   等不到就交给调用方留标记，下次启动自愈补上。
+    /// - 自愈可能正在写偏好。先等它落地，否则两笔写入互相覆盖，
+    ///   结果取决于谁后写完 —— 那是不可复现的错乱。
+    func prepareForTermination(settleLimit: Duration = .seconds(2)) async -> Bool {
         dockWatcher?.stop()
         dockPresenceMonitor?.stop()
+        // 还没起跑的待办：目标已经被"还原到基准"取代了，直接丢。
+        dockController.dropPendingRequests()
         // 自愈可能正在写偏好。先等它落地，否则两笔写入互相覆盖，
-        // 结果取决于谁后写完 —— 那是不可复现的错乱。
-        await waitForSelfHeal()
-        await dockController.waitForIdle()
+        // 结果取决于谁后写完 —— 那是不可复现的错乱。同样带上限。
+        guard await settleSelfHeal(within: settleLimit) else { return false }
+        return await dockController.waitForIdle(upTo: settleLimit)
+    }
+
+    /// 等自愈在 `limit` 内跑完。没跑完返回 `false`。
+    ///
+    /// 只等不取消：**取消一次写了一半的还原比等久一点更危险**（与 `LifecycleController` 同理）。
+    ///
+    /// ⚠️ **刻意轮询标志，不用 `withTaskGroup` 赛跑**（与
+    /// `DockController.waitForIdle(upTo:)` 同一个坑）：任务组闭包返回时会等**所有**子任务收尾，
+    /// 而 `await task.value` 那种子任务对取消毫无反应 —— "上限"会**静默失效**：
+    /// `group.next()` 照样在 20 ms 时报出 `false`（返回值看着是对的！），
+    /// 可整个闭包要等那笔应用跑完才返回（实测 20 ms 上限 → 224 ms 墙钟）。
+    private func settleSelfHeal(within limit: Duration) async -> Bool {
+        guard selfHealTask != nil else { return true }
+        let deadline = ContinuousClock.now + limit
+        while !selfHealFinished, ContinuousClock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return selfHealFinished
     }
 
     /// 启动自检：残留会话标记 + 基准快照（计划 §3.9 的固定顺序）。
@@ -660,8 +696,14 @@ final class AppState {
         Task { await self.restoreToBaseline() }
     }
 
+    /// 「立即还原到原始 Dock」，以及退出还原（P4）与关机还原都走同一条路径。
+    ///
+    /// - Parameter forQuit: 我们**马上就不在了**（退出 / 关机）。那条路必须不等 Dock 归位 ——
+    ///   等满一条降级链在 launchd 退避期间是几十秒（真机 2026-09-19 实测 53–54 秒），
+    ///   而偏好写得出去、Dock 下次启动自然会读到，等它换不到任何东西。
+    ///   菜单里那个手动按钮**不能**用这条：用户还看着屏幕，需要"确认真的还原了"。
     @discardableResult
-    func restoreToBaseline() async -> DockController.Outcome? {
+    func restoreToBaseline(forQuit: Bool = false) async -> DockController.Outcome? {
         let baseline = baselineStore.readBaseline()
         guard !baseline.isEmpty else {
             append(.error, "找不到基准快照（\(baselineStore.baselineURL.path)），无法还原")
@@ -683,7 +725,8 @@ final class AppState {
             config,
             reason: "还原到原始 Dock",
             strategy: settings.reloadStrategy,
-            force: true
+            force: true,
+            forQuit: forQuit
         )
         return outcome
     }
@@ -736,7 +779,10 @@ final class AppState {
     /// 启动后把它还原回基准，并给用户一个看得见的提示（toast + 日志）。
     private func scheduleSelfHealIfNeeded() {
         guard selfHealTask == nil, let stale = pendingSelfHeal, stale.impliesDirtyDock else { return }
-        selfHealTask = Task { [weak self] in await self?.performSelfHeal(stale) }
+        selfHealTask = Task { [weak self] in
+            await self?.performSelfHeal(stale)
+            self?.selfHealFinished = true
+        }
     }
 
     /// 等自愈跑完。退出流程与测试都要用 —— 不等的话，自愈的写入会和退出还原的写入互相覆盖。
@@ -792,6 +838,7 @@ final class AppState {
             self.append(.info, "Dock 已恢复（第 \(count) 次），警告解除")
             self.toastPresenter?.announce("Dock 已恢复")
         }
+        monitor.isReloading = { [weak self] in self?.dockController.isApplying ?? false }
         dockPresenceMonitor = monitor
         monitor.start()
     }
@@ -912,7 +959,7 @@ final class AppState {
     /// 统一日志的意义：`log show --predicate 'subsystem == "local.multidock"' --info` 可事后核对行为。
     /// 落盘文件的意义：受限环境下读不到统一日志时，仍能核对（也是用户反馈问题时最方便的附件）。
     private let logger = Logger(subsystem: "local.multidock", category: "app")
-    private let fileLog = FileLogSink()
+    private let fileLog: FileLogSink
 
     func append(_ level: LogEntry.Level, _ message: String) {
         let entry = LogEntry(level: level, message)

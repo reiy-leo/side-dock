@@ -107,7 +107,7 @@ final class LifecycleController {
             // **先等排队的应用跑完再还原**。`DockController.request` 是异步排队的，
             // 如果还有一笔待办没落地，它会在还原**之后**才写进去 ——
             // 用户看到的结果就是"退出时还原了，Dock 却还是错的"。
-            await state.prepareForTermination()
+            let settled = await state.prepareForTermination()
 
             // 超时由还原实现自己控制（它最清楚 Dock 该在多久内归位）。
             // 这里不做外部取消：中途取消一次写了一半的还原比等久一点更危险。
@@ -119,7 +119,11 @@ final class LifecycleController {
                 state.append(.warning, "还原用时超过 5 秒，请检查 Dock 是否正常")
             }
 
-            if outcome?.succeeded == true {
+            if outcome?.succeeded == true, !settled {
+                // 还原本身写干净了，但退出时还有一笔应用没落地 —— 它可能在我们之后又写了一次。
+                // **不能清标记**：让下次启动的自检去看真实域，不一致就还原。
+                keepMarkerAndFinish(reason: "退出时还有一次应用没落地")
+            } else if outcome?.succeeded == true {
                 clearMarkerAndFinish()
             } else {
                 // 还原没成功 → **标记必须留着**。这正是"强杀自愈"要接手的场景，

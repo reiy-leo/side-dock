@@ -61,6 +61,8 @@ final class DockController {
         var note: String?
         /// 本次应用内容的指纹。`.applied` 时用于写进会话标记（强杀自愈的判据）。
         var fingerprint: String
+        /// 只有退出流程的应用才有：一次"不等归位"的重启结果。见 `apply(_:reason:strategy:force:forQuit:)`。
+        var quitRestart: QuitRestart?
 
         var succeeded: Bool { result == .applied || result == .skippedIdentical }
 
@@ -68,6 +70,7 @@ final class DockController {
         var summary: String {
             var text = "\(result.rawValue)：\(reason)"
             if let reload { text += "；\(reload.description)" }
+            if let quitRestart { text += "；\(quitRestart.description)" }
             if result == .applied { text += "；写入 \(writtenKeys) 个键" }
             if verifyAttempts > 1 { text += "；校验重试 \(verifyAttempts) 次" }
             text += String(format: "；总耗时 %.0f ms", elapsed * 1000)
@@ -183,6 +186,32 @@ final class DockController {
         }
     }
 
+    /// 带上限地等待办跑完。返回 `true` = 真的干净了。
+    ///
+    /// 退出流程用它：一次在飞的应用最坏要等完整条 ladder（真机实测几十秒），
+    /// 而"等满"本身没有任何收益（见 `DockReloader.reloadForQuit(strategy:deadline:)`）。
+    /// 超时不等于可以继续 —— 那笔在飞的写入可能落在我们的还原**之后**。
+    /// 所以调用方必须把 `false` 当成"没还干净"来处理：**留下会话标记**，交给下次启动自愈。
+    ///
+    /// ⚠️ **刻意轮询，不用 `withTaskGroup` 赛跑。** 任务组在闭包返回时会等**所有**子任务收尾，
+    /// 而 `await drainTask.value` 那种子任务对取消毫无反应 —— 于是"上限"会**静默失效**，
+    /// 变成"一直等到那笔应用跑完"。阴险的是**返回值看着是对的**（`group.next()` 在 20 ms 就报了
+    /// `false`），只有墙钟不对：实测上限 20 ms、实际返回用了 625 ms（正好是降级链的总时长）。
+    /// 真机 2026-09-19 的"每次退出都卡住几十秒"就是这个形状 —— 上限写在了参数里，却没人真的受它约束。
+    func waitForIdle(upTo limit: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + limit
+        while drainTask != nil, ContinuousClock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return drainTask == nil
+    }
+
+    /// 丢掉还没起跑的待办。给退出流程用：紧接着就要还原到基准，
+    /// 那笔待办的目标已经被取代了，等它只会白等。
+    func dropPendingRequests() {
+        pending = nil
+    }
+
     /// 是否有待办正在排队/执行。
     ///
     /// `request()` 会**同步**建好任务，所以调用方在 `request()` 返回后立刻读它是 `true`。
@@ -212,11 +241,18 @@ final class DockController {
     }
 
     /// 应用一套配置。
+    ///
+    /// - Parameter forQuit: 退出流程专用。写入照旧，但**重启不等归位、不升级兜底**
+    ///   （见 `DockReloader.reloadForQuit(strategy:deadline:)`），并且**只用 SIGHUP** ——
+    ///   `SIGTERM` 那条有约 255 ms 的退出清理窗口、Dock 可能回写覆盖我们的写入，
+    ///   而退出流程没有重试的机会去发现它。真机 2026-09-19：走完整 ladder 的退出还原
+    ///   在 launchd 退避期间耗时 53–54 秒，用户看到的就是"退出时卡住、Dock 没了"。
     func apply(
         _ config: DockConfig,
         reason: String,
         strategy: ReloadStrategy = .auto,
-        force: Bool = false
+        force: Bool = false,
+        forQuit: Bool = false
     ) async -> Outcome {
         let started = Date()
         func elapsed() -> TimeInterval { Date().timeIntervalSince(started) }
@@ -270,15 +306,24 @@ final class DockController {
         let comparableKeys = Set(entries.keys)
 
         // 4. 写 → 重载 → 读回校验；不一致重试一次（SIGTERM 的清理窗口竞态，见 docs/spikes.md）。
+        //    退出流程例外：一次写入 + 一发信号 + 一次校验，**不重试也不升级**（见 `apply` 的 `forQuit`）。
         var verifyAttempts = 0
         var reload: ReloadOutcome?
+        var quitRestart: QuitRestart?
         var verified = false
-        for attempt in 1...2 {
-            verifyAttempts = attempt
+        if forQuit {
+            verifyAttempts = 1
             preferences.writeWhitelisted(entries)
-            reload = await reloader.reload(strategy: strategy)
+            quitRestart = await reloader.reloadForQuit(strategy: .auto)
             verified = verify(config, comparableKeys: comparableKeys)
-            if verified { break }
+        } else {
+            for attempt in 1...2 {
+                verifyAttempts = attempt
+                preferences.writeWhitelisted(entries)
+                reload = await reloader.reload(strategy: strategy)
+                verified = verify(config, comparableKeys: comparableKeys)
+                if verified { break }
+            }
         }
 
         if verified {
@@ -296,7 +341,8 @@ final class DockController {
             elapsed: elapsed(),
             skippedKeys: skipped,
             note: note,
-            fingerprint: config.fingerprint
+            fingerprint: config.fingerprint,
+            quitRestart: quitRestart
         )
     }
 

@@ -222,3 +222,16 @@ final class FakeSpaceProvider: SpaceProviding, @unchecked Sendable {
         }
     }
 }
+
+/// 测试专用的日志落盘出口。**构造 `AppState` 时必须传它**。
+///
+/// 默认的 `FileLogSink` 写 `~/Library/Application Support/MultiDock/multidock.log`，
+/// 而那份日志是用户核对真机行为的**唯一**凭据（本机无屏幕录制权限、`log show` 在沙箱里读不到）。
+/// 不换掉它，一次 `swift test` 就会往里灌几千行假记录（假 PID `100 → 1001`、假的"退出还原"），
+/// 把「连切十次看 `Dock 不可用` 是否回到 100 ms 量级」这类核对整个污染掉。
+func makeTestFileLog() -> FileLogSink {
+    FileLogSink(
+        fileURL: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("multidock-testlog-\(UUID().uuidString).log")
+    )
+}

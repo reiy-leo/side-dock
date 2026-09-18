@@ -193,18 +193,30 @@ struct AppSettings: Codable {
    - 标记里存 PID 并校验进程是否还活着，避免多实例或误判。
 3. **轮转备份**：每次写入真实 Dock 前，把当时的全量域另存一份到 `backups/`，保留最近 20 份，供"回滚到某个时间点"。
 
-**正常退出流程**（`LifecycleController`）：
+**正常退出流程**（`LifecycleController`，2026-09-19 按 `docs/spikes.md` **实验 10** 重写）：
 
 ```
-收到退出请求（菜单退出 / Cmd+Q / 系统注销关机）
+收到退出请求（菜单退出 / Cmd+Q）
   → NSApp.reply(toApplicationShouldTerminate: .terminateLater) 挂起退出
-  → 若 restoreOnQuit：写入基准快照的白名单键（其余键保持不动）→ 触发 Dock 重载
-  → 等待重载完成（Dock 归位确认，最长 5s）
-  → 删除 session.state
+  → state.prepareForTermination(settleLimit: 2s)
+        停 DockWatcher → 停存活监视器 → dropPendingRequests()（没起跑的待办直接丢）
+        → 带上限地等自愈（轮询 selfHealFinished）→ 带上限地等在飞的应用（轮询 drainTask）
+  → 写入基准快照的白名单键（其余键不动）→ reloadForQuit()：一发信号 + 最多 1.5 s 看一眼
+        不等重启节流、不升级到 SIGTERM、不 launchctl kickstart、校验不一致也不重试
+  → 成功且退出前真的干净 → 删除 session.state；否则保留标记（needsSelfHeal + pid = 0）
   → NSApp.reply(toApplicationShouldTerminate: .terminateNow)
 ```
-- 绝不在还原未完成前就退出进程，否则用户会看到"退出后 Dock 还是错的"。
-- 系统关机/注销同样走这条路（`NSWorkspace.willPowerOffNotification` + `NSApp` 的终止委托），并放宽等待上限。
+
+- **绝不在还原未完成前就退出进程**，否则用户会看到"退出后 Dock 还是错的"。
+- **但也不能等满**：退出场景等 Dock 归位换不到任何**可行动**的信息（偏好是原子写的，
+  Dock 下次启动自然读到基准；唯一能纠正"升级也没用"的手段是下次启动的自检，而它不看这次等了多久）。
+  旧写法（复用完整降级链）实测每次退出 **53–54 秒**没有 Dock、没有壁纸、触控板手势失效。
+- **所有"带上限的等待"必须轮询可观察标志**，不能用 `withTaskGroup` 与 `await task.value` 赛跑：
+  任务组闭包返回时会等所有子任务收尾，而那种子任务不响应取消 —— 上限会**静默失效**
+  （返回值看着是对的，墙钟是错的）。回归守卫因此断言**墙钟**，不只断言 Bool。
+- **等不到干净时必须留标记**（`!settled` → `keepMarkerAndFinish`）：那笔在飞的写入可能落在还原**之后**。
+- 系统关机/注销同样走这条路（`NSWorkspace.willPowerOffNotification`），但**系统不给等待时间**，
+  只能尽力：先把债务写进标记，再发起还原；没跑完的由下次启动自愈接手。
 - 崩溃/强杀走不了钩子，由下次启动的 `session.state` 检测兜底——这是无痕原则的最后一道防线，必须有测试覆盖。
 
 ### 3.4 应用流水线（DockController）
@@ -460,13 +472,24 @@ struct AppSettings: Codable {
 >    清掉标记等于把下次启动的自愈能力一起扔了；只留标记不改 `pid` 也不行 ——
 >    `detectInterruptedSession()` 会用 `kill(pid, 0)` 判断"标记是不是另一个还活着的实例"，
 >    pid 为 0 时它才会跳过这个检查。
-> 4. **还原前必须先 `await state.prepareForTermination()`**：停 watcher、停存活监视器、等自愈跑完、
->    `await dockController.waitForIdle()`。最后一件不能省 —— `request()` 是异步排队的，
->    漏掉的话那笔待办会在还原**之后**落地，用户看到的结果是"退出时还原了，Dock 却还是错的"。
+> 4. **还原前必须先 `await state.prepareForTermination()`**：停 watcher、停存活监视器、
+>    `dropPendingRequests()`、带上限地等自愈、带上限地等在飞的应用。
+>    等这一步不能省 —— `request()` 是异步排队的，漏掉的话那笔待办会在还原**之后**落地，
+>    用户看到的结果是"退出时还原了，Dock 却还是错的"。
+>    ⚠️ **但上限必须是真上限**（2026-09-19 实验 10 的修正）：原先两条等待都用
+>    `withTaskGroup` 把 `await task.value` 和 `Task.sleep` 赛跑，而任务组闭包返回时会等**所有**
+>    子任务收尾、`await task.value` 又不响应取消 —— 于是 2 秒上限实测成了 224–625 ms（替身）
+>    乃至几十秒（真机 launchd 退避）。改成**轮询可观察标志**（`drainTask` / `selfHealFinished`）。
+>    等不到干净时**返回 `false`，调用方必须留标记**。
+> 4b. **退出路径不复用 `reload()`**：`DockReloader.reloadForQuit()` 只发一发信号、最多看 1.5 秒，
+>    不等节流、不升级、不 `kickstart`；`DockController.apply(..., forQuit: true)` 只写一次、验一次、不重试。
+>    存活监视器在此期间由 `isReloading` 闸门闭嘴（我们自己重启 Dock 不是故障）。
 > 5. **注销/关机这条路系统不给等待时间**，只能尽力：先把债务写进标记，再发起还原并等它跑完；
 >    没跑完的由下次启动自愈接手。**不要**改成同步阻塞等还原，那会拖住关机。
-> 6. **Dock 存活监视的判据**：连续缺失 `missThreshold`（默认 2 次 / 1 秒）才算"真的不在"，
->    之后按 `kickstartEvery`（默认 4 轮）重试 —— 一次缺失就动手会让每次正常切换都白打一次 `launchctl`。
+> 6. **Dock 存活监视的判据**：连续缺失 `missThreshold`（2026-09-19 实验 9 后是 **8 轮 = 4 s**）才算
+>    "真的不在"，之后每 `kickstartEvery`（**60 轮 = 30 s**）才催一发，满 **60 s** 才报"拉不回来"。
+>    原先的 1 s / 2 s / 6 s 会**每次正常慢恢复都动手 + 每次都误报红横幅**，而那时那一发还带 `-k`
+>    —— 它会把 launchd 刚拉回来的 Dock 再杀一次、给它续退避（`-k` 已随实验 9 一起去掉）。
 > 7. **备份恢复只写白名单键**，不做整域替换：我们自己从来只碰白名单键，整域替换会把用户后来改的
 >    热角、启动台网格冲回旧值。需要整域恢复的场景在 README 里给 `defaults import` 的做法。
 > 8. **`mru-spaces` 是白名单之外的唯一写入例外**，只给它一个窄方法（`DockPreferences.writeMRUSpaces(_:)`），
@@ -572,7 +595,8 @@ struct AppSettings: Codable {
 | **launchd 的重启节流**：距上次重启不足约 1 s 时再重启，Dock 要 **约 1070 ms** 才归位（`spikes.md` 实验 5） | 连续切桌面时 Dock 消失一秒多 | ✅ 已实现 `DockReloader.minimumSpacing`（默认 1 s）：先等满窗口再重启，**等待期间 Dock 可用**。实测把 Dock 不可用时长压到 **45–90 ms**；`ReloadOutcome` 把 `elapsed`（不可用）与 `spacingWait`（可用等待）分开记 |
 | **`NSRunningApplication` 在 Dock 重启窗口返回 `processIdentifier == -1`** | ① 误判"Dock 已回来"；② `kill(-1, SIGTERM)` = **杀掉当前用户的所有进程** | ✅ 三道防线：`dockPID()` 过滤 `> 0`；`signal()` 拒绝 `pid <= 0` 且用 `proc_name` 确认身份；`waitForRestart` 只接受 `pid > 0`。测试在 `DockProcessSafetyTests`，全部用**信号 0** 断言（闸门坏了是测试失败，不会打死测试进程） |
 | **节流窗口的判据错了**（P4 验收实测）：原以为"记在自己内存里"就够，但 launchd 的节流是**按服务**算的 | 别人（用户 / 别的 App / 我们的存活监视器）刚重启过 Dock 时，我们紧接着重启会吃满整段节流，Dock 消失一秒多 | ✅ 改成按 **Dock 进程年龄**（`proc_pidinfo(PROC_PIDTBSDINFO)` 的 `pbi_start_tvsec/tvusec`）推算窗口，拿不到年龄才退回内存记忆。实测 P3 第一轮从 **1030 ms → 45 ms**。见 `spikes.md` 实验 6 |
-| **退出还原被排队的应用覆盖** | 退出后 Dock 还是错的（用户以为已还原） | ✅ 还原前 `await state.prepareForTermination()`：停 watcher / 停监视器 / 等自愈 / `await dockController.waitForIdle()` |
+| **退出还原被排队的应用覆盖** | 退出后 Dock 还是错的（用户以为已还原） | ✅ 还原前 `await state.prepareForTermination(settleLimit:)`：停 watcher / 停监视器 / **丢掉没起跑的待办** / 带上限等自愈 / 带上限等在飞的应用；等不到干净就**留标记**交给下次自愈 |
+| **"带上限的等待"其实是无上限的**（`withTaskGroup` 与不可取消的 `await task.value` 赛跑） | 每次退出实测卡 53–54 秒：没有 Dock、没有壁纸、触控板手势失效（= 用户以为机器死了） | 上限一律改成**轮询可观察标志**（`drainTask` / `selfHealFinished`）；退出路径另走 `reloadForQuit()`（一发信号 + 1.5 s 看一眼，不升级不 `kickstart`）。回归守卫**断言墙钟**，不只断言返回值 —— 见 `docs/spikes.md` 实验 10 |
 | **还原失败后自愈能力丢失** | 下次启动不再尝试还原，Dock 永久停在非基准状态 | ✅ 失败保留标记 + `needsSelfHeal = true` + `pid = 0`；`beginSession` 把债务继承给下一次启动 |
 | **备份恢复越界写白名单之外的键** | 用户后来改的热角、启动台网格被冲回旧值 | ✅ 备份恢复只走 `DockConfig.read` + `apply`（白名单键），**不做整域替换**；单测断言 `wvous-br-corner` / `mod-count` 不被覆盖 |
 | **`mru-spaces` 变成"随便写某个键"的通用口子** | 迟早被误用到热角等键上 | ✅ 只给一个窄方法 `DockPreferences.writeMRUSpaces(_:)`，且不在 `apply` 管辖内（写完单独 `reloadOnly()`） |

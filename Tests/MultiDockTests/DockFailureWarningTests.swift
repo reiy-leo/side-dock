@@ -113,7 +113,8 @@ final class DockFailureWarningTests: XCTestCase {
                 isAvailable: providerAvailable,
                 reason: providerReason
             ),
-            presenceMonitor: monitor
+            presenceMonitor: monitor,
+            fileLog: makeTestFileLog()
         )
         return Fixture(state: state, monitor: monitor, dock: dock)
     }

@@ -88,7 +88,18 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
   ③ **自愈债务要能跨会话继承**（`SessionMarker.needsSelfHeal`）：自愈是异步的，还原途中再崩一次不能让债务丢掉；
   ④ **备份恢复只写白名单键**，不做整域替换 —— 我们自己从来只碰白名单键，整域替换会把用户后来改的热角等设置冲回旧值；
   ⑤ **`mru-spaces` 是白名单之外的唯一写入例外**，只给它一个专用窄方法，不开放通用的"随便写某个键"口子。
-  详见 `docs/PLAN.md` §3.11 与 §5。
+  详见 `docs/PLAN.md` §3.3 / §3.9 与 §5。
+- **v3.5（当前，2026-09-19，两次真机故障后修正）**：实验 9 与实验 10 是同一个故障的两个触发点。
+  ① **切桌面**（实验 9）：`kickstart` 同步等 launchctl 会把主线程冻几十秒、重载超时 5 s 短于 launchd 退避、
+  监视器 1 s 就动手 —— 三条叠起来把 100 ms 滚成 60–126 秒的 Dock 死亡；
+  ② **退出**（实验 10）：退出还原复用完整降级链 → 实测每次 **53–54 秒**。
+  修法是**给退出单开一条窄路**（`reloadForQuit` 一发信号 + 1.5 s 看一眼、写入不重试、待办直接丢、
+  监视器在 `isReloading` 期间闭嘴、等不到干净就留标记）。
+  ③ **v3.4 第 ① 条被修正**：不是"等排队的应用跑完"，而是"**丢掉没起跑的 + 带上限等真正在飞的**"。
+  ④ **两处"带上限的等"其实没有上限**（`withTaskGroup` 与不可取消的 `await task.value` 赛跑，
+  返回值对、墙钟错），改成轮询可观察标志 —— 这是本次最深的发现，见 §5 与 `docs/spikes.md` 实验 10。
+  ⑤ **测试不再写用户的 `multidock.log`**（`FileLogSink` 进 `AppState.init` 注入点）：
+  那份日志是用户核对真机行为的唯一凭据，之前被单测灌了几千行假记录。
 
 ---
 
@@ -141,9 +152,9 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | 打包脚本 | `scripts/build-app.sh` | 编译 → 组装 `.app` → ad-hoc 签名 |
 | 显示器名解析 | `Spaces/ScreenNaming.swift` | `displayUUID → NSScreen.localizedName`；**纯解析可单测**，映射不到时如实说"未识别"而不回落成错的屏。桌面页据此按显示器分组 |
 | 其他项（文件夹/堆栈）编辑 | `Dock/DockStripRules.swift`、`UI/DockStripEditor.swift` | **只搬不造**：显示 / 排序 / 移除；拖入文件夹时明确拒绝并给替代做法（`DockItemRejection`）。**不能新建**的实测依据见 `docs/spikes.md` 实验 8 |
-| 测试 | `Tests/MultiDockTests/` | **295 个测试，全绿**（其中 7 个真实 Dock 验收默认跳过，需显式开启） |
+| 测试 | `Tests/MultiDockTests/` | **308 个测试，全绿**（其中 7 个真实 Dock 验收默认跳过，需显式开启） |
 | 设计文档 | `docs/PLAN.md` | 已按 P0 结论修订 |
-| 实验结论 | `docs/spikes.md` | **9 个实验**的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现；实验 8 是"其他项不能新建"；实验 9 是"切一次桌面黑屏几分钟"的根因**） |
+| 实验结论 | `docs/spikes.md` | **10 个实验**的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现；实验 8 是"其他项不能新建"；实验 9 是"切一次桌面黑屏几分钟"的根因；实验 10 是"每次退出都卡住"—— 同一条链，外加一个让所有"上限"静默失效的写法**） |
 
 ### 已完成：P2（编辑条 + 应用）✅ 2026-09-18
 
@@ -305,6 +316,60 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 **验收**：`swift build` 零警告；`swift test` **295 个测试全绿**（+5：默认阈值 2 条、Watcher 闸门 2 条、
 `isDockAlive` 1 条）。⚠️ **真机复验还没做**（本会话没有再动用户的 Dock），核对口径：日志里
 `Dock 不可用` 应稳定回到 100 ms 量级，且不再出现「检测到 Dock 不在…已用 launchctl 拉回」。
+⚠️ **而且第一次复验（2026-09-19 用户做的）跑的是修复前的二进制** —— 见下面那一节。
+
+### 已完成：修掉「每次右键退出都卡住几分钟」✅ 2026-09-19
+
+用户报告：菜单栏右键 → 退出，**每次**都没有 Dock、没有壁纸、触控板失效几分钟。
+根因与证据在 `docs/spikes.md` **实验 10**；规格改动见 `docs/PLAN.md` §3.3 / §3.9 / §5。
+**这一节每一条都不能"改回去"。**
+
+**先说最要紧的一条诊断结论**：用户那次"复验实验 9 的修复"跑的其实是**修复前**的二进制
+（`build/MultiDock.app` 时间戳 01:07，实验 9 的 commit 在 02:11）。
+所以「还是卡」既没证伪实验 9 的修复，也暴露了退出路径上同一条链没被覆盖。**改了代码必须重新
+`./scripts/build-app.sh` 才算装上去** —— 以后催真机复验时要连这句一起说。
+
+**实现要点（改动时别踩）**：
+
+1. **退出路径不走 `reload()`**。新增 `DockReloader.reloadForQuit(strategy:deadline:)`：
+   一发信号 → 最多看 `deadline`（默认 **1.5 s**）一眼 → 把结论如实带回去（`QuitRestart` 四种情况）。
+   **不等 `minimumSpacing`、不升级到 SIGTERM、不 `kickstart`、失败也不重试**。
+   理由写在方法自己的注释里：等归位换不到任何**可行动**的信息（偏好是原子写的，Dock 下次启动自然读到基准），
+   而"升级"正是把 100 ms 滚成两分钟的那一步。`AppDelegate` 把 `restoreHandler` 接到
+   `restoreToBaseline(forQuit: true)`；菜单里那个**手动**「立即还原」按钮**不能**用 forQuit
+   （用户还看着屏幕，需要真正确认还原成功）。
+2. **`DockController.apply(..., forQuit: true)`**：一次写入 + 一发信号 + 一次校验，**不重试**。
+   重试等于再发一发信号、再吃一次 launchd 退避。
+3. **`prepareForTermination` 的"上限"以前是假的**（这次最深的发现）：两处"带上限地等"都写成
+   `withTaskGroup` 让 `await task.value` 与 `Task.sleep` 赛跑，**而任务组闭包返回时会等所有子任务收尾**，
+   `await task.value` 那种子任务不响应取消。结果：**返回值看着是对的（20 ms 就报了 `false`），
+   墙钟是错的（实测 625 ms / 224.7 ms，正好等于降级链总时长）**。
+   现在两处都改成**轮询可观察标志**：`DockController.waitForIdle(upTo:)` 轮询 `drainTask`，
+   `AppState.settleSelfHeal(within:)` 轮询 `selfHealFinished`（自愈任务跑完时置位 ——
+   `performSelfHeal` 直接 `await apply(...)`，不经过 `drainTask`，所以代理不了它的进度）。
+   **回归守卫必须断言墙钟**，只断言 Bool 抓不住这个 bug（两条守卫都带 `XCTAssertLessThan(elapsed, 200ms)`）。
+4. **没起跑的待办直接 `dropPendingRequests()`**，不再是"等它跑完"。它的目标马上会被"还原到基准"取代，
+   等它只是白等一次重启。注意 `request()` 是**同步**建 `drainTask` 的（`isApplying` 立刻为 true），
+   所以"丢待办"之后 `waitForIdle` 仍会等到正在跑的那一笔结束 —— 它丢的是**还没起跑的目标**，
+   不是取消在飞的工作。
+5. **存活监视器加 `isReloading` 闸门**：我们自己正在重载 Dock 时**不采样**。
+   我们的重启不是故障，抢在 launchd 前面补一发 `kickstart` 才是故障。
+6. **等不到干净时必须留标记**：`prepareForTermination` 返回 `false` →
+   `LifecycleController.keepMarkerAndFinish(reason: "退出时还有一次应用没落地")`（`pid = 0` + `needsSelfHeal`）。
+   那笔在飞的写入可能落在还原**之后**，清掉标记等于把下次启动的自检扔掉。
+   ⚠️ 这条 `!settled` 分支目前**没有**端到端单测（要一笔超过 2 s 的在飞应用）；
+   `prepareForTermination` 本身返回 `false` 已由 `testPrepareForTerminationReportsUnsettledWhenAnApplyIsTooSlow`
+   与 `testPrepareForTerminationBoundsTheSelfHealWait` 覆盖。
+7. **`FileLogSink` 现在是 `AppState.init` 的注入参数，测试一律传 `makeTestFileLog()`**。
+   以前它写死成 `~/Library/Application Support/MultiDock/multidock.log`，于是**一次 `swift test`
+   就往用户那份日志里灌几千行假记录**（假 PID `100 → 1001`、假的"退出还原"），
+   而 512 KB 环形截断把实验 9 的真实证据行**挤掉了**（本会话亲眼看 53–54 s 那两行，之后再也读不到）。
+   用户核对真机行为**只有这一份日志**（无屏幕录制、`log show` 沙箱里读不到），把它污染等于打掉 A6/A7。
+   守卫：跑全量测试后 `wc -l` 用户那份日志，行数必须不变。
+
+**验收**：`swift build -c release --disable-sandbox` 零警告；`swift test --disable-sandbox`
+**308 个测试全绿**（+13：`reloadForQuit` 4 条、退出路径 apply 4 条、监视器闸门 2 条、自愈与退出还原 3 条）。
+真机复验**仍未做**（见 §6.3 A6 / A7）。
 
 ### 未完成
 
@@ -425,7 +490,7 @@ A4 的**逻辑侧已自动化**（`DockAcceptanceTests.testExternalDockChangeIsC
 
 ```bash
 swift build -c release --disable-sandbox   # 编译
-swift test --disable-sandbox               # 295 个测试（含 7 个默认跳过的真实 Dock 验收）
+swift test --disable-sandbox               # 308 个测试（含 7 个默认跳过的真实 Dock 验收）
 ./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
 open build/MultiDock.app                   # 运行（必须在 .app 里跑，菜单栏图标才正常）
 ./scripts/check-toast-window.sh --watch 12 # 客观验收 toast（零权限，读窗口元数据）
@@ -462,6 +527,8 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 - **测试里的替身类如果被 `@MainActor` 测试类嵌套，要显式标 `@MainActor`**：嵌套类型**不继承**外层的 actor 隔离，而 `DockWatcher` 的闭包都是 `@MainActor` 的，不标就报 `call to main actor-isolated initializer in a synchronous nonisolated context`。
 - **发信号/杀进程的代码必须自带"只碰确认过的 PID"闸门**，别指望调用方传对。见 §4 的 `-1` 陷阱。
 - **文件末尾的 `try` / `defer` 里不要阻塞主线程**：`@MainActor` 的异步测试里 `DispatchSemaphore.wait` 会死锁（`Task { @MainActor }` 永远排不上）。要在收尾还原，就写 `do { try await ... } catch { await cleanup(); throw error }` + 正常路径显式收尾。
+- **"带上限的等待"必须轮询可观察标志，不能用 `withTaskGroup` 与 `await task.value` 赛跑**。任务组闭包返回时会等**所有**子任务收尾，而 `await task.value`（`Task<Void, Never>`）不响应取消 —— 于是 `group.next()` 在 20 ms 就报了正确的 `false`，**整个函数却要等完整条降级链才返回**：上限静默失效，返回值还是对的。实测两处 20 ms 上限 → 625 ms / 224.7 ms 墙钟。写法见 `DockController.waitForIdle(upTo:)` 与 `AppState.settleSelfHeal(within:)`；**守卫必须断言墙钟**（`XCTAssertLessThan(elapsed, …)`），只断言 Bool 抓不住。见 `docs/spikes.md` 实验 10。
+- **测试里构造 `AppState` 必须传 `makeTestFileLog()`**。`FileLogSink` 默认写 `~/Library/Application Support/MultiDock/multidock.log`，而那是用户核对真机行为的**唯一**凭据（无屏幕录制、`log show` 沙箱里读不到）。以前没有注入点，一次 `swift test` 就往那份日志灌几千行假记录，512 KB 的环形截断还会把真实证据行挤出去（本会话就是这么弄丢实验 9 那两次 53–54 s 的退出记录的）。自查：跑全量测试前后 `wc -l` 那份日志，行数必须不变。
 
 ### 与计划原文的两处刻意偏离（不要"改回去"）
 
@@ -507,7 +574,8 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | A3 | **图标条的拖拽（排序 / 拖出移除 / 从访达拖 `.app` 进来）没被真人拖过** | `onDrag` / `dropDestination` 的真机手感与边界未验证 | 请手动拖一次。排序逻辑由 `DockStripRulesTests` + `AppStateDockTests` 覆盖 |
 | A4 | **P3 验收里"在真实 Dock 手动拖入一个图标，切走再切回仍在"**（真人拖拽是纯 UI 操作，脚本化要辅助功能权限，与硬约束冲突） | 这条是 `DockWatcher` **回存路径的唯一真实检验** | ✅ **逻辑侧已自动化（2026-09-18）**：`DockAcceptanceTests.testExternalDockChangeIsCapturedBackToActiveDesktop` 用 `defaults write` + 真实 `DockReloader().reload()` 复现"外部改动"，走**真实 2 秒轮询**（不手动 `tick()`），两种落点（默认 Dock / 逐桌面 override）都覆盖，并断言回存期间 **Dock PID 不变**。真人拖一次仍建议做（验证拖拽 UI 本身），但已不再是唯一检验 |
 | A5 | **「连切 5 次只显示最终名字」只做了单测**，没做真机连击 | 真机是否闪烁未实测 | 单测 `testRapidSwitchKeepsOnlyLatestTextAndHidesOnce` 覆盖调度逻辑；真机需手动快速点菜单栏 |
-| A6 | **「切桌面不再黑屏几分钟」还没真机复验**（实验 9 的修复只过了单测） | 这是用户报的最严重故障，没复验等于没确认修好 | ⏳ **只能用户做**：`./scripts/build-app.sh && open build/MultiDock.app`，连切十次桌面，然后看 `multidock.log` —— `Dock 不可用` 必须稳定在 100 ms 量级，且**不再出现**「检测到 Dock 不在…已用 launchctl 拉回」。另需在设置里把 `计划 任务` / `密码 邮件` 两个桌面的 Dock **重抓一次**（数据已被旧 bug 写坏，见 §3 该节第 6 条） |
+| A6 | **「切桌面不再黑屏几分钟」还没真机复验**（实验 9 的修复只过了单测） | 这是用户报的最严重故障之一，没复验等于没确认修好 | ⚠️ **2026-09-19 用户试过，但跑的是修复前的二进制**（`build/MultiDock.app` 01:07 < commit `47defb5` 02:11），所以这次复验**没有发生**。重新做：先 `./scripts/build-app.sh && open build/MultiDock.app`（**必须重新打包**），连切十次桌面，然后看 `multidock.log` —— `Dock 不可用` 必须稳定在 100 ms 量级，且**不再出现**「检测到 Dock 不在…已用 launchctl 拉回」。另需在设置里把 `计划 任务` / `密码 邮件` 两个桌面的 Dock **重抓一次**（数据已被旧 bug 写坏，见 §3 该节第 6 条）。⚠️ **核对前先把那份日志转走**：它已被旧版单测灌满假记录（真历史被 512 KB 环形截断挤掉），新版测试不再写它了（见 §3 退出那一节第 7 条） |
+| A7 | **「退出不再卡住几分钟」没做真机复验**（实验 10 的修复只过了单测） | 用户报的最严重故障，且是**每次**退出都中招 | ⏳ **只能用户做**：`./scripts/build-app.sh && open build/MultiDock.app` → 改一次 Dock 配置（让本次会话真的欠一次还原）→ 菜单栏右键「退出并还原 Dock」→ 掐表看 Dock 多久回来。核对口径：日志里出现 `退出还原流程结束，用时 0.xx s`（**必须远小于 5 s**，旧版是 53–54 s），且**不出现**「检测到 Dock 不在…已用 launchctl 拉回」。若退出时看到 `已留下标记，下次启动会自动重试`，说明等待窗口内还有一笔没落地 —— 属预期兜底，下次启动应自动还原并弹提示 |
 | **B. 待做的功能（已排期）** | | | |
 | B5 | **多显示器仍未真机实测**（P5 唯一剩下的）：映射键、插拔后自动刷新、toast 的 `displayUUID → NSScreen` 定位都实现了，但本机只有一台显示器 | 插外接显示器后映射可能串 | **只能靠用户插一台外接屏实测**。调试面板已加「显示器数量」与每个桌面的 `displayUUID` 前 8 位，核对时用 |
 | B6 | ~~全屏 App 空间的过滤只有单测覆盖~~ | 每次进全屏可能误切 Dock | ✅ **已解决（2026-09-18）**：真机回归通过，见 §4 的「全屏过滤的真机回归」与 `scripts/check-fullscreen-filter.swift` |
@@ -554,21 +622,25 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | D23 | ~~菜单栏只能"切下一个"，往回切要开菜单~~ | 切过头只能绕菜单 | ✅ **已解决（2026-09-18）**：`⇧+左键 = 切上一个桌面`，与"下一个"共用同一条预应用链路（`switcher.target(.previous)`），两端循环；下拉菜单同时给「上一个桌面」+ 等价提示。单测 `testPreviousDesktopPreAppliesItsOwnDock` |
 | D24 | ~~逐桌面 Dock 的桌面在**回存**时会白重启一次 Dock~~ | 用户手拖图标进 Dock → 回存 → Dock 闪一下（约 50 ms），而逐桌面 Dock 正是本 App 的常态用法 | ✅ **已解决（2026-09-18）**：`DockController.apply` 原来只有一条短路，比的是「我们上次写下去的那份」（`appliedFingerprint`）—— 发生过外部改动它就**过期**了，于是"应用一份与真实 Dock 完全相同的配置"会白写一遍 + 白重启一次。实测 `PID 68667 → 68672`；**默认 Dock 那条路不中招**（回存只写配置、不应用），所以只有 override 中招。修法：加短路第 1b 条 `liveAlreadyMatches`，判据**复用 `verify` 的同一套比较**（跳过 ≡ 写了立刻验过）。修后实测 `68995 → 68995`。回归：`DockControllerTests` 4 条（`testSkipsWhenLiveDockAlreadyMatchesDespiteStaleFingerprint` / `testSkipAdoptsLiveDockSoWriteBackGateOpens` / `testDoesNotSkipWhenLiveDockDiffersFromConfig` / `testForceBypassesLiveMatchShortCircuit`）。**教训：只靠单测发现不了** —— 旧单测里 `appliedFingerprint` 与真实域永远同步，两个对象各自自洽 |
 | D25 | ~~切一次桌面 → Dock / 壁纸 / 触控板手势一起没了"几分钟"~~ | 用户以为系统卡死；实际是 **Dock 进程不在 60–126 秒**（Dock 就是壁纸与空间手势的实现者） | ✅ **根因已定位并修复（2026-09-19，`docs/spikes.md` 实验 9）**：三条叠在一起的自我放大链路 —— ① `kickstart()` 里的 `waitUntilExit()` 在 launchd 退避时**把主线程冻住几十秒**（实测 54/60/64 s，判据是 500 ms 一轮的监视器两分钟只留一行日志）；② 重载超时 5 s 短于退避尺度 → 慢恢复被误判成失败 → 升级 `SIGTERM` + `kickstart -k`；③ 监视器 1 s 动手、每 2 s 催一发 `-k`，把 launchd 刚拉回来的 Dock 再杀一次。**修法**：kickstart 非阻塞且不允许叠加、超时 30 s、监视器 4 s/30 s/60 s。顺带修掉 `DockWatcher` 在 Dock 缺失期间把残缺域（3 个图标 vs 真实 15 个）回存进配置 —— 但**已写坏的两条 override 要用户重抓**（见 §3 该节第 6 条与 §6.3 A6）。回归 5 条；⚠️ 真机复验待用户（A6） |
+| D26 | ~~每次菜单栏右键退出 → 没有 Dock / 没有壁纸 / 触控板失效几分钟~~ | 用户以为机器卡死；实测两次退出各 **53–54 秒** | ✅ **根因已定位并修复（2026-09-19，`docs/spikes.md` 实验 10）**：① 退出还原复用了完整降级链（等归位 30 s → SIGTERM → kickstart → 再等 30 s）；② `prepareForTermination` 那两条「带上限的等」其实是**无上限**的（`withTaskGroup` 会等不可取消的 `await task.value` 收尾 —— 返回值对、墙钟错）；③ 存活监视器在我们自己重启 Dock 期间抢着补刀。**修法**：`reloadForQuit`（一发 + 1.5 s 看一眼，不升级不 kickstart）、`apply(forQuit:)` 不重试、`dropPendingRequests()`、两处等待改成轮询可观察标志、监视器 `isReloading` 闸门、等不到干净就留标记。顺带把 `FileLogSink` 变成注入参数（单测曾把用户的诊断日志灌成 3 000 行假记录）。回归 13 条、**308 全绿**；⚠️ 真机复验待用户（A7） |
 
 ---
 
 ## 7. 给下一个 session 的建议顺序
 
-1. 读本文件 → `docs/PLAN.md`（§3 核心机制、§3.10 桌面命名与 toast、§3.11 无痕与自愈、§4 阶段与验收）→ `docs/spikes.md`（**9 个实验结论，含对计划的多处修正；实验 5 有两个要命发现，实验 6 是节流窗口的判据修正，实验 7 是一条"别再做"的动画结论，实验 8 是"其他项不能新建"，实验 9 是"切桌面黑屏几分钟"的根因**）。
-2. 跑一次基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，确认全绿（应为 **295 个测试通过、零警告**）。
-3. **动 Dock 相关代码前先读 §4 的五条**："launchd 重启节流"、"节流窗口判据"、"`-1` PID 陷阱"、
-   "查 Dock PID 的代价"、"**`launchctl kickstart` 会阻塞几十秒 → 绝不能 `waitUntilExit()`**"。
+1. 读本文件 → `docs/PLAN.md`（§3 核心机制、§3.10 桌面命名与 toast、§3.11 无痕与自愈、§3.3 退出流程、§4 阶段与验收）→ `docs/spikes.md`（**10 个实验结论，含对计划的多处修正；实验 5 有两个要命发现，实验 6 是节流窗口的判据修正，实验 7 是一条"别再做"的动画结论，实验 8 是"其他项不能新建"，实验 9 是"切桌面黑屏几分钟"的根因，实验 10 是"每次退出都卡住几分钟"的根因 + 那条 `withTaskGroup` 的静默失效**）。
+2. 跑一次基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，确认全绿（应为 **308 个测试通过、零警告**）。
+3. **动 Dock 相关代码前先读 §4 的六条**："launchd 重启节流"、"节流窗口判据"、"`-1` PID 陷阱"、
+   "查 Dock PID 的代价"、"**`launchctl kickstart` 会阻塞几十秒 → 绝不能 `waitUntilExit()`**"、
+   "**`withTaskGroup` 当"赛跑"用会让上限静默失效**"。
    踩到节流会让 Dock 消失一秒多；踩到 `-1` 会杀掉用户的全部进程；踩到同步 `kickstart` 会把整个 App 冻住两分钟
-   （见 `docs/spikes.md` 实验 9）。
+   （见 `docs/spikes.md` 实验 9）；踩到任务组那个坑会写出一堆"看着有上限、其实没有"的等待（实验 10）。
 4. 需要动 Dock 的改动，验收用 `MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`；**跑之前先 `defaults export com.apple.dock` 备份，且中途别手动改 Dock**。
-5. **最该催的一条：A6** —— 实验 9 那个"切桌面黑屏几分钟"的修复只过了单测，**必须真机连切十次复验**
-   （核对口径见 §6.3 A6），顺带请用户在设置里把 `计划 任务` 与 `密码 邮件` 两个桌面的 Dock 重抓一次
-   （旧 bug 已把这两条 override 写成 3 个图标、0 个其他项）。
+5. **最该催的两条：A6 与 A7** —— 实验 9（切桌面黑屏几分钟）与实验 10（每次右键退出卡住几分钟）的修复都只过了单测，
+   **必须真机复验**（核对口径分别见 §6.3 A6 / A7）。⚠️ **改了代码一定要重新 `./scripts/build-app.sh` 才算装上去** ——
+   A6 已经在 2026-09-19 被"跑了一个修复前的二进制"骗过去一次。复验前**先把 `multidock.log` 转走**（旧版单测把它灌满了假记录，
+   真历史已被 512 KB 环形截断挤掉；新版测试不再写它了）。顺带请用户在设置里把 `计划 任务` 与 `密码 邮件`
+   两个桌面的 Dock 重抓一次（旧 bug 已把这两条 override 写成 3 个图标、0 个其他项）。
 6. 其余只能人点的：A1–A3、A5（改名框、两个按钮、图标条拖拽、菜单栏连击），
    外加 **A4 建议补一次真人拖文件夹进 Dock**、B9（注销/关机）、B10（LaunchAgent 退回）。
 7. **多显示器实测**：请用户插一台外接屏，用调试面板的「显示器数量」+ 每个桌面 `displayUUID` 前 8 位核对有没有串。
@@ -584,6 +656,75 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-09-19（第 15 次）— 修掉「每次右键退出都卡住几分钟」：退出复用了完整降级链 + **两条"有上限的等待"其实没有上限**
+
+**做了什么**（用户：「每次菜单栏右键点击退出时都会卡住（没有dock、桌面背景也不显示、触控板也不能用）」）：
+
+**先说诊断的起点**：这和实验 9 是**同一个故障**，只是触发点从"切桌面"换到"退出"。而且必须先纠正一条记录 ——
+用户 2026-09-19 早先"复验过 A6"其实**没有发生**：他跑的 `build/MultiDock.app` 打包于 01:07，而实验 9 的修复
+commit `47defb5` 是 02:11 —— **修复从未在真机上跑过**。所以本次是"同一条自激链在退出路径上原样复现"，不是新 bug。
+
+**三条根因（都改了，按 §8 上一条的框架继续放大）**：
+
+1. **退出还原复用了完整的重载降级链** —— 发信号 → 等归位 30 s → 升级 `SIGTERM` → 再 `kickstart` → 再等 30 s。
+   launchd 正处在递增退避里，日志实测退出还原用时 **53–54 秒**（用户看到的"卡住几分钟"= 这几笔叠起来）。
+   → 新增 `DockReloader.reloadForQuit(strategy:deadline:)`：**只发一发 SIGHUP、最多看它 1.5 秒、绝不升级、绝不 kickstart**。
+   四种结果 `QuitRestart`（`revived` / `signaled` / `dockWasDown` / `notDelivered`）里**没有一种是失败**：
+   偏好已经落盘，launchd 把 Dock 拉回来时直接读到它 —— 我们不需要"亲眼看到"它归位。
+   `DockController.apply(..., forQuit: true)` 配套：**写一次、验一次、不重试**（`SIGTERM` 那条有约 255 ms 清理窗口、
+   Dock 可能回写覆盖，而退出流程没有重试机会去发现它 —— 所以退出路径**只用 SIGHUP**）。
+2. **`kickstart` 带了 `-k`** —— `man launchctl`：服务已在跑时**先杀掉正在跑的实例**。而这条兜底恰恰只在
+   "launchd 可能正要自己把 Dock 拉回来"时走到，等于把刚拉活的 Dock 再杀一次 + 加深退避。已去掉 `-k`。
+3. **`DockPresenceMonitor` 在我们自己重启 Dock 期间冲进来"拉回"** —— 两条控制回路抢同一个服务。
+   → 新增注入点 `isReloading`，为真时**这一轮不计数**（处置权在 `DockReloader`）。
+
+**⚠️ 这次最有价值的发现是个通用的 Swift 坑（第 3 条根因的根因）**：
+
+`prepareForTermination()` 里那两条"有上限"的等待（`DockController.waitForIdle(upTo:)`、
+`AppState.settleSelfHeal(within:)`）都用 `withTaskGroup` 写成了"让一个 `await task.value` 和 `Task.sleep` 赛跑"。
+**任务组在闭包返回时会等所有子任务收尾**，而 `await drainTask.value` 这种子任务对取消毫无反应 ——
+于是**上限静默失效**，函数实际等到的是那笔应用整条链跑完。阴险在于**返回值看着是对的**：
+
+| 写法 | 上限 | `group.next()` 报出的值 | **墙钟** |
+| --- | --- | --- | --- |
+| `withTaskGroup` 赛跑 | 20 ms | `false`（正确！20 ms 就报了） | `waitForIdle` **625 ms** / `settleSelfHeal` **224.7 ms** |
+| 轮询完成标志（现在的写法） | 20 ms | — | 在 200 ms 断言内通过 |
+
+改成**轮询可观察的完成标志**（`drainTask == nil` / 新增的 `selfHealFinished`）。
+回归守卫因此**必须断言墙钟**，不能只断言返回值 —— 我把守卫反向验过一次：临时换回任务组写法，
+`XCTAssertLessThan(elapsed, 200 ms)` 报 `("0.224659361 seconds") is not less than ("0.2 seconds")`，
+而同一测试里的 `XCTAssertFalse(settled)` **照样通过**。这条已进 §5 代码约定。
+
+**顺带：`LifecycleController` 现在会区分"还干净了"与"没还干净"** —— `prepareForTermination()` 返回 `Bool`，
+还原成功但**退出时仍有一笔应用没落地**时**不清标记**（`keepMarkerAndFinish`，`pid = 0` + `needsSelfHeal`），
+交给下次启动看真实域再决定。
+
+**附带修掉一个工程问题（它直接破坏了诊断能力）**：`FileLogSink` 没有注入点，所以 `swift test` 每次
+都往用户唯一的诊断产物 `~/Library/Application Support/MultiDock/multidock.log`（512 KB 环形）里灌几千行假记录 ——
+实验 9 的真实历史就是这么被挤掉的（上面那两条 53–54 s 的记录现在也已不在文件里，只能凭本会话早先读到的内容留档）。
+现在 `AppState.init` 接受 `fileLog:`，6 个测试构造点全部传 `TestSupport.makeTestFileLog()`（临时目录、每次一个 UUID 文件）。
+核对：跑一遍全量测试，用户日志行数 **3060 → 3060** 不变。
+
+**验收证据**：
+
+- `swift build -c release --disable-sandbox` → `Build complete!`，**零警告**。
+- `swift test --disable-sandbox` → **308 个测试，7 跳过，0 失败**（295 → 308，+13：
+  `DockReloaderTests` 的 `reloadForQuit` 四种结果、`DockControllerTests` 的墙钟守卫与 `dropPendingRequests`、
+  `DockPresenceMonitorTests` 的 `isReloading` 闸门、`StartupSelfHealTests` 的自愈等待上限）。
+- **本次没有动用户的 Dock**：全部新行为由注入式假进程覆盖。
+
+**未解决的事**：
+
+1. ⚠️ **A6 与 A7 都只能用户做**，而且**必须重新 `./scripts/build-app.sh`**（见 §6.3）。核对口径：
+   退出后日志出现 `退出还原流程结束，用时 0.xx s`（**远小于 5 s**）、切桌面十次 `Dock 不可用` 稳定在 100 ms 量级、
+   两条路径都**不再出现**「检测到 Dock 不在…已用 launchctl 拉回」。
+2. **`LifecycleController` 的 `!settled` 分支没有端到端覆盖** —— 只有"标记会留下 + `pid = 0`"这一层的单测；
+   真机上"退出时恰好还有一笔没落地"要用户复现一次才算走完（A7 的次要核对项）。
+3. 数据修复照旧欠着：`计划 任务` / `密码 邮件` 两条 override 要重抓（实验 9 写坏的）。
+4. **`Sources/` 里已经没有任何 `withTaskGroup`**（`grep` 只剩这两处解释性注释），所以没有别的地方要审计。
+   但这条坑要留着：**"和一个 `await task.value` 赛跑"这种写法在 Swift 里根本不成立**，
+   下次再看到"上限写在参数里、实际等很久"的形状，先查是不是任务组。
 
 ### 2026-09-19（第 14 次）— 修掉「切一次桌面黑屏几分钟」：主线程被 `launchctl` 冻住 + 三级自激
 

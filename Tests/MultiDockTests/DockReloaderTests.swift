@@ -376,4 +376,84 @@ final class DockReloaderTests: XCTestCase {
         let second = await reloader.reload(strategy: .auto)
         XCTAssertGreaterThan(second.spacingWait, 0.05, "拿不到年龄时必须靠内存里的窗口兜住")
     }
+
+    // MARK: - 退出流程专用：发一发就走，**绝不升级**
+
+    /// 回归护栏，来自真机 2026-09-19：两次「菜单栏 → 退出」各耗时 **53 与 54 秒**，
+    /// 期间没有 Dock、没有壁纸、触控板手势全废（Dock 就是壁纸和空间手势的实现者）。
+    /// 根因是退出还原照 `reload()` 走完了一整条降级链：等归位 30 s → SIGTERM → `kickstart`
+    /// → 再等 30 s，而 launchd 当时正处在递增退避里。
+    ///
+    /// 退出时等归位**换不到任何东西**：偏好是原子写进 `com.apple.dock` 域的，
+    /// Dock 被 launchd 拉回来那一刻自然会读到基准。所以这里只发一发信号、最多看一眼。
+
+    func testQuitReloadRevivesWithASingleSighup() async {
+        let process = FakeDockProcess(pid: 4242, restartsOn: [SIGHUP])
+        let result = await makeReloader(process).reloadForQuit()
+
+        XCTAssertEqual(process.signals, [SIGHUP], "只发一发 SIGHUP")
+        XCTAssertEqual(process.kickstartCount, 0)
+        switch result {
+        case let .revived(oldPID, newPID, _):
+            XCTAssertEqual(oldPID, 4242)
+            XCTAssertNotEqual(oldPID, newPID, "判据仍是「PID 变了」，不是「PID 还在」")
+        default:
+            XCTFail("替身的 Dock 对 SIGHUP 有反应，应该是 .revived，实得 \(result.description)")
+        }
+    }
+
+    func testQuitReloadGivesUpWithoutEscalating() async {
+        // Dock 对任何信号都不回应（launchd 退避期就是这样）：必须**就此收手**。
+        // 升级到 SIGTERM / kickstart 正是把 100 ms 的缺失滚成两分钟的自我放大。
+        let process = FakeDockProcess(pid: 100, restartsOn: [], kickstartRestarts: false)
+        let started = Date()
+        let result = await makeReloader(process).reloadForQuit(deadline: .milliseconds(80))
+        let wall = Date().timeIntervalSince(started)
+
+        XCTAssertEqual(process.signals, [SIGHUP], "不能补 SIGTERM")
+        XCTAssertEqual(process.kickstartCount, 0, "不能动 launchctl")
+        XCTAssertFalse(process.signals.contains(SIGTERM))
+        switch result {
+        case .signaled(let oldPID): XCTAssertEqual(oldPID, 100)
+        default: XCTFail("期限内没归位就该报 .signaled（不是失败），实得 \(result.description)")
+        }
+        // 「偏好已写回基准」这句话是这条路径的全部依据，必须出现在给用户看的日志里。
+        XCTAssertTrue(result.description.contains("基准"), result.description)
+        XCTAssertLessThan(wall, 1.0, "等不到也必须立刻返回，把退出拖住就是这次 bug 本身")
+    }
+
+    func testQuitReloadIgnoresTheThrottleWindow() async {
+        // 节流等待的目的是"少闪一下"。我们正要离开，用户看不到那一下 —— 所以不等。
+        let process = FakeDockProcess(restartsOn: [SIGHUP])
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(200),
+            pollInterval: .milliseconds(2),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .seconds(30)   // 故意设得极大
+        )
+
+        let started = Date()
+        let result = await reloader.reloadForQuit()
+
+        switch result {
+        case .revived: break
+        default: XCTFail("实得 \(result.description)")
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.0, "等节流窗口就是把退出拖成几十秒的另一种走法")
+    }
+
+    func testQuitReloadWithDockAlreadyDownSendsNothing() async {
+        // Dock 本来就不在：发信号没有对象，`kickstart` 更插不得（launchd 自己会拉）。
+        // 偏好仍然已经写下去了，所以这**不是失败** —— 只是"我们没看一眼"。
+        let process = FakeDockProcess(pid: nil, restartsOn: [SIGHUP])
+        let result = await makeReloader(process).reloadForQuit()
+
+        XCTAssertTrue(process.signals.isEmpty, "没有 Dock 进程就没得发信号")
+        XCTAssertEqual(process.kickstartCount, 0)
+        switch result {
+        case .dockWasDown: break
+        default: XCTFail("实得 \(result.description)")
+        }
+    }
 }

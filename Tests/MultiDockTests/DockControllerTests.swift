@@ -561,4 +561,87 @@ final class DockControllerTests: XCTestCase {
         XCTAssertNotNil(reload?.newPID)
         XCTAssertTrue(reload?.description.contains("SIGHUP") ?? false)
     }
+
+    // MARK: - 退出流程专用的应用（`forQuit`）
+
+    func testQuitApplyNeverRetriesAndNeverEscalates() async {
+        // 常规路径是「写 → 重启 → 校验 → 不一致重试一次」。退出流程**不能**重试：
+        // 每一发重启都是 launchd 退避的入口，真机 2026-09-19 一次退出因此耗掉 53–54 秒。
+        // 换掉的只是"当场验一眼"，而偏好是原子落盘的，Dock 下次启动自然读到。
+        let prefs = FakePreferences(domain: baseDomain(), writesToDrop: 99)
+        let process = FakeDockProcess()
+        let controller = makeController(preferences: prefs, process: process)
+
+        let outcome = await controller.apply(makeConfig(), reason: "退出还原", forQuit: true)
+
+        XCTAssertEqual(prefs.writes, 1, "退出路径一次都不许多写")
+        XCTAssertEqual(process.signals, [SIGHUP], "不能升级到 SIGTERM")
+        XCTAssertEqual(process.kickstartCount, 0, "不能动 launchctl")
+        XCTAssertEqual(outcome.verifyAttempts, 1)
+        XCTAssertEqual(outcome.result, .failed, "写被吞掉 → 校验不过，如实报失败但不重试")
+        XCTAssertNil(controller.appliedFingerprint, "校验没过就不能记指纹")
+        XCTAssertNotNil(outcome.quitRestart)
+    }
+
+    func testQuitApplyReportsHowTheRestartWasLeft() async {
+        // 退出路径**不产出** `reload`（那是"跑完整条降级链"的结果），收场方式改由
+        // `quitRestart` 带回去。摘要里必须看得见，否则日志上退出还原和正常还原长得一样。
+        let prefs = FakePreferences(domain: baseDomain())
+        let process = FakeDockProcess(pid: 4242)
+        let controller = makeController(preferences: prefs, process: process)
+
+        let outcome = await controller.apply(makeConfig(), reason: "退出还原", forQuit: true)
+
+        XCTAssertNil(outcome.reload, "退出路径不该有一次跑完整条 ladder 的 reload")
+        guard let restart = outcome.quitRestart else {
+            XCTFail("退出路径必须带回收场方式")
+            return
+        }
+        switch restart {
+        case let .revived(oldPID, newPID, _):
+            XCTAssertEqual(oldPID, 4242)
+            XCTAssertNotEqual(oldPID, newPID)
+        case .signaled, .dockWasDown, .notDelivered:
+            XCTFail("替身的 Dock 对 SIGHUP 有反应，应该是 .revived，实得 \(restart.description)")
+        }
+        XCTAssertTrue(outcome.summary.contains("SIGHUP 成功"), outcome.summary)
+    }
+
+    // MARK: - 带上限的等待（退出流程）
+
+    func testWaitForIdleReportsTimeout() async {
+        // `waitForIdle(upTo:)` 返回 false 时调用方**必须**当成"没干净"处理：
+        // 那笔在飞的写入可能落在我们的还原之后。
+        let prefs = FakePreferences(domain: baseDomain())
+        let process = FakeDockProcess(pid: 100, restartsOn: [], kickstartRestarts: false)
+        let controller = makeController(preferences: prefs, process: process)
+
+        controller.request(makeConfig(tilesize: 60), reason: "在飞", strategy: .auto)
+        let started = ContinuousClock.now
+        let settled = await controller.waitForIdle(upTo: .milliseconds(20))
+        let elapsed = started.duration(to: ContinuousClock.now)
+        XCTAssertFalse(settled, "降级链要几百毫秒，20 ms 上限必须报超时")
+        XCTAssertTrue(controller.isApplying)
+        // ⚠️ 这条才是"上限真的存在"的守卫。只断言上面那个 Bool 发现不了
+        // `withTaskGroup` 那个静默失效的写法 —— 它会等完整条 ladder 再返回 false，
+        // 于是"2 秒上限"实际是几十秒（2026-09-19 退出卡住的根因）。
+        XCTAssertLessThan(elapsed, .milliseconds(200), "上限 20 ms 不该等完整条降级链，实得 \(elapsed)")
+
+        await controller.waitForIdle()
+        let settledAfterwards = await controller.waitForIdle(upTo: .milliseconds(20))
+        XCTAssertTrue(settledAfterwards, "跑完之后同样的上限就该报干净")
+    }
+
+    func testDropPendingRequestsSkipsWorkThatNeverStarted() async {
+        // 还没起跑的待办可以直接丢（它的目标马上会被"还原到基准"取代）。
+        let prefs = FakePreferences(domain: baseDomain())
+        let controller = makeController(preferences: prefs)
+
+        controller.request(makeConfig(tilesize: 60), reason: "排队", strategy: .auto)
+        controller.dropPendingRequests()
+        await controller.waitForIdle()
+
+        XCTAssertEqual(prefs.writes, 0, "丢掉之后那笔绝不能落地")
+        XCTAssertFalse(controller.isApplying)
+    }
 }

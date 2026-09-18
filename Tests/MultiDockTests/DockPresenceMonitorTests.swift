@@ -290,6 +290,44 @@ final class DockPresenceMonitorTests: XCTestCase {
         XCTAssertEqual(process.kickstartCount, 1, "第 6 轮该动手拉回")
     }
 
+    // MARK: - 我们自己正在重启 Dock 时不抢刀
+
+    func testTickIsSkippedWhileWeAreReloadingTheDockOurself() {
+        // `DockReloader` 重启 Dock 的那一瞬间 Dock 本来就不在，而且它自己正在轮询等归位。
+        // 监视器这时候插一发 `kickstart` 等于两条控制回路抢同一个服务 ——
+        // 真机 2026-09-19 每次 100–126 秒的 Dock 死亡都是这么开始的。
+        let process = FlakyDock(pid: 400)
+        let (monitor, messages) = makeMonitor(process: process)
+        // 用 Box 而不是局部 `var`：注入的闭包是 sendable 的，Swift 6 不允许事后改捕获的局部变量。
+        let reloading = Box(true)
+        monitor.isReloading = { reloading.value }
+
+        process.vanish()
+        for _ in 0..<10 { monitor.tick() }
+
+        XCTAssertEqual(process.kickstartCount, 0, "在飞的自己造的重启期间一次都不该动手")
+        XCTAssertEqual(monitor.consecutiveMisses, 0, "连缺失都不该记，否则会紧接着误报「拉不回来」")
+        XCTAssertTrue(messages.value.isEmpty, "也不该刷日志：\(messages.value)")
+
+        // 我们自己收手之后，监视器必须立刻恢复履职（不能变成一次性开关）。
+        reloading.value = false
+        monitor.tick()
+        monitor.tick()
+        XCTAssertEqual(monitor.consecutiveMisses, 2, "闸门一开就要从头开始数缺失")
+        XCTAssertEqual(process.kickstartCount, 1, "到阈值就该照常拉回")
+    }
+
+    func testDefaultIsReloadingGateDoesNotBlockMonitoring() {
+        // 没接注入（单测里构造的裸监视器）时绝不能把监视器本身关掉。
+        let process = FlakyDock(pid: 400, recoversOnKickstart: false)
+        let monitor = DockPresenceMonitor(process: process)
+
+        process.vanish()
+        for _ in 0..<8 { monitor.tick() }
+
+        XCTAssertEqual(process.kickstartCount, 1, "默认闸门恒为 false，缺失满 4 秒照旧动手")
+    }
+
     // MARK: - 生产默认值：不能和 launchd 的退避抢着动手
 
     func testDefaultWaitsFourSecondsOfAbsenceAndThenRests() {

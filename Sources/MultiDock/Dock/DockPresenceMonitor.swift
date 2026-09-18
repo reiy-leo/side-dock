@@ -64,6 +64,14 @@ final class DockPresenceMonitor {
     /// 从「持续拉不回来」恢复时回调一次。参数是累计恢复次数。
     var onRevived: @MainActor (Int) -> Void = { _ in }
 
+    /// 「我们自己在重载 Dock」的判据。为真时**这一轮不计数**。
+    ///
+    /// 为什么需要：`DockReloader` 重启 Dock 时 Dock 进程本来就有一瞬间不在，那是**预期的缺失**，
+    /// 而且它自己正在轮询等归位、有一套升级顺序。监视器这时候插一发 `kickstart` 等于两条
+    /// 控制回路抢同一个服务 —— 真机 2026-09-19 每次 100–126 秒的 Dock 死亡都是从这种抢刀开始的。
+    /// 注入点而不是直接读 `DockController`：监视器要能脱离真实 Dock 单测。
+    var isReloading: @MainActor () -> Bool = { false }
+
     init(
         process: any DockProcessControlling = RealDockProcessControl(),
         pollInterval: Duration = .milliseconds(500),
@@ -108,6 +116,9 @@ final class DockPresenceMonitor {
     /// 单次检查。轮询会调它，测试也直接调它 —— 这样"何时判定、何时拉回"是确定性的，
     /// 不受轮询时机影响（与 `DockWatcher.tick()` 同一套路）。
     func tick() {
+        // 我们自己正在重启 Dock —— 这一刻的缺失是预期的，处置权在 `DockReloader`。见 `isReloading`。
+        guard !isReloading() else { return }
+
         if let pid = process.dockPID(), pid > 0 {
             if consecutiveMisses >= missThreshold {
                 recoveryCount += 1

@@ -273,7 +273,8 @@ final class DockAcceptanceTests: XCTestCase {
                 presenceMonitor: DockPresenceMonitor(
                     process: RealDockProcessControl(),
                     pollInterval: .seconds(60)      // 别让它在验收期间自己动手
-                )
+                ),
+                fileLog: makeTestFileLog()
             )
             state.start()
             await state.waitForSelfHeal()
@@ -471,7 +472,8 @@ final class DockAcceptanceTests: XCTestCase {
                 baselineURL: scratch.appendingPathComponent("baseline.plist"),
                 markerURL: scratch.appendingPathComponent("session.state")
             ),
-            provider: provider
+            provider: provider,
+            fileLog: makeTestFileLog()
         )
         state.start()
         defer { state.stop() }

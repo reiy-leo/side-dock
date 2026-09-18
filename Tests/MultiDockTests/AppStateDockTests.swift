@@ -63,7 +63,8 @@ final class AppStateDockTests: XCTestCase {
             baselineStore: stores.1,
             // 默认给一个"私有 API 不可用"的提供者：这些用例大多不关心桌面切换，
             // 换成假的可以避免测试去读真实显示器上的桌面。
-            provider: provider ?? FakeSpaceProvider(isAvailable: false, reason: "测试替身")
+            provider: provider ?? FakeSpaceProvider(isAvailable: false, reason: "测试替身"),
+            fileLog: makeTestFileLog()
         )
     }
 

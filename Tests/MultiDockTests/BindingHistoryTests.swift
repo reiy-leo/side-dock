@@ -48,7 +48,8 @@ final class BindingHistoryTests: XCTestCase {
             ),
             configStore: stores.0,
             baselineStore: stores.1,
-            provider: provider
+            provider: provider,
+            fileLog: makeTestFileLog()
         )
         return (state, stores.0, provider)
     }

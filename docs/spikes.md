@@ -633,6 +633,129 @@ launchctl print gui/$UID/com.apple.Dock.agent
 
 ---
 
+## 实验 10：每次右键退出都"卡住几分钟"（2026-09-19，结论：**实验 9 那条链在退出路径上原样成立，而且我们的"上限"从一开始就是假的**）
+
+用户报告：菜单栏右键 → 退出，**每一次**都会出现"没有 Dock、桌面背景不显示、触控板也不能用"，
+持续几分钟。这个描述与实验 9 的故障一模一样 —— 因为**它就是同一个故障**，只是触发点从"切桌面"换成了"退出"。
+
+### 10.1 先确认：用户跑的是修复前的二进制
+
+- `build/MultiDock.app/Contents/MacOS/MultiDock` 的时间戳 **09-19 01:07**；
+  实验 9 的修复 commit `47defb5` 落在 **02:11**。也就是说用户退出时跑的那份代码里
+  `kickstart()` 还是同步 `waitUntilExit()`、监视器还是 1 s 动手 / 每 2 s 补一发 `-k`、
+  重载超时还是 5 s。**实验 9 的修复从未被真机跑过。**
+- 日志里能找到的**两次真实退出**：`退出还原流程结束，用时 54.05s` 与 `用时 53.12s`，
+  各自前面都有一次 **100–122 秒**的 Dock 缺失，而那条
+  `检测到 Dock 不在（连续 2 次），已用 launchctl 拉回` 的打印时刻，正好就是被阻塞的
+  `launchctl kickstart -k` 返回的时刻（实验 9.2 的判据一模一样）。
+- ⚠️ 这两行现在已经**不在** `multidock.log` 里了 —— 见 10.5：单测把那 512 KB 的环形文件整个灌满了假记录。
+  数字是本会话早些时候从文件里读到的原始值。
+
+### 10.2 退出路径上的三个放大器
+
+| 放大器 | 位置 | 后果 |
+| --- | --- | --- |
+| 退出还原走的是**完整重载 ladder** | `restoreToBaseline()` → `apply` → `reload()`：发信号 → 等归位（30 s）→ SIGTERM → `kickstart` → 再等 30 s | 一次"我们马上就不在了"的写操作，等满整条链 = 53–54 s |
+| 存活监视器跟我们自己的退出重载抢节奏 | 500 ms 一轮，看到 Dock 不在就补 `kickstart` | launchd 刚拉回来又被杀 → 退避续期 |
+| `prepareForTermination(settleLimit:)` 的"2 秒上限"**不生效** | 见 10.3 | 上限写在参数里，没人受它约束 |
+
+### 10.3 核心发现：`withTaskGroup` 赛跑做不出「带上限的等待」
+
+两处"带上限地等"（`DockController.waitForIdle(upTo:)`、`AppState.settle(_:within:)`）都写成：
+
+```swift
+await withTaskGroup(of: Bool.self) { group in
+    group.addTask { await task.value; return true }      // ← 不可取消
+    group.addTask { try? await Task.sleep(for: limit); return false }
+    let settled = await group.next() ?? false
+    group.cancelAll()                                     // ← 对第一种子任务毫无作用
+    return settled
+}
+```
+
+**任务组在闭包返回时会等所有子任务收尾。** 而 `await task.value` 这种子任务没有取消处理器
+（`Task<Void, Never>`，`cancelAll()` 只是把 `isCancelled` 置位），所以它一路等到那笔应用跑完才结束。
+于是：
+
+- `group.next()` 确实在 20 ms 就返回了 `false` —— **返回值看着是对的**；
+- 但整个 `withTaskGroup` 闭包要到 **625 ms**（正好是替身那条降级链的总时长）才返回。
+
+实测数字（把降级链做成必然慢：`reloadStrategy = .sigterm`，上限给 20 ms）：
+
+| 位置 | 上限 | 任务组写法的实际墙钟 | 轮询写法 |
+| --- | --- | --- | --- |
+| `DockController.waitForIdle(upTo:)` | 20 ms | **625 ms**（正好是降级链的总时长） | 200 ms 断言内通过 |
+| `AppState.settleSelfHeal(within:)` | 20 ms | **224.7 ms**（回归用例打出来的） | 200 ms 断言内通过 |
+
+**这就是为什么"每次退出都卡住"在代码里查不出来**：`settleLimit` 传的是 2 秒，
+读代码的人看到"有上限"，测试也只断言 Bool —— 只有墙钟会露馅。在 launchd 退避的尺度上，
+被放大的是**几十秒**，因为降级链里那一发同步 `kickstart` 自己就要阻塞几十秒。
+
+**修法**：不用任务组，改轮询一个"活干完了"的可观察标志。
+
+```swift
+func waitForIdle(upTo limit: Duration) async -> Bool {
+    let deadline = ContinuousClock.now + limit
+    while drainTask != nil, ContinuousClock.now < deadline, !Task.isCancelled {
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return drainTask == nil
+}
+```
+
+`AppState` 那侧需要一个 `selfHealFinished` 标志（自愈任务跑完时置位），理由相同：
+`performSelfHeal` 是**直接 `await dockController.apply(...)`**，不经过 `drainTask`，
+所以 `waitForIdle` 代理不了它的进度。
+
+**回归守卫的写法**（关键）：必须断言**墙钟**，不能只断言 Bool。
+`testWaitForIdleReportsTimeout` 与 `testPrepareForTerminationBoundsTheSelfHealWait`
+都带 `XCTAssertLessThan(elapsed, .milliseconds(200))`。把 `settleSelfHeal` 临时改回任务组写法，
+后者如实失败：`("0.224659361 seconds") is not less than ("0.2 seconds")`，
+而同一条用例里 `XCTAssertFalse(settled)` **仍然通过** —— 这就是这个 bug 的隐蔽程度。
+
+### 10.4 决定（已落进代码与 `docs/PLAN.md` §3.3 / §3.9）
+
+| 改什么 | 从 | 到 | 为什么 |
+| --- | --- | --- | --- |
+| 退出时的重载 | 复用 `reload()`（等归位 30 s → 升级 → kickstart → 再等） | **`reloadForQuit()`**：一发信号 + 最多 1.5 s 看一眼，**不等节流、不升级、不 `kickstart`** | 我们马上就不在了：等归位换不到任何**可行动**的信息（校验读的是偏好域，不是 Dock 界面），而升级正是把 100 ms 滚成两分钟的那一步 |
+| 退出时的写入 | `apply` 正常路径（不一致重试一次） | **`apply(..., forQuit: true)`**：一次写入 + 一发信号 + 一次校验，**不重试** | 重试 = 再发一发信号 = 再吃一次退避 |
+| 还没起跑的待办 | 一并等完 | **`dropPendingRequests()` 直接丢** | 它的目标马上会被"还原到基准"取代，等它毫无意义 |
+| 退出前的等待 | 两个假的"带上限" | **轮询标志** + 真上限（默认 2 s，可注入） | 10.3 |
+| 存活监视器 | 无条件轮询 | **`isReloading` 闸门**：我们自己正在重载 Dock 时不采样 | 我们的重启不是故障 |
+| 等不到干净时 | 直接清标记 | **`!settled` → `keepMarkerAndFinish`**（留债务，下次启动自愈去看真实域） | 那笔在飞的写入可能落在还原**之后** |
+
+**"不等归位为什么是安全的"**（这条论证要留在文档里，否则以后有人会把 ladder 加回去）：
+
+1. 偏好是**原子写**进 `com.apple.dock` 域的，我们退出之后它还在；
+2. Dock 每次启动都重读这个域 —— launchd 把它拉回来那一刻，读到的就是基准；
+3. 唯一能纠正"升级也没用"的手段是**下次启动的自检**，而它不看这次等了多久。
+   所以"多等 30 秒"换来的只是一条我们无从补救的日志。
+
+### 10.5 附带挖出的第三个问题：单测把用户的诊断日志灌满了假记录
+
+`AppState` 里 `private let fileLog = FileLogSink()` 用的是默认路径
+（`~/Library/Application Support/MultiDock/multidock.log`），**测试没有注入点**。
+后果（实测）：文件里 02:37 之后的 3 000 多行**全是**单测产物（假 PID `100 → 1001`、假的
+「开始退出还原…」），而实验 9 引用的真实证据行与那两次 53–54 s 的退出记录，
+已经被 512 KB 的环形截断挤了出去。
+
+这直接打掉了 A6 的核对手段 —— 用户要看的正是这份日志（无屏幕录制权限、`log show` 在沙箱里读不到）。
+修法：`FileLogSink` 变成 `AppState.init` 的注入参数，测试统一走 `makeTestFileLog()`（临时目录）。
+验证：改动后跑一次全量 `swift test`，用户那份日志行数 **3060 → 3060**（纹丝不动）。
+
+### 10.6 验收
+
+- `swift build -c release --disable-sandbox` → **零警告**；`swift test --disable-sandbox` →
+  **308 个测试全绿**（7 个真实 Dock 验收默认跳过），本次 +13。
+- 新增：`DockReloaderTests` 4 条（`reloadForQuit` 只发一发 / 不升级且墙钟 < 1 s / 无视 `minimumSpacing` /
+  Dock 不在时一发都不发）、`DockControllerTests` 4 条（退出路径不重试不升级 / 带回收场方式 /
+  `waitForIdle` 真上限 / `dropPendingRequests`）、`DockPresenceMonitorTests` 2 条（`isReloading` 闸门）、
+  `StartupSelfHealTests` 3 条（退出还原只写一次并读回基准 / `!settled` 的如实上报 / 自愈等待的真上限）。
+- ⚠️ **真机复验仍未做**（本会话没有再动用户的 Dock）。核对口径见 AGENTS.md §6.3 A6/A7。
+  注意：**先转走被测试灌脏的那份日志**，否则核对的是假记录。
+
+---
+
 ## 对 `docs/PLAN.md` 的修订清单
 
 | 位置 | 原内容 | 修订为 |
@@ -659,6 +782,9 @@ launchctl print gui/$UID/com.apple.Dock.agent
 | §3.7 | 桌面列表：显示器名 + 名字 + 当前绑定状态 | ✅ 列表**按显示器分组**（`ScreenNaming`），详情加一行显示器名；映射不到时如实说"未识别显示器（UUID 前 8 位…）"，**不回落成一台错的屏** |
 | §3.4 / §3.9 | 重载超时 5 s；存活监视器 1 s 动手、每 2 s 催一发 `kickstart -k`；`kickstart` 同步等 launchctl 退出 | 全部改掉：超时 **30 s**、**4 s** 才动手、每 **30 s** 才催一发、报警阈值 **60 s**、`kickstart` **非阻塞且不允许叠加**。理由：这几条叠在一起会把一次正常的慢恢复自我放大成 60–126 秒的 Dock 死亡，而且同步的 `launchctl` 会冻住主线程。见本文**实验 9** |
 | §3.8 | Watcher 只在"还原期间"停止 | 再加一条边界：**Dock 进程不在时一律不采样**，回来后的第一次读只用来对齐基线。缺失期间域里是残缺内容（实测 3 个图标 vs 真实 15 个），照抄会写坏桌面配置。见本文 9.4 |
+| §3.3 正常退出流程 | "等待重载完成（Dock 归位确认，最长 5 s）" | 改成**退出专用的窄路径**：一发信号 + 最多 1.5 s 看一眼，不等节流、不升级、不 `kickstart`；写入不重试；待办直接丢；等待带**真**上限（轮询标志，默认 2 s）。理由：那 5 s 上限实际是"等完整条 ladder"，在 launchd 退避期间是 53–54 秒。见本文**实验 10** |
+| §3.9 P4 实现记录 第 4 条 | "等自愈跑完 + `waitForIdle()`（无上限）" | 两条等待都改成**带上限且上限真的生效**；等不到干净时**保留会话标记**（`!settled` → `keepMarkerAndFinish`）。原先的"带上限"是 `withTaskGroup` 赛跑写法，静默失效（返回值对、墙钟不对） |
+| §5 风险表 | "退出还原被排队的应用覆盖 → `await waitForIdle()`" | 补一条同级风险：**带带上限的等待必须轮询可观察标志**，用 `await task.value` 做赛跑等于没上限；回归守卫要断言墙钟 |
 
 ---
 

@@ -76,7 +76,8 @@ final class StartupSelfHealTests: XCTestCase {
             presenceMonitor: DockPresenceMonitor(
                 process: FakeDockProcess(),
                 pollInterval: .seconds(60)
-            )
+            ),
+            fileLog: makeTestFileLog()
         )
         return Fixture(
             state: state,
@@ -225,10 +226,15 @@ final class StartupSelfHealTests: XCTestCase {
         XCTAssertTrue(fixture.state.log.contains { $0.message.contains("读不到基准快照") })
     }
 
-    // MARK: - 退出前等待待办清空
+    // MARK: - 退出前收尾：丢掉未起跑的待办，只等有限久
 
-    func testPrepareForTerminationWaitsForPendingApply() async throws {
-        let fixture = try makeFixture(name: "drain", baseline: Self.liveDomain(tilesize: 36))
+    func testPrepareForTerminationDropsQueuedApply() async throws {
+        // 语义在 2026-09-19 改过。旧版是「排队的应用必须在还原之前落地」，
+        // 担忧仍然成立（那笔待办会在还原**之后**把 Dock 弄脏），但解法换了：
+        // 紧接着的「还原到基准」**就是**最终目标，那笔待办的目标已被取代 —— 等它毫无意义，
+        // 而代价可能很大：一次在飞的应用最坏要走完整条降级链（真机实测 53–54 秒）。
+        // 所以现在：未起跑的**直接丢**，已经起跑的**只等 `settleLimit`**，等不到就留标记。
+        let fixture = try makeFixture(name: "drop-pending", baseline: Self.liveDomain(tilesize: 36))
         fixture.state.start()
         defer { fixture.state.stop() }
 
@@ -236,13 +242,104 @@ final class StartupSelfHealTests: XCTestCase {
         fixture.state.applyDefaultDock()
         // `request()` 是同步建任务的，所以这里写盘还没发生。
         XCTAssertEqual(fixture.preferences.writeCount, 0)
+        XCTAssertTrue(fixture.state.dockController.isApplying, "前面那句必须真的排上了一笔待办")
 
-        await fixture.state.prepareForTermination()
+        let settled = await fixture.state.prepareForTermination()
 
-        XCTAssertEqual(fixture.preferences.writeCount, 1,
-                       "排队的应用必须在退出还原之前落地，否则它会在还原之后把 Dock 又弄脏")
+        XCTAssertTrue(settled, "没有卡在飞行中的应用时，收尾必须报告干净")
+        XCTAssertEqual(fixture.preferences.writeCount, 0,
+                       "未起跑的待办必须丢掉：它一旦落地就会在还原之后把 Dock 又弄脏")
         XCTAssertEqual(fixture.state.dockWatcher?.isRunning, false)
         XCTAssertEqual(fixture.state.dockPresenceMonitor?.isRunning, false)
+    }
+
+    func testQuitRestoreWritesOnceAndReadsBackTheBaseline() async throws {
+        // 退出这条路（`forQuit`）与手动「立即还原」的唯一区别是重启怎么收场：
+        // 写完偏好、发一发 SIGHUP、最多看一眼就返回。写入本身照旧。
+        let fixture = try makeFixture(
+            name: "quit-restore",
+            live: Self.liveDomain(tilesize: 64),
+            baseline: Self.liveDomain(tilesize: 36)
+        )
+        fixture.state.start()
+        defer { fixture.state.stop() }
+
+        let restored = await fixture.state.restoreToBaseline(forQuit: true)
+        let outcome = try XCTUnwrap(restored)
+
+        XCTAssertEqual(fixture.preferences.snapshot["tilesize"]?.doubleValue, 36)
+        XCTAssertEqual(fixture.preferences.writeCount, 1, "退出还原只写一次，不重试")
+        XCTAssertEqual(outcome.result, .applied)
+        let restart = try XCTUnwrap(outcome.quitRestart, "退出路径必须带回收场方式，日志要靠它")
+        switch restart {
+        case let .revived(oldPID, newPID, _):
+            XCTAssertNotEqual(oldPID, newPID, "SIGHUP 之后确实换了一个 Dock 进程")
+        default:
+            XCTFail("替身的 Dock 对 SIGHUP 有反应，应该是 .revived，实得 \(restart.description)")
+        }
+    }
+
+    func testPrepareForTerminationReportsUnsettledWhenAnApplyIsTooSlow() async throws {
+        // 已经起跑的那一笔如果超过上限，`prepareForTermination` 必须**如实返回 false** ——
+        // 它可能在我们之后又写一次，调用方（`LifecycleController`）据此留下会话标记。
+        //
+        // 这里用 `reloadStrategy = .sigterm` 让它必然慢：替身的 Dock 只对 SIGHUP 有反应，
+        // 于是这条降级链要等完 `timeout` + `fallbackGrace` 才靠 kickstart 收场（约 220 ms），
+        // 而上限只给 20 ms。
+        let fixture = try makeFixture(name: "unsettle", baseline: Self.liveDomain(tilesize: 36))
+        fixture.state.start()
+        defer { fixture.state.stop() }
+
+        fixture.state.updateSettings {
+            $0.defaultDock = self.config(tilesize: 52)
+            $0.reloadStrategy = .sigterm
+        }
+        fixture.state.applyDefaultDock()
+        // 让那笔应用真的起跑（跑到降级链里等着），才谈得上"在飞"。
+        // 不 yield 的话它还躺在 pending 里，会被上界之外的第一步直接丢掉。
+        await Task.yield()
+        XCTAssertTrue(fixture.state.dockController.isApplying)
+
+        let settled = await fixture.state.prepareForTermination(settleLimit: .milliseconds(20))
+
+        XCTAssertFalse(settled, "应用还在飞时不能报告干净")
+        XCTAssertEqual(fixture.state.dockWatcher?.isRunning, false, "即使没等完，两个监视器也必须先停")
+        XCTAssertEqual(fixture.state.dockPresenceMonitor?.isRunning, false)
+
+        // 收尾：让那笔应用在测试结束前自己落地，别留一个还在写的后台任务。
+        await fixture.state.dockController.waitForIdle()
+        XCTAssertEqual(fixture.preferences.writeCount, 1)
+    }
+
+    func testPrepareForTerminationBoundsTheSelfHealWait() async throws {
+        // 自愈那一笔同样受上限约束 —— 而且**上限必须是真的上限**。
+        //
+        // 原先 `settle` 用 `withTaskGroup` 让 `await task.value` 和 `Task.sleep` 赛跑，
+        // 但任务组在闭包返回时会等所有子任务收尾，而 `await task.value` 对取消毫无反应：
+        // 于是"20 ms"实际等成了整条降级链，`prepareForTermination` 的 2 秒上限形同虚设
+        // （2026-09-19 退出卡住几十秒的形状）。所以这里断言的是**墙钟**，不只看返回值。
+        let fixture = try makeFixture(
+            name: "selfheal-bound",
+            live: Self.liveDomain(tilesize: 64),      // 与基准不一致 → 自愈真的会写
+            baseline: Self.liveDomain(tilesize: 36),
+            marker: staleMarker()
+        )
+        fixture.state.start()
+        defer { fixture.state.stop() }
+        // 让替身的 Dock 对我们的信号没反应（它只对 SIGHUP 动），自愈因此要走完整条降级链。
+        fixture.state.updateSettings { $0.reloadStrategy = .sigterm }
+        await Task.yield()
+
+        let started = ContinuousClock.now
+        let settled = await fixture.state.prepareForTermination(settleLimit: .milliseconds(20))
+        let elapsed = started.duration(to: ContinuousClock.now)
+
+        XCTAssertFalse(settled, "自愈还在飞时不能报告干净")
+        XCTAssertLessThan(elapsed, .milliseconds(200), "上限 20 ms 不该等完自愈的降级链，实得 \(elapsed)")
+
+        await fixture.state.waitForSelfHeal()
+        XCTAssertEqual(fixture.preferences.snapshot["tilesize"]?.doubleValue, 36,
+                       "等完之后自愈该把基准写回去")
     }
 
     // MARK: - 退出还原失败时的标记留存
