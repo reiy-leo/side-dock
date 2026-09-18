@@ -471,6 +471,86 @@ SkyLight  0x…  SLSWindowServerClientWillSwitchSpaces + 139
 
 ---
 
+## 实验 8：其他项（文件夹 / 堆栈）能不能由 App 自己造（2026-09-18，结论：**不能，别再试**）
+
+**为什么做**：计划 §3.6 要求编辑条支持「从 Finder 拖 .app / **文件夹** / 文件进来」，
+而 `persistent-others`（文件夹 / 堆栈，本机只有「下载」）此前在本 App 里**没有任何编辑入口**：
+`DockStripEditor` 只渲染 `persistent-apps`，拖文件夹进来会静默失败（`tile(forAppAt:)` 只认 `.app`）。
+要补这个缺口，第一件事是确认「自己拼一条目录条目」会不会被 Dock 接受。
+
+### 8.1 实验 1：最小目录 tile + 普通文件 tile → **Dock 崩溃循环**
+
+写进域（`defaults write -array-add`）+ `kill -HUP` 之后：
+
+```
+persistent-others 条目数：3（原「下载」+ 我造的目录 tile + 我造的文件 tile）
+Dock：进程消失，launchctl 显示 com.apple.Dock.agent 退出码 -6，无 PID
+崩溃报告：Dock-2026-09-18-0753*.ips / 0754*.ips 共 7 份，
+         termination = {"namespace":"SIGNAL","indicator":"Abort trap: 6"}，
+         exception = EXC_CRASH / SIGABRT，asi = {"libsystem_c.dylib": ["abort() called"]}
+```
+
+- 两条自造 tile 在域里**原样保留**（Dock 没认领、也没清除），但 Dock 反复 abort，
+  launchd 在崩溃循环里一次次把它拉起来 —— 也就是说**这一版形状能让用户没有 Dock 用**。
+- 恢复：`defaults import com.apple.dock <备份>` + `launchctl kickstart gui/$UID/com.apple.Dock.agent`。
+  （`defaults import` 之后 launchd 需要一会儿才拉回，别急着判定失败。）
+
+这一条本身就足以定案：**形状不全的目录条目是危险写入**。
+
+### 8.2 实验 2 / 3 / 4：补全字段也好、自己生成 `book` 也好，Dock **都不认领**
+
+| 实验 | 写入形状 | Dock 存活 | Dock 补 `GUID`? |
+| --- | --- | --- | --- |
+| 2 | 目录 tile + `arrangement`/`displayas`/`showas`/`preferreditemsize`/`is-beta`，路径 `/tmp`（符号链接） | ✅ 存活 | ❌ 4 秒后仍无 |
+| 3 | 同上，但改成真实非符号链接目录 `/Users/apple/Documents/Swift` | ✅ 存活 | ❌ 8 秒后仍无 `GUID` / `book` |
+| 4 | 再加**自己生成的 `book`**（`URL.bookmarkData()`，908 字节，魔数 `book` + 长度头，与真实 656 字节的「下载」同族） | ✅ 存活 | ❌ 8 秒后仍无 |
+
+对照组（P2 实测、已入验收）：**App 的 file-tile 会在 200 ms 内被 Dock 补上 `GUID`** ——
+所以"没有 GUID"就是"Dock 没读进去"，而不是"观测太早"。
+
+`book` 是 Dock 自己算的文件夹书签（本机「下载」656 字节，前 12 字节 `62 6f 6f 6b 90 02 00 00 00 00 04 10`），
+我们自己生成的同族数据并不能替代它。
+
+### 8.3 实验 5：`persistent-others = []`（=「移除最后一项」的形状）**无害**
+
+```
+写入空数组 → kill -HUP → 0.6 秒后新的 Dock PID 出现
+```
+
+所以「移除其他项」这条路径不需要设限（空数组是 Dock 自己也会写的正常状态）。
+
+### 8.4 决定（已落进 `docs/PLAN.md` §3.6 / §3.7 与代码）
+
+1. **不提供"新建文件夹 / 普通文件条目"**。Dock 不认领自造目录条目（实验 2–4）→ 做了就是**假开关**；
+   形状不对时还会让 Dock 进崩溃循环（实验 1）→ 更是**危险写入**。
+2. **替代做法写进 UI**：让用户在访达里把文件夹自己拖到 Dock 上 —— Dock 会写完整条目（含 `book`），
+   `DockWatcher` 随后把它回存进当前桌面的配置，之后就能在编辑器里排序 / 移除。
+   拖文件夹进编辑器时**明确拒绝并给出这段话**（`DockItemRejection.message`），不留静默失败。
+3. **其他项只"搬"不"造"**：编辑器只做显示 / 排序 / 移除，写回去的就是 Dock 自己写的
+   dict（`GUID` / `book` 原样保留）。真机验收 `DockAcceptanceTests.testOtherItemsRemovalAndReapplyKeepsDockHealthy`
+   钉死两件事：移除后 Dock 仍存活、`GUID`/`book` 一个都不丢。
+4. **`normalizedOthers` 只去重、不插固定项**（`persistent-apps` 才需要保证启动台在首位）。
+5. 回归守卫：`DockStripRulesTests.testDockItemRejectionClosesTheFolderAndFilePaths`
+   断言这条路是**关着**的，防止以后有人"顺手"把它打开。
+
+### 8.5 附带观测：反复 kill / HUP Dock 会让 launchd 进入**递增退避**
+
+实验期间（1 次崩溃循环 + 多次 HUP + 多次 kickstart）观察到：
+
+```
+launchctl print gui/$UID/com.apple.Dock.agent
+  state = spawn scheduled      # launchd 已排好重启，但在等退避窗口
+  job state = exited
+  runs = 346                   # 含崩溃循环里的每一次 abort
+```
+
+表现是 **Dock 几十秒不回来**（正常 SIGHUP 只要约 100 ms），
+`DockReloader` 的 kickstart 兜底也会被同一段退避挡住。
+**结论**：写验收脚本时不要连续杀 Dock 几十次；真机验收最好在 Dock 稳定运行几分钟之后跑。
+这条只影响验收节奏，不影响 App 逻辑（App 一次切换只重启一次）。
+
+---
+
 ## 对 `docs/PLAN.md` 的修订清单
 
 | 位置 | 原内容 | 修订为 |
@@ -491,6 +571,10 @@ SkyLight  0x…  SLSWindowServerClientWillSwitchSpaces + 139
 | §3.9 | 登录项退回 `~/Library/LaunchAgents/local.multidock.plist` | 文件名实际是 `local.multidock.loginitem.plist`，且**刻意不设 `KeepAlive`**（登录启动项不是守护进程） |
 | §3.1 / §3.7 | 菜单栏左键 = 切下一个桌面 | 补上 **`⇧+左键` = 切上一个桌面**（下拉菜单同时给「上一个桌面」项 + 等价提示），左键行为仍可改成"打开菜单"。见本文实验 7.7 |
 | §3.1 / §5 | （无）切桌面动画 | **新增一条明确的不做项**：程序化切空间是硬切（0–6 ms），SkyLight 不暴露带过渡的入口；会话级开关写后读不回、违反无痕原则；`SLSWillSwitchSpaces` 签名未知且试错会段错误。**结论见本文实验 7** |
+| §3.6 | 拖入支持「.app / 文件夹 / 文件」 | 改成**只接受 `.app`**：文件夹与普通文件**明确拒绝并给出替代做法**（在访达里自己拖到 Dock 上，由 `DockWatcher` 回存）。理由见本文**实验 8**：自造的目录条目 Dock 不认领（不补 `GUID`），形状不全时还会让 Dock SIGABRT 进崩溃循环 |
+| §3.6 / §3.7 | 其他项（`persistent-others`）没有任何编辑入口 | 编辑条新增「其他项」一条：**只搬不造**（显示 / 排序 / 移除），写回的就是 Dock 自己的 dict（`GUID` / `book` 原样保留）。真机验收 `testOtherItemsRemovalAndReapplyKeepsDockHealthy` |
+| §3.4 第 6 条 | 应用摘要"调试面板可见" | ✅ 调试面板新增「最近一次应用」：结果摘要 + 内容指纹 + 写入时刻 + 「本次运行改过 Dock」+ 回存闸门 |
+| §3.7 | 桌面列表：显示器名 + 名字 + 当前绑定状态 | ✅ 列表**按显示器分组**（`ScreenNaming`），详情加一行显示器名；映射不到时如实说"未识别显示器（UUID 前 8 位…）"，**不回落成一台错的屏** |
 
 ---
 

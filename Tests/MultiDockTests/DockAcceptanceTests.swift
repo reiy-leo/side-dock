@@ -298,6 +298,50 @@ final class DockAcceptanceTests: XCTestCase {
         """)
     }
 
+    /// 新增报警的**反向守卫**：真实 Dock 健康时，监视器绝不能误报"拉不回来"。
+    ///
+    /// 为什么值得真机跑：新加的"持续拉不回来"判据是**连续 12 轮读不到正数 PID**。
+    /// 如果真实的 `dockPID()`（`proc_listpids` + `proc_name`）会偶发返回 nil，
+    /// 那么一台完全正常的机器也会在几秒后弹出红色的「Dock 拉不回来」横幅 —— 纯噪音。
+    /// 单测里 `dockPID()` 是替身，永远验不到这一点。
+    ///
+    /// **只读**：不写偏好、不重启 Dock、不杀任何进程。
+    func testHealthyRealDockNeverRaisesPersistentFailure() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment[Self.enableFlag] == "1",
+            "真机读数；设 \(Self.enableFlag)=1 才跑"
+        )
+
+        let process = RealDockProcessControl()
+        try XCTUnwrap(process.dockPID(), "拿不到 Dock PID，验收无意义")
+
+        let monitor = DockPresenceMonitor(
+            process: process,
+            pollInterval: .milliseconds(50),   // 报警文案里的秒数按这个折算
+            missThreshold: 2,
+            kickstartEvery: 4,
+            persistentFailureThreshold: 12
+        )
+        var alarms: [String] = []
+        monitor.onPersistentlyDown = { alarms.append($0) }
+
+        // 阈值是 12 轮，跑 40 轮留足余量（顺带覆盖一次 kickstartEvery 的整周期）。
+        for _ in 0..<40 {
+            monitor.tick()
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+
+        print("""
+        [报警验收] 40 轮真实读数：连续缺失 \(monitor.consecutiveMisses) 次　拉回尝试 \(monitor.kickstartCount) 次
+        [报警验收] 误报次数：\(alarms.count)（必须为 0）　isPersistentlyDown=\(monitor.isPersistentlyDown)
+        """)
+
+        XCTAssertTrue(alarms.isEmpty, "真实 Dock 健康却误报：\(alarms)")
+        XCTAssertFalse(monitor.isPersistentlyDown, "不该判定为拉不回来")
+        XCTAssertEqual(monitor.kickstartCount, 0, "Dock 在的时候一次都不该拉")
+        XCTAssertEqual(monitor.recoveryCount, 0)
+    }
+
     /// P4 验收标准 ④：**人为杀掉 Dock 后 3 秒内恢复**。
     ///
     /// ⚠️ 这条会**真的杀掉你的 Dock**（`SIGKILL`，等价于 `kill -9`）。
@@ -594,6 +638,88 @@ final class DockAcceptanceTests: XCTestCase {
         XCTAssertNotNil(guid, "Dock 没给条目补 GUID → 说明它根本没读这份写入（P0 判据）")
         XCTAssertEqual(DockPreferences.readDomain()["tilesize"]?.doubleValue, config.appearance.tilesize)
         print("[验收] Dock 已为写入的条目补上 GUID：\(guid?.fingerprintToken ?? "?")")
+    }
+
+    // MARK: - 其他项验收：只搬 Dock 自己的条目（不合成）+ 移除后 Dock 仍健康
+
+    /// 为什么单独验这一条：`persistent-others` 是**唯一**允许"原样搬运"的数组 ——
+    /// 我们刻意不做新建（`docs/spikes.md` 实验 8：自拼的目录条目 Dock 不认领，
+    /// 字段不全的形状还会让它直接 SIGABRT）。所以这里钉死两件事：
+    /// 1. 用 Dock 自己写的 dict 做**移除**，Dock 接受、且进程还活着；
+    /// 2. 搬运过程中 Dock 的字段（`GUID` / `book`）**一个都不能丢** —— 那是"只搬不造"的证据。
+    func testOtherItemsRemovalAndReapplyKeepsDockHealthy() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment[Self.enableFlag] == "1",
+            "会真的重启 Dock；设 \(Self.enableFlag)=1 才跑"
+        )
+
+        let before = DockPreferences.readDomain()
+        XCTAssertFalse(before.isEmpty, "读不到 com.apple.dock，验收无意义")
+        let originalOthers = DockConfig.read(from: before).otherItems
+        try XCTSkipIf(originalOthers.isEmpty,
+                      "真实 Dock 里没有 persistent-others 条目，无法验收移除路径")
+
+        do {
+            try await runOtherItemsPhase(before: before, originalOthers: originalOthers)
+        } catch {
+            await Self.writeBack(before, label: "其他项验收异常还原")
+            throw error
+        }
+
+        let restored = await Self.writeBack(before, label: "其他项验收还原")
+        let illegal = Self.differences(between: before, and: restored)
+            .subtracting(DockPreferences.whitelistedKeys)
+            .subtracting(Self.dockSelfMutatingKeys)
+        XCTAssertTrue(illegal.isEmpty, "还原后白名单外的键仍有差异：\(illegal.sorted())")
+        XCTAssertEqual(DockConfig.read(from: restored).otherItems.map(\.normalizedKey),
+                       originalOthers.map(\.normalizedKey),
+                       "还原后其他项必须与操作前逐项相同")
+    }
+
+    private func runOtherItemsPhase(
+        before: [String: PlistValue],
+        originalOthers: [DockTile]
+    ) async throws {
+        let controller = DockController(backup: {})   // 验收不写 App 的备份目录
+        let control = RealDockProcessControl()
+        let removed = try XCTUnwrap(originalOthers.last)
+
+        // ---- 1. 移除最后一项：只删 Dock 自己写的那个 dict，不造任何新条目 ----
+        var removal = DockConfig.read(from: before)
+        removal.otherItems = Array(originalOthers.dropLast())
+        let removalOutcome = await controller.apply(removal, reason: "其他项验收：移除", strategy: .auto)
+        XCTAssertEqual(removalOutcome.result, .applied, "移除失败：\(removalOutcome.summary)")
+
+        let afterRemoval = DockPreferences.readDomain()
+        let remaining = DockConfig.read(from: afterRemoval).otherItems
+        XCTAssertEqual(remaining.map(\.normalizedKey), originalOthers.dropLast().map(\.normalizedKey))
+        XCTAssertFalse(remaining.contains { $0.normalizedKey == removed.normalizedKey })
+        XCTAssertNotNil(afterRemoval["persistent-others"], "键本身不能被删掉，只是数组变短")
+        XCTAssertNotNil(control.dockPID(), "移除之后 Dock 必须还活着")
+
+        // ---- 2. 原样写回：Dock 自己补的字段必须一个字都不少 ----
+        var reapply = DockConfig.read(from: afterRemoval)
+        reapply.otherItems = originalOthers
+        let outcome = await controller.apply(reapply, reason: "其他项验收：原样写回", strategy: .auto)
+        XCTAssertEqual(outcome.result, .applied, "写回失败：\(outcome.summary)")
+        XCTAssertEqual(outcome.verifyAttempts, 1, "不该需要重试")
+
+        let afterReapply = DockConfig.read(from: DockPreferences.readDomain()).otherItems
+        XCTAssertEqual(afterReapply.map(\.normalizedKey), originalOthers.map(\.normalizedKey))
+
+        let keptGUIDs = afterReapply.compactMap { $0.raw["GUID"] }.count
+        let expectedGUIDs = originalOthers.compactMap { $0.raw["GUID"] }.count
+        XCTAssertEqual(keptGUIDs, expectedGUIDs, "Dock 自己补的 GUID 被我们弄丢了")
+        let keptBooks = afterReapply.filter { $0.tileData?["book"] != nil }.count
+        let expectedBooks = originalOthers.filter { $0.tileData?["book"] != nil }.count
+        XCTAssertEqual(keptBooks, expectedBooks, "book 不能丢（Dock 靠它渲染堆栈预览）")
+        XCTAssertNotNil(control.dockPID(), "写回之后 Dock 必须还活着")
+
+        print("""
+        [验收] 其他项移除：\(removalOutcome.summary)
+        [验收] 移除后剩 \(remaining.count) 项；写回后 \(afterReapply.count) 项
+        [验收] 保留的 Dock 字段：GUID \(keptGUIDs)/\(expectedGUIDs)、book \(keptBooks)/\(expectedBooks)
+        """)
     }
 
     /// 域里所有 `persistent-apps` + `persistent-others` 条目的标签，按顺序。

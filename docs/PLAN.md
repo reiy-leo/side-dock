@@ -57,11 +57,12 @@ multi-dock/
 │   ├── Spaces/SpaceObserver.swift      轮询(300ms) + 通知(辅助) + 全屏过滤 + 去重
 │   ├── Spaces/SpaceSwitcher.swift      切到下一个/指定桌面（循环）
 │   ├── Spaces/DesktopNaming.swift      桌面命名：归一化(≤10 字素簇)、显示名解析、改名规则
+│   ├── Spaces/ScreenNaming.swift       显示器名：displayUUID → NSScreen.localizedName（桌面页按显示器分组）
 │   ├── Dock/DockPreferences.swift      CFPreferences 读写 + 键白名单
 │   ├── Dock/DockConfig.swift           模型、tile 构造、归一化指纹
 │   ├── Dock/DockController.swift       应用流水线、防抖合并、内容相同则跳过（**P2 已实现**）
 │   ├── Dock/DockReloader.swift         SIGHUP 为主 + SIGTERM/kickstart 兜底（**P2 已实现**）
-│   ├── Dock/DockStripRules.swift       图标条规则：启动台固定在首位、Finder 幻影、从 .app 造条目（**P2 已实现**）
+│   ├── Dock/DockStripRules.swift       图标条规则：启动台固定在首位、Finder 幻影、从 .app 造条目、其他项只搬不造（**P2 / P5++**）
 │   ├── Dock/DockWatcher.swift          识别用户在真实 Dock 上的手动改动并回存（**P3**）
 │   ├── Dock/DockEditHistory.swift      回存的旧配置暂存（内存撤销栈），供电「撤销自动回存」（**P5**）
 │   ├── Store/ConfigStore.swift         原子读写 config.json
@@ -128,6 +129,8 @@ struct DesktopSpace: Hashable {
 - 事件源（**P0 实测后反转了主次**）：**300 ms 轮询为主**，`NSWorkspaceActiveSpaceDidChangeNotification` 为辅。原因是实测发现程序化切桌面时该通知根本不触发（对照实验证明通知通道本身正常），所以通知只能当"用户主动切换时的快速通道"来降低延迟。两条路都进同一个幂等的 `handleActiveSpaceChanged()`，用 `(displayUUID, spaceUUID)` 去重。
 - **我们自己发起的切换必须预应用**（§3.4 第 8 条）：切换后收不到任何通知，不能等通知回来才动 Dock。这条从"优化"升级为"必需"。
 - `SpaceProvider` 协议隔离私有 API；失效时降级为"只能手动改 Dock、不能自动跟随与切换"，并在 UI 明确报警，而不是静默失效。
+  ✅ **已落地（2026-09-18）**：设置窗口顶部的 `WarningBanner` 读 `AppState.spaceProviderWarning`，
+  显示橙色的「桌面切换不可用」+ 具体原因。原先只写日志和调试面板 —— **用户不看日志，等于没报警**。
 
 ### 3.2 数据模型（用户看到的是"桌面"，不是"配置"）
 
@@ -234,7 +237,7 @@ struct AppSettings: Codable {
 > 预应用与"切完后 observer 回调"两次请求被 `request()` 的单槽位合并成一次，不会重启两次 Dock。
 > 单测：`testPreApplyAppliesTheTargetDockWithoutWaitingForThePoll`。
 
-> **P2 实现记录（2026-09-18）** —— 第 1、2、7、8 条中，**1 已实现**（`AppState.applyDock(_:reason:)` 目前只喂 `settings.defaultDock`；`binding.override` 的选取属 P3）、**2 / 7 已实现**、**8 待 P3**（切桌面时预应用）。
+> **P2 实现记录（2026-09-18）** —— 第 1、2、7、8 条中，**1 已实现**（`AppState.applyDock(_:reason:)` 目前只喂 `settings.defaultDock`；`binding.override` 的选取属 P3）、**2 / 7 已实现**、**8 已实现**（P3 的预应用：发起应用与切空间同一拍，见 §3.4 的 P3 实现记录）。
 >
 > 实现上的几处具体化：
 > - **校验只比"实际写进去的那些键"**。本机域里没有 `show-process-indicators`，把缺失的键算进比对会产生假阴性（"明明写成功却判定失败"）。`DockConfig.fingerprint(restrictedTo:)` 负责这件事。
@@ -272,7 +275,7 @@ struct AppSettings: Codable {
 一个 `DockStripEditor` 组件，通用页与每个桌面的详情页复用：
 
 - 按 location 自动横/竖排布；每项渲染 `NSWorkspace.shared.icon(forFile:)` 真实图标。
-- **拖入**：从 Finder 拖 .app / 文件夹 / 文件进来（SwiftUI `onDrop(of: [.fileURL])` 读 `NSItemProvider`）；另配「从应用程序选择…」按钮走 `NSOpenPanel`，覆盖不方便拖拽的场景。
+- **拖入**：从 Finder 拖 `.app` 进来（SwiftUI `onDrop(of: [.fileURL])` 读 `NSItemProvider`）；另配「从应用程序选择…」按钮走 `NSOpenPanel`，覆盖不方便拖拽的场景。⚠️ **原文这里写的是"`.app` / 文件夹 / 文件"，P5++ 已按实测收窄为只接受 `.app`** —— 理由见下方 P5++ 实现记录与 `docs/spikes.md` 实验 8。
 - **拖出**：拖离编辑条即移除（配右键菜单「从 Dock 移除」）。
 - **排序**：同一条内拖拽重排（`draggable`/`dropDestination`；若 SwiftUI 表现不稳则用 `NSViewRepresentable` 包 `NSCollectionView`）。
 - **固定项**：编辑条最前面锁定渲染 Finder 与 Launchpad，带锁标识，不可拖出/删除。
@@ -296,8 +299,30 @@ struct AppSettings: Codable {
 >    自动切成 `ScrollView(.vertical)` + `VStack`，格子改定高（`SlotSizing`）。之前位置改成左/右后编辑条仍是横的，排序会看反。
 > 6. **「拖出即移除」用显式的垃圾桶投放区**（拖到编辑条外无法被检测到）。另配右键菜单「从 Dock 移除」。
 > 7. **排序/拖拽的真人手感未验证**（本机无法用脚本点 UI）—— 逻辑由 `DockStripRulesTests` + `AppStateDockTests` 覆盖，真机拖拽需要用户手动试一次。
+>
+> **P5++ 实现记录（2026-09-18）：其他项（`persistent-others`）补上编辑入口，且刻意只"搬"不"造"。**
+>
+> 原文第 1 条（拖入）要求接受「.app / **文件夹** / 文件」，这一条**被实测推翻了**，改成只接受 `.app`：
+>
+> - **实测结论（`docs/spikes.md` 实验 8）**：自己拼的 `directory-tile` **不会被 Dock 认领**（Dock 不补
+>   `GUID`/`book`，补全展示字段、甚至自己用 `URL.bookmarkData()` 生成 `book` 都不行）；
+>   而**字段不全的形状会让 Dock 直接 SIGABRT**，launchd 把它拉起来又崩，形成崩溃循环 —— 用户会当场失去 Dock。
+> - **所以**：拖文件夹 / 普通文件进来时**明确拒绝并说明替代做法**（在访达里自己拖到 Dock 上，
+>   Dock 会写完整条目，随后 `DockWatcher` 回存进配置），不留"拖了没反应"的静默失败。
+>   文案在 `DockItemRejection.message`；`NSOpenPanel` 只让选 `.app`。
+> - **其他项仍然可编辑**：编辑条下方多一条「其他项（文件夹 / 堆栈）」，可**排序**（`OthersReorderDropDelegate`）、
+>   可**移除**（右键菜单或共用垃圾桶），写回去的就是 Dock 自己写的 dict（`GUID`/`book` 原样保留）。
+>   `DockStripRules.normalizedOthers` 只去重、**不插固定项**（与 `normalizedApps` 的区别）。
+> - 域里没有 `persistent-others` 时，这一条整体禁用并写明原因（不做假开关）。
+> - **回归守卫**：`DockStripRulesTests.testDockItemRejectionClosesTheFolderAndFilePaths` 钉住"这条路是关着的"；
+>   真机验收 `DockAcceptanceTests.testOtherItemsRemovalAndReapplyKeepsDockHealthy` 钉住"移除后 Dock 仍存活、
+>   `GUID`/`book` 一个不丢"。
 
 ### 3.7 设置窗口
+
+> **P5++ 实现记录（2026-09-18）**：应用摘要现在**也进调试面板**（§3.4 第 6 条要求"调试面板可见"，早先只在设置页）。
+> 调试面板新增「最近一次应用」一组：`结果摘要`（含重载方式与耗时）+ `内容指纹`（前两行 + 总长度，便于对照日志）+
+> `写入时刻`（绝对时间 + 距今秒数）+ `本次运行改过 Dock` + `回存闸门`。
 
 **通用 Tab**
 - 「默认 Dock」编辑条（Finder、Launchpad 固定）
@@ -336,12 +361,25 @@ struct AppSettings: Codable {
 >
 > **P3 实现记录（2026-09-18）** —— 两个 Tab 的形状与计划一致，具体落地如下：
 >
-> - **通用 Tab**：默认 Dock 编辑条 + **默认 Dock 的外观**（`DockAppearanceEditor`）+ 应用区（立即应用 / 立即还原到原始 Dock / 把当前 Dock 设为新基准 + 应用摘要）+ 菜单栏交互 + 桌面切换 toast 开关 + 退出行为 + Dock 应用开关（编辑后立即应用 / 识别手动改动并回存 / 重载方式）+ 本机不支持键。**`mru-spaces` 开关仍未做（P4）**。
+> - **通用 Tab**：默认 Dock 编辑条 + **其他项（文件夹 / 堆栈）**一条 + **默认 Dock 的外观**（`DockAppearanceEditor`）+ 应用区（立即应用 / 立即还原到原始 Dock / 把当前 Dock 设为新基准 / 撤销自动回存 + 应用摘要）+ 菜单栏交互 + 桌面切换 toast 开关 + 退出行为 + **启动与自愈** + **桌面行为（`mru-spaces`）** + **备份与还原** + Dock 应用开关（编辑后立即应用 / 识别手动改动并回存 / 重载方式）+ 本机不支持键。（`mru-spaces` 已在 P4 落地 —— 这里原先写着"仍未做"，已过时。）
 > - **桌面 Tab**：由 `UI/DesktopListView.swift` 承载 —— 左侧桌面列表（就地改名 + `n/10` 计数 + 「独立 Dock / 沿用默认」徽标 + 当前桌面标记 + 刷新按钮），右侧详情（沿用默认开关 → 无 override 时给「复制默认 Dock 到本桌面」提示，有 override 时给完整图标条 + 外观编辑器 + 「立即应用」/「从当前真实 Dock 抓取」/「重置为默认」）。**「位置」= Dock 屏幕位置 + 大小**（用户已确认，见 §6）。
 > - **菜单栏下拉**：桌面列表（当前项打勾，点选即切）→「下一个桌面」→**「上一个桌面」**（附禁用提示「（⇧+左键点菜单栏图标同效）」）→**「用当前 Dock 重置本桌面配置」**→「刷新桌面列表」→ 调试面板… / 设置… → **「退出并还原 Dock」**（标题写清会还原，避免误解）。
 >   - **`⇧`+左键 = 切上一个桌面**（2026-09-18 加）。走的是与「下一个桌面」**完全对称**的一条链路：同一个 `switcher.target(.previous)`、同一次 `applyConfigForDesktop` 预应用，两端循环。单测 `testPreviousDesktopPreAppliesItsOwnDock` 断言"预应用真的发生 + 目标是对面那个桌面的 Dock + 只写一次"。
 >   - 「用当前 Dock 重置本桌面配置」的语义是**不新增绑定**：当前桌面有独立 Dock 就覆盖它，没有就覆盖**默认 Dock**（凭空造 override 会让该桌面悄悄脱离默认）。
 > - **编辑器的读写必须分开**：`AppState.setDockConfigInMemory` / `setDockAppearanceInMemory` 只改内存，`dockEdited(_:reason:)` 才落盘 + 按开关应用；默认 Dock 与逐桌面 override 共用 `DockEditTarget`（`.defaultDock` / `.desktop(space)`）一套入口。`DockAppearanceEditor.onCommit` 只在**滑杆松手 / 开关值变化**时提交 —— 逐帧落盘会让拖一次滑杆重启几十次 Dock。
+>
+> **P5++ 实现记录（2026-09-18）—— 桌面列表的「显示器名」，以及通用页的「其他项」一条：**
+>
+> - **桌面列表按显示器分组**：原文要求"显示器名 + 名字 + 当前绑定状态"。落地方式是
+>   `List` 里按 `displayUUID` 分组、`Section` 标题就是显示器名（`Spaces/ScreenNaming.swift`：
+>   `CGDisplayCreateUUIDFromDisplayID` 与 SkyLight 的 `Display Identifier` 实测逐字符相同），
+>   详情页另加一行「显示器：…」（tooltip 给完整 `displayUUID`）。
+>   **映射不到时不回落成某台真实显示器的名字** —— 显示"未识别显示器（UUID 前 8 位…）"，
+>   因为显示一个错的屏比显示"未识别"更糟。屏幕插拔时随 `didChangeScreenParametersNotification` 一起刷新。
+> - **通用页与桌面页的编辑条下方都多了「其他项（文件夹 / 堆栈）」一条**：只显示 / 排序 / 移除，
+>   **不新建**（规格与实测依据见 §3.6 的 P5++ 记录与 `docs/spikes.md` 实验 8）。
+> - **拖入被拒时的文案在 UI 里说清**（`DockItemRejection.message` + 「知道了」按钮）：
+>   早先版本拖文件夹进来是静默失败。
 
 ### 3.8 手动改动的自动回存（DockWatcher）
 
@@ -386,6 +424,12 @@ struct AppSettings: Codable {
 - 登录项优先 `SMAppService.mainApp`；未签名构建下注册失败则退回 `~/Library/LaunchAgents/local.multidock.loginitem.plist`（`RunAtLoad`，**刻意不设 `KeepAlive`**：这是登录启动项不是守护进程，退出 App 后不该被反复拉起）。
 - 启动顺序固定为：**检测残留 session.state → 必要时还原基准 → 应用当前桌面配置 → 建立会话标记**。
 - Dock 重启后 3 秒未归位 → `launchctl kickstart -k` 兜底；仍异常则提示从备份恢复。
+  ✅ **已落地（2026-09-18）**：`DockPresenceMonitor` 连续缺失达到 `persistentFailureThreshold`
+  （默认 12 轮 × 500 ms ≈ 6 秒）还没回来 → 回调 `onPersistentlyDown` 一次 →
+  `AppState.dockFailureWarning` → 设置窗口顶部**红色**横幅，带「再试一次拉回」与
+  「立即还原到原始 Dock」两个按钮；Dock 回来后自动撤报警并弹一条 toast。
+  判据刻意用**缺失轮数**而不是 `kickstart()` 的返回值 —— 那个返回值只说明 `launchctl`
+  命令跑起来了，不说明 Dock 回来了。
 
 > **P4 实现记录（2026-09-18）** —— 本节已全部落地。几处与原文不同、且不能"改回去"的地方：
 >
@@ -478,7 +522,7 @@ struct AppSettings: Codable {
 
 ---
 
-## 5. 风险与对策
+| **P5++ 计划缺口收口（✅ 已完成 2026-09-18）** | ① 其他项（`persistent-others`）补编辑入口（**只搬不造**）② 桌面列表带显示器名（按显示器分组）③ 应用摘要进调试面板 ④ 修掉三处过时文档 | ① ✅ `DockStripRules.normalizedOthers` / `rejectionReason(for:)` / `DockItemRejection` + 编辑条「其他项」一条（排序 / 右键移除 / 共用垃圾桶）；拖文件夹**明确拒绝并给替代做法**。真机验收 `testOtherItemsRemovalAndReapplyKeepsDockHealthy`：移除后 Dock 仍存活、`GUID`/`book` 一个不丢。**实测写死了"不能新建"**：自拼目录条目 Dock 不认领（不补 `GUID`），字段不全时让 Dock SIGABRT 进崩溃循环 —— 见 `docs/spikes.md` 实验 8 ② ✅ `ScreenNaming` + 列表按 `displayUUID` 分组（`Section` 标题 = 显示器名）、详情加「显示器：…」；映射不到显示"未识别显示器（UUID 前 8 位…）"，不回落成错的屏 ③ ✅ 调试面板新增「最近一次应用」：结果摘要 / 内容指纹 / 写入时刻 / 本次运行改过 Dock / 回存闸门 ④ ✅ 修掉 §3.6「8 待 P3」、§3.7「`mru-spaces` 仍未做」、§6「第 1 条仍未回答」三处过时行，README 的「已知未做」也补上 UI 报警已做与文件夹结论。**290 个测试全绿（7 个真机验收默认跳过）、零警告** |
 
 | 风险 | 影响 | 对策 |
 | --- | --- | --- |
@@ -530,7 +574,7 @@ struct AppSettings: Codable {
 
 ## 6. 需要你确认的几处理解
 
-> **状态（2026-09-18）：第 1 条仍未回答。** 它会阻塞 P3（桌面页），做之前必须问清。
+> **状态（2026-09-18）：第 1 条已确认**（用户确认 = Dock 屏幕位置 + 大小），P3 已按此实现：桌面页的「位置」与「通用」页同一套含义，未单独设置时继承默认。
 > 第 2–5 条已在 P2.5 / P2 按下面的理解实现（不合意随时改，改动量都在一处）。
 > 其余未解决事项见 `AGENTS.md` §6。
 

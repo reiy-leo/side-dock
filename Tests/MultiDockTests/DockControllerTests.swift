@@ -349,6 +349,49 @@ final class DockControllerTests: XCTestCase {
         XCTAssertTrue(outcome.succeeded, "缺几个外观键不该让整次应用失败")
     }
 
+    /// `persistent-others` 走与 `persistent-apps` 完全相同的"域里没有就不写"规则。
+    ///
+    /// 这段补的是计划 §3.6 的一处缺口：其他项以前在编辑器里**完全看不见**，
+    /// 现在能显示/排序/移除 —— 但绝不能凭空造条目（`docs/spikes.md` 实验 8）。
+    func testEntriesSkipOtherItemsWhenTheKeyIsAbsentFromTheLiveDomain() {
+        let config = makeConfig()
+        let present: Set<String> = ["persistent-apps", "orientation", "tilesize"]
+
+        let entries = DockController.entries(for: config, restrictedTo: present)
+
+        XCTAssertFalse(entries.keys.contains("persistent-others"))
+    }
+
+    func testOtherItemsAreWrittenWhenTheKeyExists() async {
+        var config = makeConfig()
+        config.otherItems = [directoryTile("/Users/apple/Downloads", label: "下载")]
+        let prefs = FakePreferences(domain: baseDomain())
+        let controller = makeController(preferences: prefs)
+
+        let outcome = await controller.apply(config, reason: "带其他项")
+
+        XCTAssertEqual(outcome.result, .applied, outcome.summary)
+        XCTAssertEqual(prefs.lastEntries?["persistent-others"]?.arrayValue?.count, 1)
+        let live = DockConfig.read(from: prefs.readDomain()).otherItems
+        XCTAssertEqual(live.map(\.label), ["下载"])
+    }
+
+    /// 其他项的夹具：形状照抄真实域里的「下载」目录条目（`file-type = 2`、`directory-tile`），
+    /// 只是不带 Dock 自己补的 `GUID` / `book` / `*mod-date`。
+    private func directoryTile(_ path: String, label: String) -> DockTile {
+        DockTile(raw: [
+            "tile-type": .string("directory-tile"),
+            "tile-data": .dictionary([
+                "file-data": .dictionary([
+                    "_CFURLString": .string("file://\(path)/"),
+                    "_CFURLStringType": .int(15),
+                ]),
+                "file-label": .string(label),
+                "file-type": .int(2),
+            ]),
+        ])
+    }
+
     func testPresentWhitelistedKeysReflectsTheLiveDomain() {
         let prefs = FakePreferences(domain: baseDomain())
         let controller = makeController(preferences: prefs)

@@ -206,6 +206,57 @@ final class DockStripRulesTests: XCTestCase {
         XCTAssertNil(DockStripRules.tile(forAppAt: "/etc/hosts"))
         XCTAssertNil(DockStripRules.tile(forAppAt: "/Applications/NoSuchApp-xyz.app"))
     }
+
+    // MARK: - 其他项（persistent-others）
+
+    private func otherTile(_ path: String, label: String) -> DockTile {
+        DockTile(raw: [
+            "tile-type": .string("directory-tile"),
+            "tile-data": .dictionary([
+                "file-data": .dictionary([
+                    "_CFURLString": .string("file://\(path)/"),
+                    "_CFURLStringType": .int(15),
+                ]),
+                "file-label": .string(label),
+                "file-type": .int(2),
+            ]),
+        ])
+    }
+
+    func testNormalizedOthersDeduplicatesAndKeepsOrder() {
+        let downloads = otherTile("/Users/apple/Downloads", label: "下载")
+        let documents = otherTile("/Users/apple/Documents", label: "文稿")
+
+        let normalized = DockStripRules.normalizedOthers([downloads, downloads, documents])
+
+        XCTAssertEqual(normalized.map(\.label), ["下载", "文稿"])
+    }
+
+    func testNormalizedOthersInventsNothing() {
+        // 与 apps 不同：其他项里没有「必须存在」的条目
+        //（Finder 是系统隐式渲染的，启动台在 persistent-apps 里）。
+        XCTAssertTrue(DockStripRules.normalizedOthers([]).isEmpty)
+    }
+
+    func testOtherTileIsRecognisedAsFolder() {
+        XCTAssertTrue(otherTile("/Users/apple/Downloads", label: "下载").isFolder)
+        XCTAssertFalse(appTile("/Applications/Safari.app", label: "Safari").isFolder)
+    }
+
+    /// 回归守卫：**不要**给文件夹/普通文件开"合成新条目"的口子。
+    ///
+    /// `docs/spikes.md` 实验 8 实测：自拼的 `directory-tile` 不会被 Dock 认领
+    /// （Dock 不补 `GUID` / `book`），而字段不全的形状会让 Dock 直接 SIGABRT。
+    /// 所以这条路必须是关着的；要加文件夹只能由用户在访达里自己拖进 Dock。
+    func testDockItemRejectionClosesTheFolderAndFilePaths() {
+        XCTAssertEqual(DockStripRules.rejectionReason(for: "/Applications"), .folder)
+        XCTAssertEqual(DockStripRules.rejectionReason(for: "/etc/hosts"), .file)
+        XCTAssertEqual(DockStripRules.rejectionReason(for: "/Users/apple/NoSuch-xyz"), .notAnApp)
+    }
+
+    func testDockItemRejectionAcceptsRealAppBundles() {
+        XCTAssertNil(DockStripRules.rejectionReason(for: DockStripRules.launchpadPath))
+    }
 }
 
 /// `AppSettings` 的解码必须向前兼容：老配置文件里没有新字段时，

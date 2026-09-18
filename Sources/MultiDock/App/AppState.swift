@@ -60,6 +60,16 @@ final class AppState {
 
     private(set) var spaceProviderAvailable = false
     private(set) var spaceProviderWarning: String?
+    /// 已接显示器的 `displayUUID → 名字`。屏幕插拔时刷新（计划 §3.7：桌面列表要带**显示器名**）。
+    ///
+    /// 缓存而不是每次渲染现取：`NSScreen` + `CGDisplayCreateUUIDFromDisplayID` 是 AppKit 调用，
+    /// 放在列表渲染路径上会每帧走一遍。刷新点是启动 + `didChangeScreenParametersNotification`。
+    private(set) var displayScreens: [ScreenNaming.Screen] = []
+    /// Dock 被外部弄死、且自动拉回一直失败时的警告文案（`nil` = 正常）。
+    ///
+    /// 计划 §3.9 第 3 条要求"仍异常则提示从备份恢复" —— 只记日志等于用户面对一个
+    /// 没有 Dock 的桌面却不知道为什么。设置窗口顶部的横幅据此显示。
+    private(set) var dockFailureWarning: String?
     /// 启动时发现的残留会话标记（上次被强杀/崩溃）。
     private(set) var interruptedSession: BaselineStore.SessionMarker?
     private(set) var baselineCapturedThisLaunch = false
@@ -375,7 +385,9 @@ final class AppState {
         runStartupSelfCheck()
         loadConfiguration()
         refreshLoginItemStatus()
+        refreshDisplayScreens()
         refreshBackups()
+        refreshDockCapabilities()
 
         // 把"此刻真实 Dock 的内容"记成已应用状态：如果它已经等于要应用的那份配置，
         // 下面的自动应用就会被指纹短路，启动时不会白重启一次 Dock。
@@ -532,8 +544,22 @@ final class AppState {
     /// 交给 300 ms 轮询去收敛，避免瞎重启一次 Dock。
     func handleScreenParametersChanged() {
         let before = desktops.count
+        refreshDisplayScreens()
         observer.refreshNow()
         append(.info, "显示器配置变化：桌面列表已刷新（\(before) → \(desktops.count) 个）")
+    }
+
+    /// 刷新 `displayUUID → 显示器名` 映射（计划 §3.7）。
+    ///
+    /// 插拔外接屏必然让这份映射变（`(displayUUID, spaceUUID)` 是桌面身份的一部分），
+    /// 所以调用点就是启动 + `didChangeScreenParametersNotification`。
+    func refreshDisplayScreens() {
+        displayScreens = ScreenNaming.currentScreens()
+    }
+
+    /// 桌面列表与详情里显示的显示器名。映射不到时如实说明，不回落成一台错的显示器。
+    func screenName(for displayUUID: String) -> String {
+        ScreenNaming.displayName(for: displayUUID, screens: displayScreens)
     }
 
     func updateSettings(_ transform: (inout AppSettings) -> Void) {
@@ -751,8 +777,38 @@ final class AppState {
         let monitor = injectedPresenceMonitor ?? DockPresenceMonitor { [weak self] message in
             self?.append(.warning, message)
         }
+        // 这两个回调**无条件**挂上，包括注入的监视器 —— 它们写的是 AppState 自己的状态，
+        // 而监视器可能是在测试里构造好再注入的（那时 init 参数没人填）。
+        // 与上面的 log 出口不同：log 是监视器自己的出口，注入时就别覆盖。
+        monitor.onPersistentlyDown = { [weak self] reason in
+            guard let self else { return }
+            self.dockFailureWarning = reason
+            self.append(.error, "\(reason)。建议到「通用 → 备份与还原」恢复一份历史备份，或直接点「立即还原到原始 Dock」")
+        }
+        monitor.onRevived = { [weak self] count in
+            guard let self else { return }
+            self.dockFailureWarning = nil
+            self.append(.info, "Dock 已恢复（第 \(count) 次），警告解除")
+            self.toastPresenter?.announce("Dock 已恢复")
+        }
         dockPresenceMonitor = monitor
         monitor.start()
+    }
+
+    /// 立刻再试一次把 Dock 拉回来（横幅上的按钮）。返回 `launchctl` 是否跑起来了。
+    ///
+    /// 注意返回值**不代表 Dock 回来了** —— 拉没拉回来由监视器的下一次轮询判定，
+    /// 横幅也不会在这里就消失。
+    @discardableResult
+    func retryDockRevival() -> Bool {
+        guard let monitor = dockPresenceMonitor else {
+            append(.warning, "Dock 存活监视未启动，无法重试拉回")
+            return false
+        }
+        let started = monitor.reviveNow()
+        append(started ? .info : .warning,
+               started ? "已手动重试拉回 Dock，等下一次轮询确认" : "手动重试拉回失败（launchctl 没跑起来）")
+        return started
     }
 
     /// 「根据最近使用自动重排空间」。**只在用户主动点开关时调用**，不静默修改（计划 §1 风险项）。

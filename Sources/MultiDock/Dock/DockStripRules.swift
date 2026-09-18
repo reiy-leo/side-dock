@@ -67,6 +67,22 @@ enum DockStripRules {
         normalizedApps(existing.filter(isLaunchpad) + editable)
     }
 
+    // MARK: - 其他项（persistent-others：文件夹 / 堆栈，计划 §3.2）
+
+    /// 其他项的归一化：按归一化键去重，保留顺序与原始字段。
+    ///
+    /// 与 `normalizedApps` 的区别是**不插入任何固定项** —— `persistent-others` 里没有
+    /// 「必须存在」的条目（Finder 是系统隐式渲染的，启动台在 `persistent-apps` 里）。
+    ///
+    /// ⚠️ 这里刻意**没有**合成新文件夹 tile 的能力。`docs/spikes.md` 实验 8 实测：
+    /// 自己拼的 `directory-tile` **不会被 Dock 认领**（Dock 不补 `GUID` / `book`，8 秒后仍没有），
+    /// 而字段不全的形状会让 Dock 直接 **SIGABRT**（launchd 也不会自动把它拉回来）。
+    /// 所以其他项在本 App 里只能「读进来 / 排序 / 移除」，不能新建 —— 详见 `docs/PLAN.md` §3.6。
+    static func normalizedOthers(_ others: [DockTile]) -> [DockTile] {
+        var seen = Set<String>()
+        return others.filter { seen.insert($0.normalizedKey).inserted }
+    }
+
     // MARK: - 图标
 
     /// 取文件图标。**不需要任何权限** —— `NSWorkspace.icon(forFile:)` 是公开 API。
@@ -113,5 +129,48 @@ enum DockStripRules {
             label: label,
             bundleIdentifier: bundle.bundleIdentifier
         )
+    }
+
+    /// 拖进来的路径**为什么不能**变成条目（`nil` = 可以）。
+    ///
+    /// 存在的意义是**不留静默失败**：早先版本把文件夹拖进编辑条会命中
+    /// `tile(forAppAt:)` 的 `pathExtension == "app"` 判断，然后悄悄返回 nil ——
+    /// 用户只看到"什么都没发生"，会以为程序坏了。
+    ///
+    /// ⚠️ 文件夹与普通文件**刻意返回原因、而不是尝试合成条目**：`docs/spikes.md` 实验 8 实测，
+    /// 自拼的 `directory-tile` 不会被 Dock 认领，字段不全的形状还会让 Dock 直接 **SIGABRT**。
+    /// 要加文件夹，正确做法是让用户在访达里自己拖到 Dock 上 —— Dock 会写完整条目
+    /// （含 `book`），随后 `DockWatcher` 会把它回存进配置，之后就能在编辑器里排序/移除。
+    static func rejectionReason(for path: String) -> DockItemRejection? {
+        if path.hasSuffix(".app") { return nil }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) else {
+            return .notAnApp
+        }
+        return isDirectory.boolValue ? .folder : .file
+    }
+}
+
+/// 拖进来的路径不能被接受的原因（`DockStripRules.rejectionReason(for:)`）。
+///
+/// 每条都带**替代做法**，因为这不是"功能没做"，而是"这条路会破坏用户的 Dock"。
+enum DockItemRejection: String, Sendable {
+    case folder
+    case file
+    case notAnApp
+
+    /// 给用户看的一句话。
+    var message: String {
+        switch self {
+        case .folder:
+            return "不在这里新建文件夹条目：实测 Dock 不会认领 App 自己拼的目录条目"
+                + "（不补 GUID/book，字段不全时还会直接崩）。要加文件夹，"
+                + "请直接在访达里把文件夹拖到 Dock 上 —— App 会自动把它记进当前桌面的配置，"
+                + "之后就能在这里排序或移除。"
+        case .file:
+            return "不在这里新建普通文件条目，原因同上（实测 Dock 不认领）。请在访达里自己拖到 Dock 上。"
+        case .notAnApp:
+            return "只支持 .app 应用包。"
+        }
     }
 }

@@ -46,16 +46,41 @@ struct DesktopListView: View {
 
     // MARK: - 左：桌面列表
 
+    /// 桌面列表按显示器分组用的数据。计划 §3.7 要求列表里带**显示器名** ——
+    /// 多显示器时用户必须能一眼看出哪个桌面在哪台屏上（映射键是 `(displayUUID, spaceUUID)`）。
+    private struct DisplayGroup: Identifiable {
+        let id: String
+        let name: String
+        let spaces: [DesktopSpace]
+    }
+
+    /// 按 `displayUUID` 分组，保持桌面原有顺序（与 `NSScreen.screens` 同序，主屏在最前）。
+    private var displayGroups: [DisplayGroup] {
+        var order: [String] = []
+        var bucket: [String: [DesktopSpace]] = [:]
+        for space in state.desktops {
+            if bucket[space.displayUUID] == nil { order.append(space.displayUUID) }
+            bucket[space.displayUUID, default: []].append(space)
+        }
+        return order.map {
+            DisplayGroup(id: $0, name: state.screenName(for: $0), spaces: bucket[$0] ?? [])
+        }
+    }
+
     private var list: some View {
         VStack(spacing: 0) {
             List(selection: $selection) {
-                Section("显示器上的用户桌面") {
-                    if state.desktops.isEmpty {
+                if state.desktops.isEmpty {
+                    Section("显示器上的用户桌面") {
                         Text(state.spaceProviderAvailable ? "未识别到桌面" : "桌面功能不可用")
                             .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(state.desktops) { space in
-                            desktopRow(space).tag(space.id)
+                    }
+                } else {
+                    ForEach(displayGroups) { group in
+                        Section(group.name) {
+                            ForEach(group.spaces) { space in
+                                desktopRow(space).tag(space.id)
+                            }
                         }
                     }
                 }
@@ -196,6 +221,10 @@ struct DesktopListView: View {
                         .background(Capsule().fill(Color.accentColor.opacity(0.18)))
                 }
             }
+            Text("显示器：\(state.screenName(for: space.displayUUID))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help("displayUUID：\(space.displayUUID)")
             Text(space.spaceUUID)
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)

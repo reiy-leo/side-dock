@@ -23,6 +23,7 @@ struct DebugPanelView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 statusSection
+                applicationSection
                 desktopSection
                 pathSection
             }
@@ -64,6 +65,20 @@ struct DebugPanelView: View {
                     row("残留会话标记", "PID \(stale.pid)，开始于 \(stale.startedAt.formatted())",
                         tint: stale.impliesDirtyDock ? .orange : .secondary)
                 }
+                if let monitor = state.dockPresenceMonitor {
+                    row("Dock 存活监视",
+                        "\(monitor.isRunning ? "运行中" : "已停止")　连续缺失 \(monitor.consecutiveMisses) 次　"
+                        + "恢复 \(monitor.recoveryCount) 次　拉回尝试 \(monitor.kickstartCount) 次",
+                        tint: monitor.isPersistentlyDown ? .red : .secondary)
+                    if let reason = state.dockFailureWarning {
+                        Text(reason)
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    row("Dock 存活监视", "未启动", tint: .orange)
+                }
                 row("基准快照", state.baselineCapturedThisLaunch ? "本次启动新建" : "沿用已有")
             }
             .padding(6)
@@ -104,6 +119,46 @@ struct DebugPanelView: View {
             .padding(6)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// 「最近一次应用」：计划 §3.4 第 6 条要求把 `appliedFingerprint` / `appliedAt` /
+    /// 重载方式 / 耗时记到**调试面板可见**的地方。
+    ///
+    /// 应用摘要（含重载方式与耗时）平时在设置页也有一份；这里补的是**调试口径**：
+    /// 内容指纹、写入时刻、以及两个"我们凭什么判断状态"的闸门（本次运行是否改过 Dock、
+    /// 回存闸门是否打开）。排查"回存没生效 / 白重启一次"这类问题时看的就是这几行。
+    private var applicationSection: some View {
+        GroupBox("最近一次应用") {
+            VStack(alignment: .leading, spacing: 6) {
+                row("结果摘要", state.lastApplySummary)
+                row("内容指纹", fingerprintText, mono: true)
+                row("写入时刻", appliedAtText)
+                row("本次运行改过 Dock", state.hasAppliedDockConfig ? "是" : "否")
+                row("回存闸门", state.dockController.appliedComparableFingerprint == nil ? "关闭（还没写过）" : "打开")
+                Text("回存闸门打开后，`DockWatcher` 才会把真实 Dock 上的手动改动回存到当前桌面；"
+                    + "内容指纹用来短路\"这份配置已经生效\"，避免白写一遍 + 白重启一次 Dock。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// 指纹是多行文本（apps / others / appearance 三段），只展示前两行 + 长度，便于对照日志。
+    private var fingerprintText: String {
+        guard let fingerprint = state.dockController.appliedFingerprint else { return "（还没写过）" }
+        let lines = fingerprint.split(separator: "\n")
+        let head = lines.prefix(2).joined(separator: " / ")
+        let trimmed = head.count > 72 ? String(head.prefix(72)) + "…" : head
+        return "\(trimmed)（共 \(fingerprint.count) 字符）"
+    }
+
+    private var appliedAtText: String {
+        guard let at = state.dockController.appliedAt else { return "（还没写过）" }
+        let seconds = Date().timeIntervalSince(at)
+        return "\(at.formatted(.dateTime.hour().minute().second()))（\(String(format: "%.0f", seconds)) 秒前）"
     }
 
     private var pathSection: some View {
