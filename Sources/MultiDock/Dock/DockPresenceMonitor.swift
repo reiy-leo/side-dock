@@ -11,6 +11,9 @@ import Foundation
 ///    一次缺失就动手会让每次正常切换都白打一次 `launchctl`。
 /// 2. **拉回不是每轮都打**。判定不在之后按 `kickstartEvery` 间隔重试，
 ///    否则 500 ms 一次轮询会把 `launchctl` 打成风暴（`launchctl` 是子进程，一次约 10 ms）。
+/// 3. **拉不回来要吭声**。缺失持续到 `persistentFailureThreshold` 轮还没回来，
+///    就回调 `onPersistentlyDown` 一次，让 UI 提示用户从备份恢复 ——
+///    静默重试到天荒地老等于"用户面对一个没有 Dock 的桌面且不知道为什么"（计划 §3.9 第 3 条）。
 @MainActor
 final class DockPresenceMonitor {
 
@@ -20,6 +23,8 @@ final class DockPresenceMonitor {
     private let missThreshold: Int
     /// 判定不在之后，每隔多少次轮询重试一次拉回。
     private let kickstartEvery: Int
+    /// 连续缺失达到这么多次轮询还没回来 → 判定「拉不回来」，报给 UI（计划 §3.9 第 3 条）。
+    private let persistentFailureThreshold: Int
     private let log: @MainActor (String) -> Void
 
     private var task: Task<Void, Never>?
@@ -33,18 +38,41 @@ final class DockPresenceMonitor {
     private(set) var lastSeenPID: pid_t?
     private(set) var isRunning = false
 
+    /// 是否已判定「持续拉不回来」。**边沿触发**：只在跨过阈值时报一次，Dock 回来时清掉。
+    ///
+    /// 判据刻意用**缺失轮数**而不是 `kickstart()` 的返回值 —— 那个返回值只说明
+    /// `launchctl` 命令跑起来了，不说明 Dock 回来了。拉回成功但 Dock 依然不在的情形是可能的。
+    private(set) var isPersistentlyDown = false
+
+    /// 判定「拉不回来」时回调一次。参数是给用户看的一句话。
+    ///
+    /// 用 `var` 而不是 init 参数，与下面的 `log` 不同：这两个回调写的是 **`AppState` 自己的状态**，
+    /// 必须由 `AppState` 无条件挂上 —— 而监视器可能是测试里构造好再注入的，那时 init 参数没人填。
+    var onPersistentlyDown: @MainActor (String) -> Void = { _ in }
+    /// 从「持续拉不回来」恢复时回调一次。参数是累计恢复次数。
+    var onRevived: @MainActor (Int) -> Void = { _ in }
+
     init(
         process: any DockProcessControlling = RealDockProcessControl(),
         pollInterval: Duration = .milliseconds(500),
         missThreshold: Int = 2,
         kickstartEvery: Int = 4,
+        persistentFailureThreshold: Int = 12,
         log: @escaping @MainActor (String) -> Void = { _ in }
     ) {
         self.process = process
         self.pollInterval = pollInterval
         self.missThreshold = max(1, missThreshold)
         self.kickstartEvery = max(1, kickstartEvery)
+        // 必须严格大于 missThreshold，否则"还没到该动手的轮数就先报拉不回来"。
+        self.persistentFailureThreshold = max(self.missThreshold + 1, persistentFailureThreshold)
         self.log = log
+    }
+
+    /// 轮询周期折算成秒，用来把"缺了多少轮"翻译成人能读的秒数。
+    private var pollIntervalSeconds: Double {
+        let parts = pollInterval.components
+        return Double(parts.seconds) + Double(parts.attoseconds) / 1e18
     }
 
     func start() {
@@ -72,6 +100,10 @@ final class DockPresenceMonitor {
             if consecutiveMisses >= missThreshold {
                 recoveryCount += 1
                 log("Dock 已归位（PID \(pid)，第 \(recoveryCount) 次恢复）")
+                if isPersistentlyDown {
+                    isPersistentlyDown = false
+                    onRevived(recoveryCount)
+                }
             }
             consecutiveMisses = 0
             lastSeenPID = pid
@@ -79,6 +111,16 @@ final class DockPresenceMonitor {
         }
 
         consecutiveMisses += 1
+
+        // 「拉不回来」：缺够久就认定 launchctl 也没用，报一次让 UI 提示用户从备份恢复。
+        if !isPersistentlyDown, consecutiveMisses >= persistentFailureThreshold {
+            isPersistentlyDown = true
+            let seconds = Int((Double(consecutiveMisses) * pollIntervalSeconds).rounded())
+            onPersistentlyDown(
+                "Dock 已连续约 \(seconds) 秒没有回来，已尝试用 launchctl 拉回 \(kickstartCount) 次"
+            )
+        }
+
         guard consecutiveMisses >= missThreshold else { return }
         // 阈值那一次必打，之后每 kickstartEvery 次再打一次。
         guard (consecutiveMisses - missThreshold) % kickstartEvery == 0 else { return }
@@ -88,5 +130,16 @@ final class DockPresenceMonitor {
         log(recovered
             ? "检测到 Dock 不在（连续 \(consecutiveMisses) 次），已用 launchctl 拉回"
             : "检测到 Dock 不在（连续 \(consecutiveMisses) 次），launchctl 拉回失败，会继续重试")
+    }
+
+    /// 立刻再试一次拉回。给 UI 上那个「再试一次拉回」按钮用。
+    ///
+    /// 不动 `consecutiveMisses` —— 拉没拉回来由下一次 `tick()` 判定，这里不预支结论。
+    @discardableResult
+    func reviveNow() -> Bool {
+        kickstartCount += 1
+        let started = process.kickstart()
+        log(started ? "手动重试拉回 Dock" : "手动重试拉回 Dock 失败（launchctl 没跑起来）")
+        return started
     }
 }

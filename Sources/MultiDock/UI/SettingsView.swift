@@ -1,17 +1,75 @@
 import SwiftUI
 
 /// 设置窗口。两个 Tab：通用（默认 Dock）/ 桌面（逐桌面独立 Dock）。
+///
+/// 顶部有一条**报警横幅**：`docs/PLAN.md` §3.1 末段要求"降级时在 UI 明确报警，而不是静默失效"，
+/// §3.9 第 3 条要求"Dock 拉不回来时提示从备份恢复"。这两件事都只进日志和调试面板是不合格的 ——
+/// 用户不看日志。
 struct SettingsView: View {
     @Bindable var state: AppState
 
     var body: some View {
-        TabView {
-            GeneralTab(state: state)
-                .tabItem { Label("通用", systemImage: "gearshape") }
-            DesktopListView(state: state)
-                .tabItem { Label("桌面", systemImage: "rectangle.3.group") }
+        VStack(spacing: 0) {
+            WarningBanner(state: state)
+            TabView {
+                GeneralTab(state: state)
+                    .tabItem { Label("通用", systemImage: "gearshape") }
+                DesktopListView(state: state)
+                    .tabItem { Label("桌面", systemImage: "rectangle.3.group") }
+            }
         }
         .frame(width: 780, height: 560)
+    }
+}
+
+// MARK: - 报警横幅
+
+/// 设置窗口顶部的报警区。两条都为空时**整个视图不占空间**。
+private struct WarningBanner: View {
+    var state: AppState
+
+    var body: some View {
+        if state.dockFailureWarning != nil || state.spaceProviderWarning != nil {
+            VStack(alignment: .leading, spacing: 12) {
+                if let reason = state.dockFailureWarning {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Dock 拉不回来")
+                                .font(.headline)
+                            Text("\(reason)。可以点右边重试，或到「通用 → 备份与还原」恢复一份历史备份。")
+                                .font(.caption)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 12)
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Button("再试一次拉回") { state.retryDockRevival() }
+                            Button("立即还原到原始 Dock") { state.restoreToBaselineNow() }
+                        }
+                    }
+                }
+
+                if let reason = state.spaceProviderWarning {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "exclamationmark.octagon.fill")
+                            .foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("桌面切换不可用")
+                                .font(.headline)
+                            Text("\(reason)。Dock 配置仍能手动应用，但不会随桌面自动切换，菜单栏的切换按钮也不起作用。")
+                                .font(.caption)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 12)
+                    }
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor))
+            Divider()
+        }
     }
 }
 

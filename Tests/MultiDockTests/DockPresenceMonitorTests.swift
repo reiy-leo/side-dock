@@ -20,7 +20,7 @@ final class DockPresenceMonitorTests: XCTestCase {
         /// kickstart 之后还要被问几次才归位（模拟 launchd 拉起来需要一点时间）。
         private let recoverDelayPolls: Int
         /// false = kickstart 也拉不回来（模拟 launchd 彻底不管了）。
-        private let recoversOnKickstart: Bool
+        private var recoversOnKickstart: Bool
         private var countdown = 0
         private var willRecover = false
 
@@ -37,6 +37,11 @@ final class DockPresenceMonitorTests: XCTestCase {
                 willRecover = false
                 countdown = 0
             }
+        }
+
+        /// 改掉「kickstart 到底能不能拉回来」。用来构造「先拉不回来、后来又能拉回来」。
+        func setRecoversOnKickstart(_ value: Bool) {
+            lock.withLock { recoversOnKickstart = value }
         }
 
         func dockPID() -> pid_t? {
@@ -73,14 +78,16 @@ final class DockPresenceMonitorTests: XCTestCase {
     private func makeMonitor(
         process: FlakyDock,
         missThreshold: Int = 2,
-        kickstartEvery: Int = 4
+        kickstartEvery: Int = 4,
+        persistentFailureThreshold: Int = 12
     ) -> (DockPresenceMonitor, Box<[String]>) {
         let messages = Box<[String]>([])
         let monitor = DockPresenceMonitor(
             process: process,
             pollInterval: .seconds(60),
             missThreshold: missThreshold,
-            kickstartEvery: kickstartEvery
+            kickstartEvery: kickstartEvery,
+            persistentFailureThreshold: persistentFailureThreshold
         ) { message in
             messages.value.append(message)
         }
@@ -194,5 +201,92 @@ final class DockPresenceMonitorTests: XCTestCase {
         XCTAssertEqual(process.kickstartCount, 1)
         XCTAssertEqual(monitor.recoveryCount, 1)
         XCTAssertNotNil(monitor.lastSeenPID)
+    }
+
+    // MARK: - 「拉不回来」要吭声（计划 §3.9 第 3 条）
+
+    func testReportsPersistentFailureOnceAfterThreshold() {
+        let process = FlakyDock(pid: 400, recoversOnKickstart: false)
+        let (monitor, _) = makeMonitor(process: process, persistentFailureThreshold: 5)
+
+        let reports = Box<[String]>([])
+        monitor.onPersistentlyDown = { reports.value.append($0) }
+
+        process.vanish()
+        for _ in 0..<4 { monitor.tick() }
+        XCTAssertTrue(reports.value.isEmpty, "还没到阈值就不该报警：\(reports.value)")
+        XCTAssertFalse(monitor.isPersistentlyDown)
+
+        monitor.tick()
+        XCTAssertEqual(reports.value.count, 1, "跨过阈值必须报一次")
+        XCTAssertTrue(monitor.isPersistentlyDown)
+
+        // 继续缺下去也只报一次 —— 每轮都报会把日志和 UI 刷爆。
+        for _ in 0..<10 { monitor.tick() }
+        XCTAssertEqual(reports.value.count, 1, "边沿触发，只报一次：\(reports.value)")
+    }
+
+    func testPersistentFailureMessageReadsAsSeconds() {
+        // pollInterval 在夹具里是 60 s，阈值 5 轮 → 约 300 秒。文案必须说人话。
+        let process = FlakyDock(pid: 400, recoversOnKickstart: false)
+        let (monitor, _) = makeMonitor(process: process, persistentFailureThreshold: 5)
+
+        let reports = Box<[String]>([])
+        monitor.onPersistentlyDown = { reports.value.append($0) }
+
+        process.vanish()
+        for _ in 0..<5 { monitor.tick() }
+
+        XCTAssertEqual(reports.value.count, 1)
+        XCTAssertTrue(reports.value[0].contains("300 秒"), "文案：\(reports.value)")
+    }
+
+    func testPersistentlyDownClearsWhenDockFinallyComesBack() {
+        let process = FlakyDock(pid: 400, recoversOnKickstart: false)
+        let (monitor, _) = makeMonitor(process: process, persistentFailureThreshold: 5)
+
+        let reports = Box<[String]>([])
+        let revivals = Box<[Int]>([])
+        monitor.onPersistentlyDown = { reports.value.append($0) }
+        monitor.onRevived = { revivals.value.append($0) }
+
+        process.vanish()
+        for _ in 0..<5 { monitor.tick() }
+        XCTAssertTrue(monitor.isPersistentlyDown)
+
+        // launchd 后来又能拉回来了。
+        process.setRecoversOnKickstart(true)
+        monitor.tick()      // 到 kickstart 节奏就拉
+        monitor.tick()      // 这次真的回来了
+
+        XCTAssertFalse(monitor.isPersistentlyDown, "回来了就必须解除")
+        XCTAssertEqual(revivals.value, [1], "恢复只报一次")
+        XCTAssertEqual(monitor.recoveryCount, 1)
+    }
+
+    func testReviveNowDoesNotPrejudgeTheOutcome() {
+        let process = FlakyDock(pid: 400, recoversOnKickstart: false)
+        let (monitor, messages) = makeMonitor(process: process)
+
+        XCTAssertTrue(monitor.reviveNow(), "launchctl 跑起来了就该返回 true")
+        XCTAssertEqual(process.kickstartCount, 1)
+        XCTAssertEqual(monitor.consecutiveMisses, 0, "手动重试不该改缺失计数 —— 拉没拉回来由下一次 tick 判定")
+        XCTAssertFalse(monitor.isPersistentlyDown, "更不该预支「拉不回来」的结论")
+        XCTAssertTrue(messages.value.contains { $0.contains("手动重试拉回") }, "日志：\(messages.value)")
+    }
+
+    func testPersistentThresholdIsForcedAboveMissThreshold() {
+        // 阈值传得比 missThreshold 还小是配置错误：会在「还没到该动手的轮数」就先喊拉不回来。
+        let process = FlakyDock(pid: 400, recoversOnKickstart: false)
+        let (monitor, _) = makeMonitor(process: process, missThreshold: 6, persistentFailureThreshold: 1)
+
+        let reports = Box<[String]>([])
+        monitor.onPersistentlyDown = { reports.value.append($0) }
+
+        process.vanish()
+        for _ in 0..<6 { monitor.tick() }
+
+        XCTAssertTrue(reports.value.isEmpty, "阈值被抬到 missThreshold+1=7，第 6 轮不该报警")
+        XCTAssertEqual(process.kickstartCount, 1, "第 6 轮该动手拉回")
     }
 }
