@@ -10,7 +10,9 @@ protocol DockProcessControlling: Sendable {
     func dockPID() -> pid_t?
     /// 给 Dock 发信号。返回是否投递成功（Dock 已死时返回 false，不算异常）。
     @discardableResult func signal(_ pid: pid_t, _ sig: Int32) -> Bool
-    /// `launchctl kickstart -k` 兜底。返回是否执行成功。
+    /// `launchctl kickstart -k` 兜底。**只表示命令发出去了**，不表示 Dock 回来了，
+    /// 而且实现必须是非阻塞的（见 `RealDockProcessControl.kickstart()`）。
+    /// 已经有一发 launchctl 在飞时返回 false，不叠加。
     @discardableResult func kickstart() -> Bool
     /// 某个 PID 的启动时刻（Unix 秒）。拿不到返回 nil。
     ///
@@ -22,6 +24,37 @@ protocol DockProcessControlling: Sendable {
 extension DockProcessControlling {
     /// 替身默认拿不到启动时刻 → `DockReloader` 退回用内存里的 `lastRestartAt` 推算。
     func startTime(of pid: pid_t) -> TimeInterval? { nil }
+}
+
+/// `launchctl` 子进程的收纳处。
+///
+/// `kickstart` 必须**发完就走**（原因见 `RealDockProcessControl.kickstart()`），
+/// 所以 `Process` 对象要在它退出前一直有人持有，否则会在子进程还活着时被释放。
+/// 这里同时兼任「有没有一发 launchctl 还在飞」的判据 —— 叠着发正是退避的成因。
+private final class LaunchctlParking: @unchecked Sendable {
+
+    static let shared = LaunchctlParking()
+
+    private let lock = NSLock()
+    private var running: [Process] = []
+
+    var hasOutstanding: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !running.isEmpty
+    }
+
+    func park(_ process: Process) {
+        lock.lock()
+        running.append(process)
+        lock.unlock()
+        process.terminationHandler = { [weak self] finished in
+            guard let self else { return }
+            self.lock.lock()
+            self.running.removeAll { $0 === finished }
+            self.lock.unlock()
+        }
+    }
 }
 
 /// 真实实现。
@@ -102,6 +135,13 @@ struct RealDockProcessControl: DockProcessControlling {
 
     @discardableResult
     func kickstart() -> Bool {
+        // ⚠️ **绝不能 `waitUntilExit()`。** 真机实测（2026-09-19）：launchd 处在重启退避里时
+        // `/bin/launchctl kickstart` 会阻塞**几十秒**才返回（日志里是 54 / 60 / 64 s），
+        // 而这条调用跑在 `@MainActor` 上 —— 整个 App 连带冻住那么久，存活监视器、桌面轮询、
+        // toast、设置窗口全部停摆（表现为「切一次桌面，Dock 消失两分钟」）。
+        // 返回值只说明"命令发出去了"，Dock 有没有回来由调用方轮询判定。
+        guard !LaunchctlParking.shared.hasOutstanding else { return false }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         process.arguments = [
@@ -112,11 +152,11 @@ struct RealDockProcessControl: DockProcessControlling {
         process.standardError = FileHandle.nullDevice
         do {
             try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
         } catch {
             return false
         }
+        LaunchctlParking.shared.park(process)
+        return true
     }
 
     /// Dock 进程的启动时刻。实测 `proc_pidinfo(PROC_PIDTBSDINFO)` 返回 136 字节 = 结构体大小。
@@ -191,6 +231,10 @@ struct ReloadOutcome: Sendable, Equatable {
 final class DockReloader {
 
     private let process: any DockProcessControlling
+    /// 等 Dock 归位的上限。**必须明显长于 launchd 的退避尺度**（真机实测几十秒，见
+    /// `docs/spikes.md` 实验 8.5），否则一次正常的慢拉起会被我们误判成"SIGHUP 失败"，
+    /// 紧接着升级到 `SIGTERM` + `kickstart -k` —— 那一发 `-k` 会把 launchd 正要拉起的
+    /// Dock 再杀一次，把 1 秒的节流滚成两分钟的 Dock 死亡。2026-09-19 就是这么踩的。
     private let timeout: Duration
     private let pollInterval: Duration
     /// 发完 SIGTERM 后、动 `kickstart` 之前给的宽限。等的是「launchd 自己把 Dock 拉回来」，
@@ -203,7 +247,7 @@ final class DockReloader {
 
     init(
         process: any DockProcessControlling = RealDockProcessControl(),
-        timeout: Duration = .seconds(5),
+        timeout: Duration = .seconds(30),
         pollInterval: Duration = .milliseconds(15),
         fallbackGrace: Duration = .milliseconds(500),
         minimumSpacing: Duration = .milliseconds(1000)
@@ -213,6 +257,15 @@ final class DockReloader {
         self.pollInterval = pollInterval
         self.fallbackGrace = fallbackGrace
         self.minimumSpacing = minimumSpacing
+    }
+
+    /// Dock 进程此刻在不在。
+    ///
+    /// 给「别在 Dock 缺失期间读它的偏好域」用（见 `DockWatcher.tick()`）——
+    /// 那个窗口里域读回来的是残缺内容。
+    var isDockAlive: Bool {
+        guard let pid = process.dockPID() else { return false }
+        return pid > 0
     }
 
     /// 重启 Dock。

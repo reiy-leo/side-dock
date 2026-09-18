@@ -34,6 +34,8 @@ final class DockWatcherTests: XCTestCase {
         var live: DockConfig?
         var detected: [DockConfig] = []
         var logs: [String] = []
+        /// Dock 进程在不在。默认在 —— 只有专门测"缺失期间不采样"的用例才改成 false。
+        var dockAlive = true
 
         func makeWatcher(pollInterval: Duration = .seconds(60)) -> DockWatcher {
             DockWatcher(
@@ -41,6 +43,7 @@ final class DockWatcherTests: XCTestCase {
                 currentFingerprint: { [self] in current },
                 appliedFingerprint: { [self] in applied },
                 readLiveConfig: { [self] in live },
+                isDockPresent: { [self] in dockAlive },
                 onUserEdit: { [self] config in detected.append(config) },
                 log: { [self] message in logs.append(message) }
             )
@@ -234,6 +237,51 @@ final class DockWatcherTests: XCTestCase {
     }
 
     // MARK: - 轮询开关
+
+    func testNeverSamplesWhileDockProcessIsMissing() {
+        // 真机踩过（2026-09-19）：Dock 死掉的窗口里偏好域读回来是残缺的
+        // （「3 个图标、0 个其他项」，真实 Dock 是 15 + 1），被当成用户改动回存，写坏了那个桌面的 override。
+        let harness = Harness()
+        harness.current = "fp-a"
+        harness.applied = "fp-a"
+        harness.live = makeConfig(apps: ["Notes"])
+        let watcher = harness.makeWatcher()
+        watcher.start()
+        defer { watcher.stop() }
+
+        harness.dockAlive = false
+        harness.current = "fp-partial-garbage"
+        watcher.tick()
+
+        XCTAssertTrue(harness.detected.isEmpty, "Dock 不在时一次都不该采样")
+        XCTAssertEqual(watcher.detectedCount, 0)
+        XCTAssertFalse(watcher.isDiverged)
+    }
+
+    func testDockReturnRebaselinesBeforeCapturingAnything() {
+        // Dock 回来之后的第一次读只用来对齐基线；紧接着的真实改动仍然要抓到。
+        let harness = Harness()
+        harness.current = "fp-a"
+        harness.applied = "fp-a"
+        harness.live = makeConfig(apps: ["Notes"])
+        let watcher = harness.makeWatcher()
+        watcher.start()
+        defer { watcher.stop() }
+
+        harness.dockAlive = false
+        harness.current = "fp-partial-garbage"
+        watcher.tick()
+
+        harness.dockAlive = true
+        harness.current = "fp-back"
+        watcher.tick()
+        XCTAssertTrue(harness.detected.isEmpty, "中间态分不清是不是用户改的，一律先认成新基线")
+
+        harness.current = "fp-user-edit"
+        watcher.tick()
+        XCTAssertEqual(harness.detected.count, 1, "对齐之后的真实改动照常回存")
+        XCTAssertEqual(watcher.detectedCount, 1)
+    }
 
     func testStartAndStopToggleRunningFlag() {
         let harness = Harness()

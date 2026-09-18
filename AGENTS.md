@@ -141,9 +141,9 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | 打包脚本 | `scripts/build-app.sh` | 编译 → 组装 `.app` → ad-hoc 签名 |
 | 显示器名解析 | `Spaces/ScreenNaming.swift` | `displayUUID → NSScreen.localizedName`；**纯解析可单测**，映射不到时如实说"未识别"而不回落成错的屏。桌面页据此按显示器分组 |
 | 其他项（文件夹/堆栈）编辑 | `Dock/DockStripRules.swift`、`UI/DockStripEditor.swift` | **只搬不造**：显示 / 排序 / 移除；拖入文件夹时明确拒绝并给替代做法（`DockItemRejection`）。**不能新建**的实测依据见 `docs/spikes.md` 实验 8 |
-| 测试 | `Tests/MultiDockTests/` | **290 个测试，全绿**（其中 7 个真实 Dock 验收默认跳过，需显式开启） |
+| 测试 | `Tests/MultiDockTests/` | **295 个测试，全绿**（其中 7 个真实 Dock 验收默认跳过，需显式开启） |
 | 设计文档 | `docs/PLAN.md` | 已按 P0 结论修订 |
-| 实验结论 | `docs/spikes.md` | **8 个实验**的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现；实验 8 是"其他项不能新建"**） |
+| 实验结论 | `docs/spikes.md` | **9 个实验**的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现；实验 8 是"其他项不能新建"；实验 9 是"切一次桌面黑屏几分钟"的根因**） |
 
 ### 已完成：P2（编辑条 + 应用）✅ 2026-09-18
 
@@ -273,9 +273,38 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
    结果缓存在 `AppState.displayScreens`，刷新点是启动 + `didChangeScreenParametersNotification`；
    **不要在视图渲染路径里现取 `NSScreen`**。
 6. **`persistent-others = []` 是安全的**（实验 8 的实验 5：SIGHUP 后 0.6 s 归位），所以「移除最后一项」不设限。
-7. **反复杀 Dock 会让 launchd 进入递增退避**（`launchctl print` 显示 `state = spawn scheduled`，Dock 几十秒不回来）。
-   验收脚本连杀几十次就会踩到；**静置等待比反复 `kickstart` 更快**。App 正常使用（一次切换只重启一次、
-   并主动错开 1 秒节流窗口）不受影响。
+7. ~~**反复杀 Dock 会让 launchd 进入递增退避**：验收脚本连杀几十次就会踩到，App 正常使用不受影响。~~
+   **这条"不受影响"是错的**（2026-09-19 实验 9 证伪）：App 正常使用**就会**踩到 ——
+   一次稍慢的恢复被我们自己续上退避，实测每次切换 Dock 缺失 60–126 秒。见下面「已完成：修掉切桌面黑屏」。
+
+### 已完成：修掉「切一次桌面黑屏几分钟」✅ 2026-09-19
+
+用户报告：桌面 1 → 2 之后没有 Dock、没有壁纸、触控板手势失效几分钟。根因与全部证据在
+`docs/spikes.md` **实验 9**；规格改动见 `docs/PLAN.md` §3.4 / §3.8 / §3.9。**这一节的六条都不能"改回去"。**
+
+**实现要点（改动时别踩）**：
+
+1. **`RealDockProcessControl.kickstart()` 绝不能 `waitUntilExit()`。** launchd 处在退避里时
+   `/bin/launchctl kickstart` 会**阻塞到它真能把服务拉起来为止**（实测 54 / 60 / 64 秒），而这条调用在
+   `@MainActor` 上 —— 整个 App 连带冻住（判据：500 ms 一轮的存活监视器在两分钟里只留下一行日志）。
+   现在发完就走，`Process` 由 `LaunchctlParking` 持到退出（否则子进程还活着时对象就被释放）。
+2. **在飞的 launchctl 不允许叠加**（`hasOutstanding` 直接返回 false）。`kickstart -k` 的 `-k` 会杀掉
+   launchd 刚刚拉回来的 Dock，等于自己给自己续退避。
+3. **`DockReloader.timeout` 从 5 s 提到 30 s。** 超时的尺度必须是 **launchd 退避的尺度**（几十秒），
+   不是"我们觉得该好了"的尺度。5 s 时一次正常慢恢复被误判成 SIGHUP 失败 → 升级 SIGTERM+kickstart → 放大。
+4. **存活监视器的三档节奏整体放慢**：缺失满 4 s 才动手（原 1 s）、每 30 s 才催一发（原 2 s）、
+   满 60 s 才报警（原 6 s）。报警阈值原来 6 s 意味着**每次正常的慢恢复都会误报一次红横幅**。
+5. **`DockWatcher` 在 Dock 进程不在时一律不采样**（`isDockPresent` 闸门，走 `dockController.isDockAlive`
+   → `reloader` 的进程控制，所以测试里同样是替身）。实测缺失期间偏好域读回来是残缺内容
+   （3 个图标 vs 真实 15 个），照抄进配置就把那个桌面的 override 写坏了。
+   **回来之后第一次读只用来对齐基线**（`needsRebaseline`），不补回存 —— 中间态分不清是不是用户改的。
+6. ⚠️ **已发生的数据损坏**：`~/Library/Application Support/MultiDock/config.json` 里
+   `计划 任务` 与 `密码 邮件` 两条 override 已被上面那个 bug 写成「3 个图标、0 个其他项」
+   （`LLM` 那条是对的）。**修代码不会自动修数据**，要用户在设置里「从当前 Dock 抓取」重抓一次。
+
+**验收**：`swift build` 零警告；`swift test` **295 个测试全绿**（+5：默认阈值 2 条、Watcher 闸门 2 条、
+`isDockAlive` 1 条）。⚠️ **真机复验还没做**（本会话没有再动用户的 Dock），核对口径：日志里
+`Dock 不可用` 应稳定回到 100 ms 量级，且不再出现「检测到 Dock 不在…已用 launchctl 拉回」。
 
 ### 未完成
 
@@ -375,7 +404,9 @@ A4 的**逻辑侧已自动化**（`DockAcceptanceTests.testExternalDockChangeIsC
 | **`persistent-others` 的目录条目形状**（2026-09-18 实测） | 真实域里是 `directory-tile`，`tile-data` = `file-data`(`_CFURLString` 带尾斜杠) + `file-label` + `file-type`(**2**) + `arrangement`(2) + `displayas`(0) + `showas`(1) + `preferreditemsize`(字符串 `"-1"`) + `is-beta`(0) + `book`(656 字节书签) + `file-mod-date` / `parent-mod-date` / `GUID`(由 Dock 补) |
 | **自拼的目录条目 Dock 不认领**（`spikes.md` 实验 8） | 自己拼 `directory-tile` 写进域后 Dock **不补 `GUID`**（等 4 秒 / 8 秒都不补）；补全展示字段、甚至自己用 `URL.bookmarkData()` 生成 `book` 也一样 → 沿用"没有 GUID = Dock 没读进去"的判据。**且字段不全的形状会让 Dock 直接 SIGABRT**（本机 7 份崩溃报告，launchd 反复拉起 → 崩溃循环，用户当场失去 Dock）。→ 结论：**其他项只搬不造**，要加文件夹必须由用户在访达里自己拖进 Dock |
 | **`persistent-others = []` 无害**（实验 8） | 写入空数组 + SIGHUP → Dock **0.6 s** 归位。所以「移除最后一项」不需要设限 |
-| **反复杀 Dock 会触发 launchd 递增退避**（2026-09-18 实测） | 连续多次信号致死 + kickstart 之后，`launchctl print` 显示 `state = spawn scheduled`，Dock **几十秒不回来**（正常 SIGHUP 约 100 ms），`kickstart` 也被同一段退避挡住；**静置等待比反复催更快**（实测停手后 8 秒内回来）。只影响验收节奏 —— App 一次切换只重启一次并主动错开 1 秒节流窗口 |
+| **反复杀 Dock 会触发 launchd 递增退避**（2026-09-18 实测） | 连续多次信号致死 + kickstart 之后，`launchctl print` 显示 `state = spawn scheduled`，Dock **几十秒不回来**（正常 SIGHUP 约 100 ms），`kickstart` 也被同一段退避挡住；**静置等待比反复催更快**（实测停手后 8 秒内回来）。⚠️ 原先写的"App 正常使用不受影响"**已被 2026-09-19 实验 9 证伪** —— 正常使用就会踩，见下面两行 |
+| **`launchctl kickstart` 会阻塞几十秒**（2026-09-19 实测） | launchd 在退避里时这条命令**直到服务真被拉起才返回**（日志空白实测 54 / 60 / 64 秒）。所以它**绝不能 `waitUntilExit()`** —— 那会把 `@MainActor` 冻住那么久，整个 App（监视器、桌面轮询、toast、设置窗口）全部停摆。判据：500 ms 一轮的存活监视器在两分钟里只留一行日志 |
+| **Dock 进程不在时偏好域读回来是残缺的**（2026-09-19 实测） | Dock 死掉的窗口里 `CFPreferencesCopyMultiple` 读到「3 个图标、0 个其他项」，而真实 Dock 是 **15 + 1**。所以任何"读真实 Dock"的路径都要先看 Dock 在不在（`DockController.isDockAlive`），否则会把残缺内容写进配置。本条直接写坏了 `config.json` 里两条 override（见 §3 的「已完成：修掉「切一次桌面黑屏几分钟」」第 6 条） |
 | **显示器名怎么取** | `NSScreen.localizedName`（如「内建视网膜显示器」）；与 SkyLight `displayUUID` 的换算沿用 `CGDisplayCreateUUIDFromDisplayID`（本文件上文已实测逐字符相同）。**解析不到时不要回落成某台真实屏的名字**，要如实说"未识别显示器（UUID 前 8 位…）" |
 | 风险项 | 本机 `mru-spaces = 1`（自动重排空间），会打乱桌面顺序、破坏"下一个桌面"直觉 → 设置页给显式开关，**用户主动点击才改** |
 | 截图验证不可用 | 本机未授予屏幕录制权限，`screencapture` 只返回壁纸（无菜单栏、无窗口）。**验收请用 `multidock.log` 或调试面板，不要依赖截图** |
@@ -394,7 +425,7 @@ A4 的**逻辑侧已自动化**（`DockAcceptanceTests.testExternalDockChangeIsC
 
 ```bash
 swift build -c release --disable-sandbox   # 编译
-swift test --disable-sandbox               # 290 个测试（含 7 个默认跳过的真实 Dock 验收）
+swift test --disable-sandbox               # 295 个测试（含 7 个默认跳过的真实 Dock 验收）
 ./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
 open build/MultiDock.app                   # 运行（必须在 .app 里跑，菜单栏图标才正常）
 ./scripts/check-toast-window.sh --watch 12 # 客观验收 toast（零权限，读窗口元数据）
@@ -476,6 +507,7 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | A3 | **图标条的拖拽（排序 / 拖出移除 / 从访达拖 `.app` 进来）没被真人拖过** | `onDrag` / `dropDestination` 的真机手感与边界未验证 | 请手动拖一次。排序逻辑由 `DockStripRulesTests` + `AppStateDockTests` 覆盖 |
 | A4 | **P3 验收里"在真实 Dock 手动拖入一个图标，切走再切回仍在"**（真人拖拽是纯 UI 操作，脚本化要辅助功能权限，与硬约束冲突） | 这条是 `DockWatcher` **回存路径的唯一真实检验** | ✅ **逻辑侧已自动化（2026-09-18）**：`DockAcceptanceTests.testExternalDockChangeIsCapturedBackToActiveDesktop` 用 `defaults write` + 真实 `DockReloader().reload()` 复现"外部改动"，走**真实 2 秒轮询**（不手动 `tick()`），两种落点（默认 Dock / 逐桌面 override）都覆盖，并断言回存期间 **Dock PID 不变**。真人拖一次仍建议做（验证拖拽 UI 本身），但已不再是唯一检验 |
 | A5 | **「连切 5 次只显示最终名字」只做了单测**，没做真机连击 | 真机是否闪烁未实测 | 单测 `testRapidSwitchKeepsOnlyLatestTextAndHidesOnce` 覆盖调度逻辑；真机需手动快速点菜单栏 |
+| A6 | **「切桌面不再黑屏几分钟」还没真机复验**（实验 9 的修复只过了单测） | 这是用户报的最严重故障，没复验等于没确认修好 | ⏳ **只能用户做**：`./scripts/build-app.sh && open build/MultiDock.app`，连切十次桌面，然后看 `multidock.log` —— `Dock 不可用` 必须稳定在 100 ms 量级，且**不再出现**「检测到 Dock 不在…已用 launchctl 拉回」。另需在设置里把 `计划 任务` / `密码 邮件` 两个桌面的 Dock **重抓一次**（数据已被旧 bug 写坏，见 §3 该节第 6 条） |
 | **B. 待做的功能（已排期）** | | | |
 | B5 | **多显示器仍未真机实测**（P5 唯一剩下的）：映射键、插拔后自动刷新、toast 的 `displayUUID → NSScreen` 定位都实现了，但本机只有一台显示器 | 插外接显示器后映射可能串 | **只能靠用户插一台外接屏实测**。调试面板已加「显示器数量」与每个桌面的 `displayUUID` 前 8 位，核对时用 |
 | B6 | ~~全屏 App 空间的过滤只有单测覆盖~~ | 每次进全屏可能误切 Dock | ✅ **已解决（2026-09-18）**：真机回归通过，见 §4 的「全屏过滤的真机回归」与 `scripts/check-fullscreen-filter.swift` |
@@ -521,19 +553,27 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | D22 | ~~切桌面想要"左右滑动"的动画~~ | 点菜单栏切桌面是硬切 | ✅ **已定性为"不做"（2026-09-18）**：程序化切空间实测 0–6 ms；四条可能的路全断（粘滞状态位 / 写后读不回的会话开关 / 签名未知会段错误的 `SLSWillSwitchSpaces` / 合成事件被拦）。**零权限 + 无痕下无解。别再试** —— 详见 §4 与 `docs/spikes.md` 实验 7 |
 | D23 | ~~菜单栏只能"切下一个"，往回切要开菜单~~ | 切过头只能绕菜单 | ✅ **已解决（2026-09-18）**：`⇧+左键 = 切上一个桌面`，与"下一个"共用同一条预应用链路（`switcher.target(.previous)`），两端循环；下拉菜单同时给「上一个桌面」+ 等价提示。单测 `testPreviousDesktopPreAppliesItsOwnDock` |
 | D24 | ~~逐桌面 Dock 的桌面在**回存**时会白重启一次 Dock~~ | 用户手拖图标进 Dock → 回存 → Dock 闪一下（约 50 ms），而逐桌面 Dock 正是本 App 的常态用法 | ✅ **已解决（2026-09-18）**：`DockController.apply` 原来只有一条短路，比的是「我们上次写下去的那份」（`appliedFingerprint`）—— 发生过外部改动它就**过期**了，于是"应用一份与真实 Dock 完全相同的配置"会白写一遍 + 白重启一次。实测 `PID 68667 → 68672`；**默认 Dock 那条路不中招**（回存只写配置、不应用），所以只有 override 中招。修法：加短路第 1b 条 `liveAlreadyMatches`，判据**复用 `verify` 的同一套比较**（跳过 ≡ 写了立刻验过）。修后实测 `68995 → 68995`。回归：`DockControllerTests` 4 条（`testSkipsWhenLiveDockAlreadyMatchesDespiteStaleFingerprint` / `testSkipAdoptsLiveDockSoWriteBackGateOpens` / `testDoesNotSkipWhenLiveDockDiffersFromConfig` / `testForceBypassesLiveMatchShortCircuit`）。**教训：只靠单测发现不了** —— 旧单测里 `appliedFingerprint` 与真实域永远同步，两个对象各自自洽 |
+| D25 | ~~切一次桌面 → Dock / 壁纸 / 触控板手势一起没了"几分钟"~~ | 用户以为系统卡死；实际是 **Dock 进程不在 60–126 秒**（Dock 就是壁纸与空间手势的实现者） | ✅ **根因已定位并修复（2026-09-19，`docs/spikes.md` 实验 9）**：三条叠在一起的自我放大链路 —— ① `kickstart()` 里的 `waitUntilExit()` 在 launchd 退避时**把主线程冻住几十秒**（实测 54/60/64 s，判据是 500 ms 一轮的监视器两分钟只留一行日志）；② 重载超时 5 s 短于退避尺度 → 慢恢复被误判成失败 → 升级 `SIGTERM` + `kickstart -k`；③ 监视器 1 s 动手、每 2 s 催一发 `-k`，把 launchd 刚拉回来的 Dock 再杀一次。**修法**：kickstart 非阻塞且不允许叠加、超时 30 s、监视器 4 s/30 s/60 s。顺带修掉 `DockWatcher` 在 Dock 缺失期间把残缺域（3 个图标 vs 真实 15 个）回存进配置 —— 但**已写坏的两条 override 要用户重抓**（见 §3 该节第 6 条与 §6.3 A6）。回归 5 条；⚠️ 真机复验待用户（A6） |
 
 ---
 
 ## 7. 给下一个 session 的建议顺序
 
-1. 读本文件 → `docs/PLAN.md`（§3 核心机制、§3.10 桌面命名与 toast、§3.11 无痕与自愈、§4 阶段与验收）→ `docs/spikes.md`（**7 个实验结论，含对计划的多处修正；实验 5 有两个要命发现，实验 6 是节流窗口的判据修正，实验 7 是一条"别再做"的动画结论**）。
-2. 跑一次基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，确认全绿（应为 **290 个测试通过、零警告**）。
-3. **动 Dock 相关代码前先读 §4 的四条**："launchd 重启节流"、"节流窗口判据"、"`-1` PID 陷阱"、"查 Dock PID 的代价"。踩到节流会让 Dock 消失一秒多；踩到 `-1` 会杀掉用户的全部进程。
+1. 读本文件 → `docs/PLAN.md`（§3 核心机制、§3.10 桌面命名与 toast、§3.11 无痕与自愈、§4 阶段与验收）→ `docs/spikes.md`（**9 个实验结论，含对计划的多处修正；实验 5 有两个要命发现，实验 6 是节流窗口的判据修正，实验 7 是一条"别再做"的动画结论，实验 8 是"其他项不能新建"，实验 9 是"切桌面黑屏几分钟"的根因**）。
+2. 跑一次基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，确认全绿（应为 **295 个测试通过、零警告**）。
+3. **动 Dock 相关代码前先读 §4 的五条**："launchd 重启节流"、"节流窗口判据"、"`-1` PID 陷阱"、
+   "查 Dock PID 的代价"、"**`launchctl kickstart` 会阻塞几十秒 → 绝不能 `waitUntilExit()`**"。
+   踩到节流会让 Dock 消失一秒多；踩到 `-1` 会杀掉用户的全部进程；踩到同步 `kickstart` 会把整个 App 冻住两分钟
+   （见 `docs/spikes.md` 实验 9）。
 4. 需要动 Dock 的改动，验收用 `MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`；**跑之前先 `defaults export com.apple.dock` 备份，且中途别手动改 Dock**。
-5. 顺手催一下 §6.3 的 A 组（A1–A5 只能人点）：改名、两个按钮、图标条拖拽、**A4 手动拖图标进 Dock 再切走切回**、菜单栏连击。
-6. 顺手催一下 §6.3 的 A 组（A1–A5 只能人点）与 B9（注销/关机）、B10（LaunchAgent 退回）。
+5. **最该催的一条：A6** —— 实验 9 那个"切桌面黑屏几分钟"的修复只过了单测，**必须真机连切十次复验**
+   （核对口径见 §6.3 A6），顺带请用户在设置里把 `计划 任务` 与 `密码 邮件` 两个桌面的 Dock 重抓一次
+   （旧 bug 已把这两条 override 写成 3 个图标、0 个其他项）。
+6. 其余只能人点的：A1–A3、A5（改名框、两个按钮、图标条拖拽、菜单栏连击），
+   外加 **A4 建议补一次真人拖文件夹进 Dock**、B9（注销/关机）、B10（LaunchAgent 退回）。
 7. **多显示器实测**：请用户插一台外接屏，用调试面板的「显示器数量」+ 每个桌面 `displayUUID` 前 8 位核对有没有串。
-8. 可选的两处收尾：Dock 拉不回时的 UI 提示（PLAN §3.9 第 3 条）、降级报警横幅进设置页（PLAN §3.1 末段）。
+8. ~~可选的两处收尾：Dock 拉不回时的 UI 提示、降级报警横幅进设置页~~ → ✅ 都已在 P5+ 做完
+   （设置窗口顶部的 `WarningBanner`）。
 9. 收尾：按 §0 更新本文档 + `git commit`。
 
 > ⚠️ **给写代码的 agent 的一条工程提醒**：同一个文件**不要在同一条消息里发两个编辑** ——
@@ -544,6 +584,59 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-09-19（第 14 次）— 修掉「切一次桌面黑屏几分钟」：主线程被 `launchctl` 冻住 + 三级自激
+
+**做了什么**（用户：「问题：从桌面1切换到桌面2会黑屏几分钟（没有dock、桌面背景也不显示、触控板也不能用）」）：
+
+按 `systematic-debugging` 走，先定根因再动手。**"黑屏"不是显示问题，是 Dock 进程死了 60–126 秒**
+—— Dock 负责画壁纸、也实现触控板的三指左右切换空间，所以"没 Dock / 没壁纸 / 手势失效"是同一条症状。
+今天**没有任何 Dock 崩溃报告**（0 份 `.ips`），排除了实验 8 那条 SIGABRT 崩溃循环。
+
+三条根因，证据在 `docs/spikes.md` **实验 9**：
+
+1. **`RealDockProcessControl.kickstart()` 里那句 `waitUntilExit()` 跑在 `@MainActor` 上，把整个 App 冻住了。**
+   实测 `launchctl kickstart` 在 launchd 退避期间会**阻塞 54 / 60 / 64 秒**返回。
+   铁证：`multidock.log` 里出现 55 s、64 s 的空档，而 500 ms 的存活监视器**两分钟只吐了一行**。
+2. **`DockReloader.timeout` 默认 5 s，量级比 launchd 的退避小一个数量级** → 正常的退避被误判成"SIGHUP 失败"，
+   于是升级到 `SIGTERM` + `kickstart -k`。
+3. **`kickstart -k` 会杀掉 launchd 刚拉活的 Dock**，而存活监视器原本 1 s 就动手、之后每 2 s 再踢一次 →
+   自己维持一段停摆。**这三条互相喂料**，一次切换就能滚成两分钟。
+
+**顺带挖出的第二条缺陷（数据已受损，代码已修）**：`DockWatcher` 在 **Dock 进程不在期间**采样偏好域，
+读回来的是**残缺内容**（3 个 app、0 个其他项，真实是 15 + 1），并被当成"用户手动改动"回存进了 `config.json`。
+→ 用户的 `计划 任务`、`密码 邮件` 两个 override 现在各存着 3 个图标、0 个其他项（`LLM` 那份是好的：15 + 1）。
+**我没有静默改写他的配置** —— 必须请用户在设置里对这两个桌面点「从当前 Dock 抓取」重抓。
+
+**改动（6 处）**：
+
+| 位置 | 改动 |
+| --- | --- |
+| `Dock/DockReloader.swift` | `kickstart()` **不再 `waitUntilExit()`**：`process.run()` 后交给进程内单例 `LaunchctlParking` 持有（防 `Process` 被释放 + 不让发射叠发射）；已有一发在飞时返回 `false` |
+| `Dock/DockReloader.swift` | `timeout` 默认 **5 s → 30 s**（必须大于 launchd 的退避尺度，否则正常等待=失败） |
+| `Dock/DockReloader.swift` | 新增 `isDockAlive`，给 watcher 当存活闸门（一路经 `DockController.isDockAlive` 暴露） |
+| `Dock/DockPresenceMonitor.swift` | 生产默认值放慢：`missThreshold 8`（4 s）、`kickstartEvery 60`（30 s）、`persistentFailureThreshold 120`（60 s）—— 报警要让位于退避，别在退避中途喊"拉不回来" |
+| `Dock/DockWatcher.swift` | 注入 `isDockPresent` 闸门：**Dock 不在时一律不采样**；回来那一刻先 `needsRebaseline` 重新记基线，再判用户改动 |
+| `App/AppState.swift` | watcher 接线传 `isDockPresent: { dockController.isDockAlive }` |
+
+**验收证据**：
+
+- `swift build --disable-sandbox` → `Build complete!`，**零警告**（顺手把 `DockAcceptanceTests.swift:316`
+  一条既有的 "unused result" 警告收掉，回到零警告标准）。
+- `swift test --disable-sandbox` → **295 个测试，7 跳过，0 失败**（290 → 295，+5）。
+  新增：默认值两条（`testDefaultWaitsFourSecondsOfAbsenceAndThenRests` /
+  `testDefaultDoesNotWarnDuringLaunchdBackoff`）、watcher 两条（不在时不采样 / 回来先重基线）、
+  `isDockAlive` 一条（用 `pid: nil` 与 `LyingProcess(pid: -1)` 守住"-1 不算活着"）。
+- **本会话刻意没有碰用户的真实 Dock**：没有重启 App、没有跑真机验收套件 —— 那会对他正在用的会话
+  产生可见副作用。所以真机复验挂成 §6.3 的 **A6**。
+
+**未解决的事**：
+
+1. ⚠️ **A6：真机连切十次复验**（唯一还欠的）—— 看 `multidock.log` 里 `Dock 不可用` 回到约 100 ms 量级、
+   且不再出现「检测到 Dock 不在…已用 launchctl 拉回」。
+2. ⚠️ **两个被写坏的 override 要用户重抓**（`计划 任务` / `密码 邮件`）—— 代码修了，数据没修。
+3. `LaunchctlParking` 只在**进程内**去重；理论上两条路径（监视器 + reloader 降级）仍可能各发一发，
+   但因为都不再等待，最坏是多一次 `kickstart` 调用而不是冻结。
 
 ### 2026-09-19（第 13 次）— toast 换皮：黑色色块 → 跟随亮/深色的原生 HUD 胶囊
 

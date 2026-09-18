@@ -359,7 +359,8 @@ final class AppState {
             currentFingerprint: { [weak self] in self?.dockController.currentComparableFingerprint() },
             appliedFingerprint: { [weak self] in self?.dockController.appliedComparableFingerprint },
             readLiveConfig: { [weak self] in self?.dockController.captureLiveConfig() },
-            onUserEdit: { [weak self] config in self?.handleUserDockEdit(config) },
+            isDockPresent: { [weak self] in self?.dockController.isDockAlive ?? false },
+            onUserEdit: { [weak self] in self?.handleUserDockEdit($0) },
             log: { [weak self] message in self?.append(.info, message) }
         )
         watcher.start()

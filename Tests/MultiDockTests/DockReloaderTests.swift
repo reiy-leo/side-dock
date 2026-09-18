@@ -78,6 +78,17 @@ final class DockReloaderTests: XCTestCase {
         XCTAssertEqual(process.kickstartCount, 0)
     }
 
+    func testIsDockAliveReflectsTheProcessControl() {
+        // `DockWatcher` 的回存闸门靠它：Dock 不在时读偏好域会读到残缺内容。
+        // 这里只问存活，不重启，所以用默认构造（不会睡那 1 秒节流窗口）。
+        XCTAssertTrue(DockReloader(process: FakeDockProcess(pid: 100, restartsOn: [SIGHUP])).isDockAlive)
+        XCTAssertFalse(DockReloader(process: FakeDockProcess(pid: nil)).isDockAlive)
+
+        // -1 是"正在退出"的谎报值（见 §4 的 PID 陷阱），不能算活着。
+        XCTAssertFalse(DockReloader(process: LyingProcess(pid: -1, lies: .max)).isDockAlive,
+                       "-1 不是有效的 Dock 进程")
+    }
+
     func testReportsFailureWhenDockNeverComesBack() async {
         let process = FakeDockProcess(restartsOn: [], kickstartRestarts: false)
         let outcome = await makeReloader(process).reload(strategy: .auto)

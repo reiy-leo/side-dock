@@ -107,6 +107,9 @@ final class DockController {
         self.backup = backup
         self.onOutcome = onOutcome
     }
+    /// Dock 进程此刻在不在。走 `reloader` 的进程控制，所以测试里同样是替身。
+    var isDockAlive: Bool { reloader.isDockAlive }
+
     /// 当前 Dock 域里存在、因而可以安全写入的白名单键。
     func presentWhitelistedKeys() -> Set<String> {
         Set(preferences.readDomain().keys).intersection(DockPreferences.whitelistedKeys)

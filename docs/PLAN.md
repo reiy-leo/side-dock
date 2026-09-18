@@ -265,7 +265,15 @@ struct AppSettings: Codable {
 
 **体验补偿**（仍然有效）：3.4 的"内容相同则跳过"让共用同一份 Dock 的桌面切换零开销、零闪烁；"预应用"让切换动画结束时 Dock 已正确。
 
-> **P2 实现记录**：`DockReloader.reload(strategy:)` 按 **SIGHUP → SIGTERM → `launchctl kickstart`** 三级降级，每级都轮询等一个**不同于旧 PID** 的新 Dock 进程出现（判据是 PID 变化，不是"Dock 还在"）。超时默认 5 s，`fallbackGrace`（默认 500 ms）是发完 SIGTERM 后、动 kickstart 之前的宽限。实测 SIGHUP 每次一次过，`verifyAttempts == 1`。
+> **P2 实现记录**：`DockReloader.reload(strategy:)` 按 **SIGHUP → SIGTERM → `launchctl kickstart`** 三级降级，每级都轮询等一个**不同于旧 PID** 的新 Dock 进程出现（判据是 PID 变化，不是"Dock 还在"）。`fallbackGrace`（默认 500 ms）是发完 SIGTERM 后、动 kickstart 之前的宽限。实测 SIGHUP 每次一次过，`verifyAttempts == 1`。
+>
+> **2026-09-19 两处修正**（真机"切一次桌面黑屏几分钟"，见 `docs/spikes.md` 实验 9）：
+> ① 每级的超时从 5 s 提到 **30 s**。5 s 短于 launchd 的退避尺度（实测几十秒），于是一次正常的慢拉起
+> 被误判成"SIGHUP 失败"，紧接着升级到 `SIGTERM` + `kickstart -k` —— 那一发 `-k` 把 launchd 正要拉起的
+> Dock 又杀一次，退避被自己续上，缺失从 1 秒滚到 119 秒。
+> ② **`kickstart()` 绝不能 `waitUntilExit()`**：launchd 在退避时这条命令会阻塞几十秒（实测 54 / 60 / 64 s），
+> 而它跑在 `@MainActor` 上，整个 App 连带冻住（存活监视器本该每 2 秒一行日志，那两分钟里只有一行）。
+> 现在发完就走、子进程由 `LaunchctlParking` 持有到退出，且**在飞的不叠加**（重复 `-k` 正是退避的成因）。
 >
 > **P0 的竞态风险实测未发生**：多轮 apply 都是第一次校验就过。重试路径由单测 `testRetriesOnceWhenDockDidNotTakeTheWrite` 用"第一次写入被吞掉"的替身覆盖。
 >
@@ -389,6 +397,10 @@ struct AppSettings: Codable {
 - 指纹变化且不在 3 秒保护窗口内（我们自己刚写完）→ 判定为用户在真实 Dock 上手动改动 → 覆盖当前桌面的配置（用默认 Dock 的桌面则更新默认 Dock），覆盖前存一份历史版本。
 - 可在设置里关闭自动回存；关闭后只认 App 内的编辑。
 - **与还原的边界**：还原期间（退出流程中）Watcher 必须停止，否则会把还原动作误判成用户改动写进配置。
+- **与 Dock 存活的边界**（2026-09-19 加，`isDockPresent` 闸门）：**Dock 进程不在时一律不采样**。
+  那个窗口里偏好域读回来是残缺的 —— 真机实测读到「3 个图标、0 个其他项」（真实 Dock 是 15 + 1），
+  被当成用户改动回存，把两个桌面的 override 写坏了。Dock 回来之后的第一次读只用来**对齐基线**
+  （`needsRebaseline`），不补一次回存 —— 中间态本来就无法和用户改动区分。
 
 > **P3 实现记录（2026-09-18）—— 判据与计划原文不同，以这里为准**
 >
@@ -424,13 +436,16 @@ struct AppSettings: Codable {
 
 - 登录项优先 `SMAppService.mainApp`；未签名构建下注册失败则退回 `~/Library/LaunchAgents/local.multidock.loginitem.plist`（`RunAtLoad`，**刻意不设 `KeepAlive`**：这是登录启动项不是守护进程，退出 App 后不该被反复拉起）。
 - 启动顺序固定为：**检测残留 session.state → 必要时还原基准 → 应用当前桌面配置 → 建立会话标记**。
-- Dock 重启后 3 秒未归位 → `launchctl kickstart -k` 兜底；仍异常则提示从备份恢复。
-  ✅ **已落地（2026-09-18）**：`DockPresenceMonitor` 连续缺失达到 `persistentFailureThreshold`
-  （默认 12 轮 × 500 ms ≈ 6 秒）还没回来 → 回调 `onPersistentlyDown` 一次 →
+- Dock 重启后未归位 → 先**等**，等满了才 `launchctl kickstart -k` 兜底；仍异常则提示从备份恢复。
+  ✅ **已落地（2026-09-18），阈值 2026-09-19 重定过**：`DockPresenceMonitor` 连续缺失达到
+  `missThreshold`（默认 8 轮 × 500 ms = **4 秒**）才动手，之后每 `kickstartEvery`（60 轮 = **30 秒**）
+  才催一发；缺失满 `persistentFailureThreshold`（120 轮 = **60 秒**）→ 回调 `onPersistentlyDown` 一次 →
   `AppState.dockFailureWarning` → 设置窗口顶部**红色**横幅，带「再试一次拉回」与
   「立即还原到原始 Dock」两个按钮；Dock 回来后自动撤报警并弹一条 toast。
   判据刻意用**缺失轮数**而不是 `kickstart()` 的返回值 —— 那个返回值只说明 `launchctl`
   命令跑起来了，不说明 Dock 回来了。
+  ⚠️ 原来的「1 秒就动手 + 每 2 秒催一发」会把一次正常的慢恢复**自我放大成 60–126 秒的 Dock 死亡**，
+  而且当时 `kickstart` 是同步 `waitUntilExit`，主线程连带冻住 —— 见 §3.5 末与 `docs/spikes.md` 实验 9。
 
 > **P4 实现记录（2026-09-18）** —— 本节已全部落地。几处与原文不同、且不能"改回去"的地方：
 >

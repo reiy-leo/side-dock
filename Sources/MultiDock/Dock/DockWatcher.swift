@@ -25,6 +25,8 @@ final class DockWatcher {
     private let appliedFingerprint: @MainActor () -> String?
     /// 读当前真实 Dock 的配置（回存用）。
     private let readLiveConfig: @MainActor () -> DockConfig?
+    /// Dock 进程此刻在不在。**不在就一律不采样**（见 `tick()`）。
+    private let isDockPresent: @MainActor () -> Bool
     /// 发现手动改动时回调。
     private let onUserEdit: @MainActor (DockConfig) -> Void
     private let log: @MainActor (String) -> Void
@@ -32,6 +34,8 @@ final class DockWatcher {
     private let pollInterval: Duration
     private var pollTask: Task<Void, Never>?
     private var lastSeenFingerprint: String?
+    /// Dock 缺失过一轮 → 回来之后先把当时的指纹当成新基线，不把它算成"用户改了"。
+    private var needsRebaseline = false
 
     /// 累计识别到几次手动改动。调试面板可见。
     private(set) var detectedCount = 0
@@ -43,6 +47,7 @@ final class DockWatcher {
         currentFingerprint: @escaping @MainActor () -> String?,
         appliedFingerprint: @escaping @MainActor () -> String?,
         readLiveConfig: @escaping @MainActor () -> DockConfig?,
+        isDockPresent: @escaping @MainActor () -> Bool = { true },
         onUserEdit: @escaping @MainActor (DockConfig) -> Void,
         log: @escaping @MainActor (String) -> Void = { _ in }
     ) {
@@ -50,6 +55,7 @@ final class DockWatcher {
         self.currentFingerprint = currentFingerprint
         self.appliedFingerprint = appliedFingerprint
         self.readLiveConfig = readLiveConfig
+        self.isDockPresent = isDockPresent
         self.onUserEdit = onUserEdit
         self.log = log
     }
@@ -76,6 +82,21 @@ final class DockWatcher {
 
     /// 单次检查。测试直接调它，不用等轮询。
     func tick() {
+        // ⚠️ **Dock 进程不在时一律不采样。** 那时偏好域读回来的是残缺内容 —— 真机踩过：
+        // Dock 死掉的窗口里读到「3 个图标、0 个其他项」（真实 Dock 是 15 + 1），
+        // 被当成"用户的手动改动"回存进了那个桌面的配置，把好端端的 override 写坏了。
+        // 缺失期间发生的变化本来就分不清是用户改的还是重启中间态，所以回来之后
+        // 先把当时的状态认成新基线，不补一次回存。
+        guard isDockPresent() else {
+            needsRebaseline = true
+            return
+        }
+        if needsRebaseline {
+            needsRebaseline = false
+            lastSeenFingerprint = currentFingerprint()
+            isDiverged = false
+            return
+        }
         guard let fingerprint = currentFingerprint() else { return }
         guard fingerprint != lastSeenFingerprint else { return }
         lastSeenFingerprint = fingerprint

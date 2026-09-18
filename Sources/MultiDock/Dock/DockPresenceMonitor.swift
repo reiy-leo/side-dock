@@ -9,8 +9,11 @@ import Foundation
 /// 两个刻意的设计：
 /// 1. **连续缺失达到阈值才算数**。Dock 重启窗口里本来就有一瞬间查不到（P0 实测），
 ///    一次缺失就动手会让每次正常切换都白打一次 `launchctl`。
-/// 2. **拉回不是每轮都打**。判定不在之后按 `kickstartEvery` 间隔重试，
-///    否则 500 ms 一次轮询会把 `launchctl` 打成风暴（`launchctl` 是子进程，一次约 10 ms）。
+/// 2. **拉回不是每轮都打，而且打得越勤越糟**。判定不在之后按 `kickstartEvery`（默认 30 秒）
+///    间隔重试。2026-09-19 真机踩过反面：默认值曾经是「1 秒就动手 + 每 2 秒催一发」，
+///    每一发 `launchctl kickstart -k` 都会把 launchd 正要拉起的 Dock 再杀一次并加深退避，
+///    于是每次切换的 Dock 缺失被自我放大成 60–126 秒（`docs/spikes.md` 实验 8.5 同结论：
+///    **静置等待比反复 `kickstart` 更快**）。
 /// 3. **拉不回来要吭声**。缺失持续到 `persistentFailureThreshold` 轮还没回来，
 ///    就回调 `onPersistentlyDown` 一次，让 UI 提示用户从备份恢复 ——
 ///    静默重试到天荒地老等于"用户面对一个没有 Dock 的桌面且不知道为什么"（计划 §3.9 第 3 条）。
@@ -19,11 +22,20 @@ final class DockPresenceMonitor {
 
     private let process: any DockProcessControlling
     private let pollInterval: Duration
-    /// 连续缺失多少次才判定「Dock 真的不在了」。
+    /// 连续缺失多少次才判定「Dock 真的不在了」（默认 8 轮 = 4 秒）。
+    ///
+    /// 这个数**必须比 launchd 的正常拉起时间长**：`kill -9` 之后实测 1072 ms 归位，
+    /// 而退避期是几十秒。1 秒就动手会在 launchd 正要拉起时插一发 `kickstart -k`，
+    /// 把一次慢恢复滚成持续的 Dock 死亡（2026-09-19 真机踩过，见 `docs/spikes.md` 实验 8.5）。
     private let missThreshold: Int
-    /// 判定不在之后，每隔多少次轮询重试一次拉回。
+    /// 判定不在之后，每隔多少次轮询重试一次拉回（默认 60 轮 = 30 秒）。
+    ///
+    /// 刻意稀疏：反复 `kickstart` 只会加深 launchd 的递增退避，**静置等待比反复催更快**。
     private let kickstartEvery: Int
     /// 连续缺失达到这么多次轮询还没回来 → 判定「拉不回来」，报给 UI（计划 §3.9 第 3 条）。
+    ///
+    /// 默认 120 轮 = 60 秒。尺度是 launchd 的退避，不是我们的轮询：几十秒的缺失在本机是
+    /// 「系统正在恢复」，此时就报警会把一次正常恢复说成故障。
     private let persistentFailureThreshold: Int
     private let log: @MainActor (String) -> Void
 
@@ -55,9 +67,9 @@ final class DockPresenceMonitor {
     init(
         process: any DockProcessControlling = RealDockProcessControl(),
         pollInterval: Duration = .milliseconds(500),
-        missThreshold: Int = 2,
-        kickstartEvery: Int = 4,
-        persistentFailureThreshold: Int = 12,
+        missThreshold: Int = 8,
+        kickstartEvery: Int = 60,
+        persistentFailureThreshold: Int = 120,
         log: @escaping @MainActor (String) -> Void = { _ in }
     ) {
         self.process = process

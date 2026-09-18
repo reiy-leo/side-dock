@@ -289,4 +289,43 @@ final class DockPresenceMonitorTests: XCTestCase {
         XCTAssertTrue(reports.value.isEmpty, "阈值被抬到 missThreshold+1=7，第 6 轮不该报警")
         XCTAssertEqual(process.kickstartCount, 1, "第 6 轮该动手拉回")
     }
+
+    // MARK: - 生产默认值：不能和 launchd 的退避抢着动手
+
+    func testDefaultWaitsFourSecondsOfAbsenceAndThenRests() {
+        // 真机踩过（2026-09-19）：默认值曾经是「1 秒就动手 + 每 2 秒催一发 `kickstart -k`」。
+        // 每一发 `-k` 都把 launchd 正要拉起的 Dock 再杀一次，一次慢恢复被自我放大成
+        // 60–126 秒的 Dock 缺失（用户侧就是"切一次桌面黑屏几分钟"）。
+        // 默认值现在的契约：缺失满 4 秒才动手，之后每 30 秒才催一发。
+        let process = FlakyDock(pid: 400, recoversOnKickstart: false)
+        let monitor = DockPresenceMonitor(process: process)
+
+        process.vanish()
+        for _ in 0..<7 { monitor.tick() }
+        XCTAssertEqual(process.kickstartCount, 0, "缺失 3.5 秒还在 launchd 的正常恢复尺度里，不该动手")
+
+        monitor.tick()
+        XCTAssertEqual(process.kickstartCount, 1, "满 4 秒才补第一发")
+
+        for _ in 0..<59 { monitor.tick() }
+        XCTAssertEqual(process.kickstartCount, 1, "之后 30 秒内不该再催 —— 静置等待比反复 kickstart 更快")
+
+        monitor.tick()
+        XCTAssertEqual(process.kickstartCount, 2)
+    }
+
+    func testDefaultDoesNotWarnDuringLaunchdBackoff() {
+        // 报警的尺度也对齐退避：几十秒的缺失在本机是"系统正在恢复"，那时报警等于报故障。
+        let process = FlakyDock(pid: 400, recoversOnKickstart: false)
+        let monitor = DockPresenceMonitor(process: process)
+        let reports = Box<[String]>([])
+        monitor.onPersistentlyDown = { reports.value.append($0) }
+
+        process.vanish()
+        for _ in 0..<119 { monitor.tick() }
+        XCTAssertTrue(reports.value.isEmpty, "缺失 59.5 秒还在正常恢复窗口内")
+
+        monitor.tick()
+        XCTAssertEqual(reports.value.count, 1, "满 60 秒才吭声，且只吭一次")
+    }
 }

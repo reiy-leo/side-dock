@@ -313,7 +313,7 @@ final class DockAcceptanceTests: XCTestCase {
         )
 
         let process = RealDockProcessControl()
-        try XCTUnwrap(process.dockPID(), "拿不到 Dock PID，验收无意义")
+        _ = try XCTUnwrap(process.dockPID(), "拿不到 Dock PID，验收无意义")
 
         let monitor = DockPresenceMonitor(
             process: process,
