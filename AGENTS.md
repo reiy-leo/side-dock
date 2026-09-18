@@ -136,6 +136,7 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | 桌面命名 | `Spaces/DesktopNaming.swift` | 归一化（≤10 字素簇）、显示名解析、改名/改 override 规则；**纯函数，全部有单测** |
 | toast 调度 / 窗口 | `UI/ToastPresenter.swift`、`UI/DesktopNameToast.swift` | 纯逻辑调度 + 无边框窗口；跨空间、不抢焦点、零权限 |
 | toast 验收工具 | `scripts/check-toast-window.sh` | 用 `CGWindowListCopyWindowInfo` 读窗口元数据（零权限），`--watch` 报告出现/消失时刻 |
+| toast 外观预览器 | `scripts/preview-toast.swift` | 在假壁纸上画亮/深色胶囊并输出 PNG（`cacheDisplay` 抓自己的视图，**零权限**）。⚠️ 它是 `DesktopNameToast.swift` 的**副本**，改了那边要同步这里，否则预览骗人 |
 | P0 实验脚本 | `scripts/spike-*.{sh,swift}` | 重载策略 / 切桌面 / 停机时长 / 探测（含显示器 UUID 映射） |
 | 打包脚本 | `scripts/build-app.sh` | 编译 → 组装 `.app` → ad-hoc 签名 |
 | 显示器名解析 | `Spaces/ScreenNaming.swift` | `displayUUID → NSScreen.localizedName`；**纯解析可单测**，映射不到时如实说"未识别"而不回落成错的屏。桌面页据此按显示器分组 |
@@ -336,10 +337,12 @@ A4 的**逻辑侧已自动化**（`DockAcceptanceTests.testExternalDockChangeIsC
 | 空间字典字段 | 键是 **`uuid`** / `ManagedSpaceID` / `id64` / `type` / `WindowManagerInfo`（**不是** `ManagedSpaceUUID`）；display 字典另有 `Current Space` 可直取当前空间。**无名称字段** → App 内命名只能存本地 |
 | **displayUUID → `NSScreen` 映射** | ✅ **实测一致**（2026-09-18）：`CGDisplayCreateUUIDFromDisplayID(NSScreen.deviceDescription["NSScreenNumber"])` = `AB24BB32-C5EC-D10A-6F9D-F01F35552F60`，与 SkyLight 的 `Display Identifier` 逐字符相同 → 能把 toast 放到正确的显示器上。探测脚本 `scripts/spike-probe.swift`（已加 `screens` 段，文本与 `--json` 两种输出都有） |
 | 屏幕几何 | 主屏 `frame` = (0,0,1920,1200)，`visibleFrame` = (0,53,1920,1147)（Dock 在底部未自动隐藏）。toast 定位用 `visibleFrame`，天然避开菜单栏与 Dock |
-| **toast 窗口几何（实测）** | 距可见区顶部 80 pt、水平居中时窗口落在 `x=916 y=80 w=87 h=39`（名字「桌面 2」）与 `x=863 y=80 w=193 h=39`（10 个中文）→ 窗口中心 959.5 ≈ 主屏 midX 960 ✅。`layer=25`、`alpha=1.00` |
+| **toast 窗口几何** | 水平居中、顶边距可见区顶部 80 pt（不变）。**2026-09-19 起改为定高胶囊**：高 32、宽 = 文字宽 + 2×14、下限 76。⚠️ 旧实测值 `w=87 h=39` / `w=193 h=39` 是**改版前**（字号 15、内边距 20/10）的数，**新几何待真机重测**（`scripts/check-toast-window.sh --watch`；它的判别式是 `height >= 30`，32 仍命中）。`layer=25`、`alpha=1.00` 不变 |
+| **toast 外观（2026-09-19 改版）** | 从"固定黑底 0.78 + 白字"换成**跟随系统外观的原生 HUD 胶囊**：`NSVisualEffectView`（`material = .popover`、`blendingMode = .behindWindow`、`state = .active`）+ `maskImage` 裁圆角（**`NSVisualEffectView` 没有 `cornerRadius`**，那是 UIKit 的）+ 1 px 动态描边（亮色黑 0.12 / 深色白 0.16）+ 文字 `labelColor`、14 pt semibold。零权限不变 |
+| **无屏幕录制权限也能看到自己的视图长什么样** | `NSView.bitmapImageRepForCachingDisplay` + `cacheDisplay(in:to:)` 抓**自己窗口**的内容不需要任何权限（`screencapture` 拍整屏才需要）。`scripts/preview-toast.swift` 就是这么出亮/深两张预览图的。代价：预览用 `.withinWindow` 模糊窗口内的假壁纸，真机用 `.behindWindow` 模糊屏幕内容 —— **材质色调/圆角/描边/字体一致，模糊的实际画面不一致** |
 | **`orderOut` 后窗口会在 CG 窗口列表里滞留** | 窗口被 `orderOut` 后 `kCGWindowIsOnscreen` 立刻变 false，但那条记录**还会在列表里留好几秒**才真正消失。用窗口元数据核对「消失」时刻时**必须滤掉 `onscreen == false`**，否则时长会晚报 |
 | **`CGWindowListCopyWindowInfo` 读元数据零权限** | 实测在无屏幕录制权限下能读到 `kCGWindowLayer` / `kCGWindowAlpha` / `kCGWindowBounds` / `kCGWindowIsOnscreen`（**读不到 `kCGWindowName`**，那是被系统抹掉的）。所以窗口类验收完全不需要权限 |
-| 菜单栏图标（补充） | 自动隐藏菜单栏时状态栏窗口在 `y=-24`、`onscreen=false`、约 51×24 —— 与 toast（`y=80`、高 39、水平居中）天然可区分 |
+| 菜单栏图标（补充） | 自动隐藏菜单栏时状态栏窗口在 `y=-24`、`onscreen=false`、约 51×24 —— 与 toast（`y=80`、高 32、水平居中）天然可区分 |
 | 主动切桌面 | `CGSManagedDisplaySetCurrentSpace(cid, displayUUID, spaceID)` **可用**，**实测 0–6 ms 生效（瞬时提交，没有动画）** |
 | **切桌面没有动画，且做不到**（2026-09-18 复核，`spikes.md` 实验 7） | 程序化切空间是**硬切**：3 轮实测 **6 / 0 / 0 ms**。想加"左右滑动"的四条路全断：① `SLSManagedDisplaySetIsAnimating` 是**粘滞状态位**（置位后 600 ms 内 **101/101** 次采样仍为 true，不会自复位），**且它的返回值是 void ABI 残留寄存器** —— 同一次运行 8 次调用恒为 `-785121165`，换一次运行变成 `-2752379`，**不能当成功标志**；② 会话级开关 `SLSSetSessionSwitchCubeAnimation`（值 `cube`/`transition`/`none`/`""`，对应 `kSLSSessionSwitchTransitionType*`）**只有 set 没有 get**，偏好域里也没有（`CGSessionCopyCurrentDictionary()` 仅 11 个键，全审计/用户/登录态），扫遍 `__TEXT` 5,037,056 字节只有函数名本身 → **改了还原不回去，破无痕原则**；③ `SLSWillSwitchSpaces` 按 `(cid, CFArray)` 试直接 **SIGSEGV**（`array_call_as_integer_list`），签名未知，**别再拿图形会话试错**；④ 合成按键事件被拦（`CGPreflightPostEventAccess()` 返回 true，但**阳性对照合成 `Cmd+Tab` 也不生效**）。真正的过渡在 WindowServer 内部的 `Transition{Slide,Cube,Flip,Blend,Shrink,Spiral,Drop,RadialBlur}Metal`，只服务用户手势 |
 | **枚举私有框架导出符号的方法** | `nm` 在磁盘上找不到 SkyLight（框架在 dyld 共享缓存里，磁盘无实体文件）。要在**进程内**解析：`_dyld_get_image_header` 拿镜像 → 遍历 `LC_SEGMENT_64` 取 `__LINKEDIT`/`__TEXT` → **`LC_SYMTAB.symoff`/`stroff` 是共享缓存内的文件偏移**，必须先经 `__LINKEDIT` 换算成 vmaddr 再取指针，直接当指针用会 SIGSEGV。脚本 `scripts/spike-symbols.swift`，本机 SkyLight 共 **23,474** 个导出符号 |
@@ -541,6 +544,64 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-09-19（第 13 次）— toast 换皮：黑色色块 → 跟随亮/深色的原生 HUD 胶囊
+
+**做了什么**（用户：「这是当前的 toast，太丑了，重新设计，支持亮色、深色主题」+ 一张截图）：
+
+诊断（对着截图说的，不是泛泛"不够现代"）：问题不是"黑底白字"这个配色本身，而是那块
+**78% 不透明的黑色圆角矩形太厚太实** —— 高 39、内边距 20/10、字号 15，像从别的系统贴过来的色块，
+和 macOS 自己的瞬时 HUD 不是一个语言；而且**亮/深色下是同一块死黑**，完全没有跟随外观。
+
+改版（只动 `UI/DesktopNameToast.swift` 的呈现层，`ToastPresenter` 一行没改）：
+
+| 维度 | 旧 | 新 |
+| --- | --- | --- |
+| 底 | `NSColor.black.withAlphaComponent(0.78)` 固定色 | `NSVisualEffectView`，`material = .popover`、`blendingMode = .behindWindow`、`state = .active` |
+| 形状 | 圆角矩形 r=12 | **定高胶囊** 32 高、r=16；宽 = 文字宽 + 2×14，下限 76（单字名字不缩成一颗圆） |
+| 边 | 无 | 1 px 动态描边：亮色 `black 0.12` / 深色 `white 0.16` |
+| 字 | 15 medium 固定白 | 14 semibold `labelColor`（跟着材质走） |
+
+**为什么用 vibrancy（推翻文件里原来那句"不用 vibrancy"）**：原理由是"要浮在任意背景上，固定深色底更可控"。
+`.popover` + `.behindWindow` 恰恰是为这个场景造的 —— 它模糊**身后真实的内容**，所以在任意壁纸/别人家全屏 App
+上都保证可读，同时自动跟随亮/深色。固定黑底是在逃避这个问题。
+
+**实现坑（新记录，已进 §4）**：
+
+1. **`NSVisualEffectView` 没有 `cornerRadius`**（那是 UIKit 的 `UIView`）。编译直接报错。
+   圆角只能靠 `maskImage`，而**遮罩会被拉伸到视图边界** —— 所以必须**按当前宽度现画一张 1:1 的图**，
+   复用一张固定尺寸的会把两端的小圆角扯成椭圆。
+2. **动态色在 `draw(_:)` 里免费生效**：`NSColor(name:dynamicProvider:)` 在绘制时按
+   `NSAppearance.current` 解析，所以换外观只需 `viewDidChangeEffectiveAppearance` 里 `needsDisplay = true`，
+   不需要自己维护两套颜色常量。
+3. **定高是硬要求**：旧版高度按文字高度算，名字长短会让胶囊高度变化 —— 每次切桌面都能看到一次跳动。
+4. **`check-toast-window.sh` 的判别式是 `height >= 30`**，改成 32 仍然命中；**没有**为了迁就脚本而留 39。
+
+**没做的事（有意）**：不加淡入淡出。文件里原本就写明"提示只活 1 秒，动画会吃掉可感知的停留时间、
+让计时核对变糊"，这条契约比观感重要。想要 100 ms 淡入可以做在**内容层透明度**上（不破 `kCGWindowAlpha == 1`
+的判别式），等用户开口。
+
+**新增验收工具 `scripts/preview-toast.swift`**：本机没有屏幕录制权限、`screencapture` 只拍到壁纸，
+所以改用 `bitmapImageRepForCachingDisplay` + `cacheDisplay(in:to:)` 抓**自己窗口**的内容（零权限），
+在假壁纸上输出亮/深两张 PNG。**已产出并看过两张图：材质、圆角、描边、字号在两种外观下都成立。**
+⚠️ 它用 `.withinWindow`（模糊窗口内的假壁纸）而真机用 `.behindWindow`（模糊屏幕内容），
+**色调/圆角/描边/字体一致，模糊到的实际画面不一致** —— 所以它是"定形状和颜色"的工具，不替代真机一眼。
+它也是 `DesktopNameToast.swift` 的**代码副本**，改那边要同步这边。
+
+**验收证据**：
+
+- `swift build --disable-sandbox` → `Build complete!`，**零警告**。
+- `swift test --disable-sandbox` → **290 个测试，7 跳过，0 失败**（一个都没改，纯呈现层）。
+- `./scripts/build-app.sh` → release 编译 + 打包通过。
+- `swift scripts/preview-toast.swift /tmp/toast-preview` → 两张 PNG 已生成并逐张看过。
+
+**未解决的事**：
+
+1. ⚠️ **真机一眼没看**。要用户跑 `./scripts/build-app.sh && open build/MultiDock.app`，
+   切一次桌面（或调试面板 →「测试 toast」），在**亮色和深色各看一次**。
+   我没有替用户启动 App 并程序化切桌面 —— 那会连带触发他的逐桌面 Dock 应用，属于对用户 Dock 的可见副作用，先问。
+2. §4 里 toast 的**新几何数值（w=？）待真机重测**；旧值 87×39 / 193×39 已标注为改版前的数。
+3. 亮/深色之外没做"跟随壁纸取色"之类的强调色 —— 系统 HUD 也不做。
 
 ### 2026-09-18（第 12 次）— 收口三处计划缺口；**顺带着把 Dock 搞崩了一次，结论钉死"其他项不能新建"**
 

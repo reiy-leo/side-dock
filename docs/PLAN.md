@@ -83,6 +83,7 @@ multi-dock/
 ├── scripts/spike-switch.swift          P0 实验：主动切桌面 + 通知是否触发
 ├── scripts/spike-dock-downtime.swift   P0 实验：毫秒级测 Dock 停机时长
 ├── scripts/check-toast-window.sh       客观验收 toast：用 CGWindowListCopyWindowInfo 读窗口层/透明度/坐标（零权限）
+├── scripts/preview-toast.swift         离线预览 toast 外观：假壁纸上画亮/深两颗胶囊出 PNG（cacheDisplay 抓自己的视图，零权限）
 ├── scripts/check-fullscreen-filter.swift  真机回归全屏过滤：把本进程窗口切成全屏造出 type=4 空间（零权限）
 ├── scripts/spike-symbols.swift         枚举 SkyLight 导出符号（内存内解析 Mach-O，零权限，查"有没有对应私有 API"）
 ├── docs/spikes.md                      P0 结论（含对本文档的多处修正）
@@ -498,12 +499,36 @@ struct AppSettings: Codable {
 - **零权限**（硬约束 §2.5）：这就是本 App 自己的一个窗口，不涉及辅助功能、屏幕录制、root。
 - 设置页给一个开关「切换桌面时显示桌面名称」（**默认开**）。不想要的人能关掉。
 
+#### 外观（2026-09-19 改版：跟随亮/深色的原生 HUD 胶囊）
+
+原先是"固定黑底 `black 0.78` + 白色 15 pt medium，圆角 12，内边距 20/10"。文件里当时的理由是
+"要浮在任意背景上，固定深色底比跟随外观更可控" —— **这个理由被推翻**：`.popover` 材质配
+`blendingMode = .behindWindow` 正是为"压在任意内容之上仍可读"而生的，它模糊的是**身后真实的内容**。
+固定黑底是在逃避这个问题，代价是亮/深色下都是同一块死黑、而且厚重得像别的系统贴过来的色块。
+
+| 维度 | 规格 | 为什么 |
+| --- | --- | --- |
+| 底 | `NSVisualEffectView`，`material = .popover`、`blendingMode = .behindWindow`、`state = .active` | 自动跟随亮/深色；`.active` 是必需的 —— 本 App 是 `LSUIElement`，窗口永远不会 key，不指定就会走灰掉的 inactive 呈现 |
+| 形状 | **定高胶囊**：高 32、圆角 16；宽 = 文字宽 + 2×14，**下限 76** | 定高：高度若随文字变化，名字长短会让每次切换都看到一次跳动。下限：单字名字不能缩成一颗圆 |
+| 圆角怎么来 | `maskImage`，**每次 show 按当前宽度现画一张 1:1 的图** | `NSVisualEffectView` **没有** `cornerRadius`（那是 UIKit）；而遮罩会被拉伸到视图边界，复用固定尺寸的图会把两端小圆角扯成椭圆 |
+| 描边 | 1 px 内描边，动态色：亮色 `black 0.12` / 深色 `white 0.16` | 亮色下材质接近纯白，压在浅色壁纸上会和背景糊在一起，这条边是唯一把它撑出来的东西 |
+| 文字 | `labelColor`，14 pt semibold | `labelColor` 在 vibrancy 视图里跟着材质走；semibold 是为了压在忙背景上仍读得清 |
+| 位置 | 不变：水平居中、顶边距 `visibleFrame` 顶部 80 pt | §6 第 3 条已按 80 pt 实现 |
+| 动效 | **无**（`animationBehavior = .none`） | 提示只活 1 秒，淡入淡出会吃掉可感知的停留时间，也让 `check-toast-window.sh` 的计时核对变糊。要做的话做在**内容层透明度**上，别动 `window.alphaValue`（脚本断言 `kCGWindowAlpha == 1`） |
+
 **验收（本机不能截图，见 `AGENTS.md` §4）**：
 
-1. 纯逻辑单测覆盖：1 秒到期消失、1 秒内连击取消重启、启动首次不弹、全屏返回不弹、无自定义名回落「桌面 N」、开关关闭时不弹但记账仍更新。
-2. 窗口本身用 **`CGWindowListCopyWindowInfo`** 客观验证（`scripts/check-toast-window.sh`，支持 `--watch`）：MultiDock 的 toast 窗口会出现，`layer == 25`、`alpha == 1`、bounds 水平居中且贴近屏幕顶部；1 秒后该窗口消失。**读窗口元数据不需要屏幕录制权限**（只有抓图 `kCGWindowImage` 才需要）——与 P1 验证菜单栏图标（layer 25）同一手法。
+- **纯逻辑单测**覆盖：1 秒到期消失、1 秒内连击取消重启、启动首次不弹、全屏返回不弹、无自定义名回落「桌面 N」、开关关闭时不弹但记账仍更新。**这次改版一行测试都不用改** —— 调度在 `ToastPresenter`（纯逻辑），外观在 `DesktopNameToastWindow`，两者本来就分开。
+1. 外观本身用 **`scripts/preview-toast.swift`** 出图：`cacheDisplay(in:to:)` 抓**自己窗口**的视图内容
+   **不需要屏幕录制权限**（拍整屏的 `screencapture` 才需要），在假壁纸上输出亮/深两张 PNG 自检材质、
+   圆角、描边、字号。⚠️ 它用 `.withinWindow`（模糊窗口内的假壁纸），真机用 `.behindWindow`（模糊屏幕内容）——
+   **色调/圆角/描边/字体一致，模糊到的实际画面不一致**，所以它不替代真机那一眼。
+   另：该脚本是 `DesktopNameToast.swift` 的**代码副本**，改那边要同步这边。
+2. 几何与窗口属性仍由 **`CGWindowListCopyWindowInfo`** 客观验证（`scripts/check-toast-window.sh`，支持 `--watch`）：MultiDock 的 toast 窗口会出现，`layer == 25`、`alpha == 1`、bounds 水平居中且贴近屏幕顶部；1 秒后该窗口消失。**读窗口元数据不需要屏幕录制权限**（只有抓图 `kCGWindowImage` 才需要）——与 P1 验证菜单栏图标（layer 25）同一手法。
+   - 判别式里的 `height >= 30` 在改版后（高 32）仍然命中，**不需要为了迁就脚本保留旧的 39**。
    - ⚠️ 判别式必须带 **`onscreen == true`**：`orderOut` 之后窗口在 CG 窗口列表里**还会滞留好几秒**（实测），不滤掉的话「消失」时刻会晚报，1 秒时长就核对不准。
 3. 调试面板加「测试 toast」按钮，手动触发；`multidock.log` 记 `toast 显示「X」` / `toast 隐藏` 两行带时间戳，可直接核对 1 秒。
+4. ⚠️ **真机一眼仍待用户在亮色 / 深色各看一次**（切一次桌面即可）。上面的预览器能定"形状和颜色"，定不了"模糊到真实桌面之后的观感"。
 
 ---
 
