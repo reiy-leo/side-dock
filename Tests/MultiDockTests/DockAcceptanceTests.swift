@@ -65,6 +65,13 @@ final class DockAcceptanceTests: XCTestCase {
     /// Dock 自己会改、我们从不写的键。重启 Dock 就会动。
     private static let dockSelfMutatingKeys: Set<String> = ["mod-count", "recent-apps", "trash-full"]
 
+    /// 超过这个时长就算「慢重启」，会被单独收集并打印取证时间线。
+    ///
+    /// 正常路径稳定在 **35–126 ms**（真机日志实测），所以 300 ms 已经是很宽的判据。
+    /// 设它不是为了宽松，而是为了把"A8 那种几十秒的偶发"从"节流没被错开那种 1 秒级"里**摘出来单独报**。
+    /// 见 `docs/spikes.md` 实验 15。
+    private static let slowReloadThreshold: TimeInterval = 0.3
+
     // MARK: - P3 验收：两个桌面来回切，结果稳定
 
     /// P3 验收标准（`docs/PLAN.md` §4 的 P3 行）里可脚本化的部分：
@@ -134,6 +141,8 @@ final class DockAcceptanceTests: XCTestCase {
         var dockDownTimings: [Int] = []
         /// 一次应用的**总**耗时。包含为错开 launchd 节流而主动等待的时间（期间 Dock 可用）。
         var totalTimings: [Int] = []
+        /// 慢于阈值的轮次（轮号 + 取证时间线）。见 `docs/spikes.md` 实验 15 —— A8 就是这个。
+        var slowRounds: [String] = []
         var lastApplied = desktop1
 
         // ---- 来回切 20 次，每次都核对真实 Dock 是否等于目标那份 ----
@@ -144,14 +153,19 @@ final class DockAcceptanceTests: XCTestCase {
             lastApplied = target
             dockDownTimings.append(Int((outcome.reload?.elapsed ?? 0) * 1000))
             totalTimings.append(Int(outcome.elapsed * 1000))
+            if let reload = outcome.reload, reload.elapsed >= Self.slowReloadThreshold {
+                slowRounds.append("第 \(round + 1) 次：\(reload.description)")
+            }
 
             XCTAssertEqual(outcome.result, .applied, "第 \(round + 1) 次应用失败：\(outcome.summary)")
             XCTAssertEqual(outcome.verifyAttempts, 1, "第 \(round + 1) 次需要重试，不该发生")
             XCTAssertEqual(outcome.reload?.method, .sighup, "主路径必须是 SIGHUP")
             // 节流窗口错开后，Dock 每次只该消失几十毫秒。
             // 若这里出现约 1000 ms，说明 minimumSpacing 失效了，用户会看到 Dock 消失一秒。
+            // 若出现几十秒，就是 A8 —— 断言消息带上取证时间线，好定案。
             XCTAssertLessThan(outcome.reload?.elapsed ?? 99, 0.3,
-                              "第 \(round + 1) 次 Dock 不可用 \(Int((outcome.reload?.elapsed ?? 0) * 1000)) ms，节流没被错开")
+                              "第 \(round + 1) 次 Dock 不可用 \(Int((outcome.reload?.elapsed ?? 0) * 1000)) ms，"
+                                + "节流没被错开；重载详情：\(outcome.reload?.description ?? "无")")
 
             let live = DockPreferences.readDomain()
             XCTAssertEqual(live["tilesize"]?.doubleValue, target.appearance.tilesize,
@@ -174,6 +188,8 @@ final class DockAcceptanceTests: XCTestCase {
         [P3 验收] Dock 不可用时长（ms）：\(dockDownTimings)　最坏 \(dockDownTimings.max() ?? 0) ms
         [P3 验收] 应用总耗时（ms）　：\(totalTimings)　最坏 \(totalTimings.max() ?? 0) ms
         [P3 验收] DockWatcher 误判次数：\(watcher.detectedCount)（必须为 0）
+        [P3 验收] 慢重启（≥ \(Int(Self.slowReloadThreshold * 1000)) ms）共 \(slowRounds.count) 次：\(slowRounds.isEmpty ? "无" : "")
+        \(slowRounds.joined(separator: "\n"))
         """)
 
         // ---- 两桌面配置相同时，切换必须零开销（不重启 Dock） ----

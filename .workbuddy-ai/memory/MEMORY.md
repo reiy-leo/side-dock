@@ -50,6 +50,8 @@ SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.s
 - macOS 15.7.9 (24G830) / x86_64 / **单显示器** / Swift 6.2.4。换机器需重验 `AGENTS.md` §4。
 - **`swift build` / `swift test` 必须加 `--disable-sandbox`**（SwiftPM 自带 sandbox 在本机报
   `sandbox_apply: Operation not permitted`，错误信息伪装成 `Invalid manifest`）。
+  ⚠️ **即使加了，退出码也可能是非 0** —— 那是 `/Users/apple/.swiftpm/security (file-write-unlink)`
+  的沙箱拦截消息，**不是测试失败**；判据永远看 `Executed N tests, with 0 failures`。
 - **不能用截图验收**（无屏幕录制权限，`screencapture` 只返回壁纸）。用 `multidock.log`、调试面板，
   或 `CGWindowListCopyWindowInfo` / "Dock 是否给 tile 补 GUID" 这类客观信号。
 - 保持零警告构建；不接受"编译通过就算完成"，每个功能都要实测。

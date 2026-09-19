@@ -33,6 +33,8 @@
    `DockPresenceMonitor` 刻意静默、`waitForRestart` 只记结果不记过程 →
    **实验 15 已给慢路径装上取证仪表**（`DockPIDProbe` / `probeTimeline`，正常路径零开销）。
    下一次偶发时看那一行日志就能定案。判定规则见实验 15。
+   ⚠️ **实验 15.1：真机验收 20 轮连切（Dock 年龄正好 ~1 s，与故障同构）最坏 74 ms、慢重启 0 次**
+   —— 这已是**第五次没复现**，说明成因不在"连续重启"这个形状里，而在真实 App 的完整上下文。
 7. **实验 9 与实验 10 的修复已被真机覆盖**：退出还原 **53–54 s → 0.01 s**（整条退出约 2 s）；
    切桌面的最坏值 **60–126 s → 26–31 s**。**正常路径稳定在 35–126 ms**，且连续 6 次快速重启也不慢。
 
@@ -1042,6 +1044,31 @@ struct DockPIDProbe { var launchServices: pid_t?; var procScan: pid_t? }
   只在变化时记、条数封顶、替身不支持取证时照常工作、**超时未归位也要带时间线**。
 - ⚠️ **别为了"复现"去反复折腾用户的 Dock。** 这个故障偶发（那天 6 次里中 2 次），
   真要复现得带上真实 App 的完整上下文（GUI + 三个轮询同时跑），成本高、收益不确定 —— 等它自己出现。
+
+### 15.1 第五次尝试复现：**真机验收 20 轮连切，没复现**
+
+2026-09-20 05:11 跑了完整真机验收（`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`），
+其中 `testSwitchingBetweenTwoDesktopConfigsIsStable` 就是**同一个形状**的负载：
+两套配置（`tilesize` 40/60 + `magnification` 反相）**来回切 20 次**，每次都是一次真实的 SIGHUP 重启，
+而且因为 `DockController` 默认带 `minimumSpacing = 1 s`，**每次重启时 Dock 的年龄都正好在 1 秒左右** ——
+与真机那次 `39143` 只活了 **1.03 s** 就被重启的情形**同构**。
+
+结果：
+
+```
+[P3 验收] Dock 不可用时长（ms）：[47, 49, 46, 47, 74, 56, 61, 52, 31, 59, 47, 61, 54, 32, 32, 53, 67, 65, 53, 52]　最坏 74 ms
+[P3 验收] 慢重启（≥ 300 ms）共 0 次：无
+```
+
+**20 轮全部 31–74 ms，一次都没慢。** 加上实验 12–14，这已经是**第五次没复现出来**。
+
+结论：**A8 不是"连续重启"这个形状本身能触发的。** 剩下的差异只有"真实 App 的完整上下文"：
+GUI 事件循环 + `DockWatcher`（2 s 读偏好域）+ `DockPresenceMonitor`（500 ms 查 PID）+
+`SpaceObserver`（300 ms 查空间）+ 用户真实切桌面。**所以不再加码尝试复现，等它自己出现。**
+
+> 顺带：`testKillingDockRecoversWithinThreeSeconds` 这次实测 **56 ms** 归位（`69452 → 69457`），
+> 而不是文档里那个 1072 ms。见 §4 的那行修正 —— **`kill -9` 的归位时间取决于 Dock 当时的年龄**，
+> 不是个常数。
 
 ---
 
