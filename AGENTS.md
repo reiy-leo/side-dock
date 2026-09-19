@@ -117,10 +117,11 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 > 但另有一次 **26–31 s** 的偶发慢重启。它一度被归因到 `minimumSpacing`（"launchd 有 10 s uptime 门槛"），
 > **该归因已被实验 12–14 逐个推翻** —— 详见 `docs/spikes.md` **实验 11.6**。
 > **`minimumSpacing` 保持 1 s 不动**，根因未定（§6.3 A8）。
-> 另有一条数据侧的：**两个桌面（`计划 任务` / `密码 邮件`）的 override 被默认 Dock 的内容覆盖了**
-> （内容与默认逐项相同、都只有 3 个图标），`LLM` 那条正常。**默认 Dock 那 3 个图标待用户确认是不是他要的**
-> —— 它的 `orientation = right` 是手工痕迹，很可能是有意为之。见 §6.3 A9。
-> ⚠️ **本节曾在 2026-09-20 写错过一次**（说"三个 override 全空"，实为读取脚本用错 JSON 键名），已更正。
+> 数据侧的那条**已结案**：默认 Dock（3 个图标 + `orientation = right`）是用户有意配的；
+> 两条 override 的图标与它相同**不构成损坏**，而且因为 override 的 `orientation` 是 `bottom`、
+> 清掉会让那两个桌面的 Dock 跑到右侧，**`config.json` 原样保留**（§6.3 A9）。
+> ⚠️ **本节在 2026-09-20 被更正过两次**：先写错"三个 override 全空"（读取脚本用错 JSON 键名），
+> 再写错"两条 override 与默认重复、可以清成沿用默认"（忽略了 override 是整体替换）。**看 §5 那条约定。**
 
 ### 已完成
 
@@ -393,9 +394,12 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 - ⚠️ **A8：Dock 重启偶发慢到 26–31 秒，根因未定**（`spikes.md` 实验 11.6 与 12–14）。
   **四个假说已被实测逐个推翻**（uptime 门槛 / 探测路径分叉 / 连发退避 / 写偏好诱因），
   **不要按任何一个去改代码**；`minimumSpacing` 保持 1 s。要复现必须带上真实 App 的完整上下文。
-- ⚠️ **A9：两个桌面的 override 被默认 Dock 的内容覆盖**（`计划 任务` / `密码 邮件` 都只剩那 3 个图标，
-  与默认逐项相同），`LLM` 那条正常（15 + 1）。**逐桌面 override 的原内容已丢，恢复不了。**
-  默认 Dock 的 3 个图标（含 `orientation = right`）**很可能是用户故意配的，先问再动**。
+- ✅ **A9 已结案（2026-09-20）**：用户确认默认 Dock 的 3 个图标（启动台 / FlClash / WorkBuddy AI，
+  `orientation = right`）是**他有意配的**。`config.json` **原样保留、一个字节没动**。
+  ⚠️ 两条 override（`计划 任务` / `密码 邮件`）的 `appearance.orientation` 是 `"bottom"`，
+  与默认的 `"right"` **不同** —— 所以它们**不是**默认的精确副本，**不能"清成沿用默认"**
+  （`effectiveConfig(for:)` 是整体替换，不是逐字段合并，清掉会让那两个桌面的 Dock 跑到屏幕右侧）。
+  详见 §6.3 A9 与 `docs/spikes.md` 11.4。
 - **多显示器热插拔的真机实测**（§6.3 B5）：映射键、插拔后自动刷新、toast 定位、桌面页的显示器名分组都已实现，
   但**本机只有一台显示器，必须用户插一台外接屏才能验**。
 - **真人手测 5 条**（§6.3 A 组）：改名输入框、两个按钮、图标条拖拽、菜单栏连击，外加
@@ -606,7 +610,7 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | A6 | **「切桌面不再黑屏几分钟」还没真机复验**（实验 9 的修复只过了单测） | 这是用户报的最严重故障之一，没复验等于没确认修好 | ⚠️ **2026-09-20 复盘用户真机日志：大部分通过。** 05:02 打包的二进制（**晚于**实验 9 / 10 两个 commit）跑出 6 次真实 apply：**正常路径全是 50–126 ms**（57 / 126 / 84 / 50 ms）。但另两次是 **26 046 ms 与 31 039 ms**。⚠️ **那两次的"原因"一度被归到 `minimumSpacing` 上，已被实验 12–14 证伪**（见 A8）。结论：**60–126 s 那一档没了，26–31 s 这一档偶发、根因未定。** 复核口径：连切十次桌面后，`Dock 不可用` 应稳定在 100 ms 量级 |
 | A7 | **「退出不再卡住几分钟」没做真机复验**（实验 10 的修复只过了单测） | 用户报的最严重故障，且是**每次**退出都中招 | ✅ **2026-09-20 复盘用户真机日志：通过。** `05:58:46.001 退出还原流程结束，用时 0.01s`（旧版 **53.12 s / 54.05 s**），整条退出约 2 s，其中 2 s 是 `prepareForTermination` 的等待窗口、**不是 Dock 缺失**。唯一尾巴：这次走了 `!settled` 分支（`还原未完成（退出时还有一次应用没落地），已留下标记`）→ `session.state` 留 `needsSelfHeal = true, pid = 0`，属预期兜底；但**副作用见 A8 第 2 条** |
 | A8 | **Dock 重启偶发慢到 26–31 秒**（2026-09-20 真机日志挖出，根因**未定**） | 偶发；正常路径稳定 35–126 ms，所以影响远小于实验 9 的 60–126 s | ⚠️ **四个假说已被实测逐个推翻，别按它们改代码**（`spikes.md` 实验 11.6 与 12–14）：① ~~launchd 有 10 s uptime 门槛~~ → 实验 12：uptime 6/12/20/60 s **全 37–68 ms**；② ~~`NSRunningApplication` 返回陈旧实例导致探测不到~~ → 实验 13：两条路径 41–116 ms 同量级、无分叉；③ ~~连续快速重启累积退避~~ → 实验 13：6 次连发（间隔 2 s）**全正常**；④ ~~写偏好是诱因~~ → 实验 14：幂等写 + SIGHUP **5 轮 35–46 ms**。**→ `minimumSpacing` 保持 1 s 不动**（plist 里本来就是 `ThrottleInterval = 1`）。已被排除的观察：真机那两次慢重启期间主线程是活的（同一窗口 toast 的 1 秒定时器准时触发）→ **不是假测量，Dock 当时真的不在**。下一步要复现必须带上**真实 App 的完整上下文**（GUI + `DockWatcher` / `DockPresenceMonitor` / `SpaceObserver` 三个轮询同时跑） |
-| A9 | **两条桌面 override 是坏的（内容 = 默认 Dock），默认 Dock 那 3 项待用户确认**（2026-09-20） | 切到 `计划 任务` / `密码 邮件` 会得到 3 图标的 Dock；若用户原本给它们配过别的图标，那些内容**已经丢了** | ⚠️ **本节数字 2026-09-20 更正过一次**：初版写"三个 override 全空"，是**读取脚本用错 JSON 键名**（`apps`/`others` ≠ 真实键 `pinnedApps`/`otherItems`）读出来的假象。真实状态：默认 Dock `pinnedApps` = **3**（启动台 / FlClash / WorkBuddy AI，`orientation = right` 是手工痕迹 → **很可能是用户故意配的精简底座，不要擅自改**）；`密码 邮件` = **3**、`计划 任务` = **3**（**与默认逐项相同**，是被默认内容覆盖的指纹）；`LLM` = **15 + 1**，正常。真实 Dock 健康（16 + 1）。**待用户回答**：默认 Dock 的 3 个图标是不是你要的？两个桌面要不要重新配？见 `spikes.md` 实验 11.4 |
+| A9 | ~~两条桌面 override 与默认 Dock 的图标相同 = 坏数据~~ | ~~切过去会得到 3 图标的 Dock~~ | ✅ **已结案（2026-09-20）**：**用户确认默认 Dock 那 3 个图标（启动台 / FlClash / WorkBuddy AI）+ `orientation = right` 是他有意配的** → "图标相同"不再构成损坏证据，他完全可能给那两条也配了同一组。⚠️ **而且它们不能清成「沿用默认」**：override 的 `orientation = "bottom"`，默认是 `"right"`，而 `effectiveConfig(for:)` 是**整体替换**（`binding(for:)?.override ?? settings.defaultDock`）→ 清掉会让那两个桌面的 Dock **跑到屏幕右侧**，是可见的行为改变。**结论：`config.json` 原样保留，要改由用户在 UI 里自己改。** ⚠️ 本节数字在 2026-09-20 被更正过两次，第一次是我读取脚本用错 JSON 键名（`apps`/`others` ≠ 真实键 `pinnedApps`/`otherItems`）读出的假象 —— 见 §5 那条约定 |
 | A10 | ~~`session.state` 的假欠账会在下次启动抹掉用户自己加的 Qoder CN~~ | ~~用户的 Dock 改动被无声回退~~ | ✅ **已解决（2026-09-20）**：那笔债是假的 —— 日志里 `05:58:45.991 开始还原到原始 Dock：15 个图标` 之后 Dock 确实回到了基准态，`needsSelfHeal` 只是 `prepareForTermination` 发现"有排队中的 apply 没落地"留下的兜底标记。已备份后移除 `session.state`（`session.state.bak-20260920-044624`）。**注意 `impliesDirtyDock` 是 `appliedFingerprint != nil \|\| needsSelfHeal == true`，只清 `needsSelfHeal` 不够** |
 | **B. 待做的功能（已排期）** | | | |
 | B5 | **多显示器仍未真机实测**（P5 唯一剩下的）：映射键、插拔后自动刷新、toast 的 `displayUUID → NSScreen` 定位都实现了，但本机只有一台显示器 | 插外接显示器后映射可能串 | **只能靠用户插一台外接屏实测**。调试面板已加「显示器数量」与每个桌面的 `displayUUID` 前 8 位，核对时用 |
@@ -668,13 +672,13 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
    踩到节流会让 Dock 消失一秒多；踩到 `-1` 会杀掉用户的全部进程；踩到同步 `kickstart` 会把整个 App 冻住两分钟
    （见 `docs/spikes.md` 实验 9）；踩到任务组那个坑会写出一堆"看着有上限、其实没有"的等待（实验 10）。
 4. 需要动 Dock 的改动，验收用 `MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`；**跑之前先 `defaults export com.apple.dock` 备份，且中途别手动改 Dock**。
-5. **最该处理的两条是 A9 与 A8**（2026-09-20 更新；A6 / A7 已由用户真机日志销账）：
-   - **A9（先问用户）**：`计划 任务` / `密码 邮件` 的 override 被默认 Dock 的内容覆盖了（都只剩那 3 个图标）。
-     **要问的是**：默认 Dock 的 3 个图标（启动台 / FlClash / WorkBuddy AI，`orientation = right`）是不是你要的？
-     那两个桌面要不要重新配？**别自己替用户改 `config.json`** —— 默认那 3 项有手工痕迹，很可能是故意配的。
-   - **A10 已处理**：`session.state` 那笔假欠账已清（备份在 `session.state.bak-20260920-044624`），
+5. **只剩 A8 一条待攻**（2026-09-20 第 19 次更新；A6 / A7 已由用户真机日志销账，**A9 已由用户结案**）：
+   - ✅ **A9 已结案**：默认 Dock 的 3 个图标是用户有意配的；两条 override 的 `orientation = "bottom"`
+     与默认的 `"right"` 不同，**不是副本、不能清成沿用默认**（整体替换语义）。
+     `config.json` 已按用户意愿原样保留，**别去动它**。
+   - ✅ **A10 已处理**：`session.state` 那笔假欠账已清（备份在 `session.state.bak-20260920-044624`），
      下次启动不会再把用户自己加的 Qoder CN 抹掉。
-   - **A8**：Dock 重启偶发慢到 **26–31 s**，**根因未定**。`spikes.md` 实验 11.6 已列清**四个被推翻的假说**
+   - ⚠️ **A8**：Dock 重启偶发慢到 **26–31 s**，**根因未定**。`spikes.md` 实验 11.6 已列清**四个被推翻的假说**
      （含"把 `minimumSpacing` 提到 10 s"那条）—— **别再试这四个方向**。要往下走必须复现真实 App 的完整上下文。
    - 真要再跑真机复验时：⚠️ **改了代码一定要重新 `./scripts/build-app.sh` 才算装上去** ——
      A6 已经在 2026-09-19 被"跑了一个修复前的二进制"骗过去一次。复验前**先把 `multidock.log` 转走**（旧版单测把它灌满了假记录，
@@ -694,6 +698,40 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-09-20（第 19 次）— A9 结案 + **更正我自己的第二个错误**：override 不是默认的副本
+
+**用户说**：「是我配的，别动」—— 回答"默认 Dock 那 3 个图标（启动台 / FlClash / WorkBuddy AI，
+`orientation = right`）是不是你有意配的"。**本轮零代码改动、零配置改动。**
+
+**① A9 结案。** 用户的答复让第 16 次那条"配置损坏"的指控彻底失效：默认那 3 项是他手工配的，
+`计划 任务` / `密码 邮件` 两条 override 的图标与它相同**不构成损坏证据**。
+**`config.json` 一个字节都没动**（备份仍在 `config.json.bak-20260920-044624`）。
+
+**② 我自己的第二个错误：我提议"把那两条 override 清成沿用默认"，理由是"切过去看到的 Dock 不变"。错。**
+两条 override 的 `appearance.orientation = "bottom"`，而默认 Dock 是 `"right"`；
+`AppState.effectiveConfig(for:)` 是
+
+```swift
+binding(for: space)?.override ?? settings.defaultDock
+```
+
+—— **整体替换，不是逐字段合并**。所以清掉 override 会让那两个桌面的 Dock **跑到屏幕右侧**，
+是一次**可见的行为改变**，不是等价操作。**幸好动手前先读了一遍 `effectiveConfig`。**
+
+> 教训（已写进 §5 那条约定）：**"内容看起来一样"不等于"等价"。**
+> 判断两个配置能不能互相替换，要去读**比较函数 / 取用语义**，不能靠肉眼比图标列表。
+> 这和第 18 次那个"字段名写错就伪造出一份数据损坏"是同一类病：**结论必须建立在读过代码/数据的事实上。**
+
+**③ 已同步**：§3 顶部状态块（标注本节被更正过两次）、§3 未完成（A9 改为 ✅ 已结案）、
+§6.3 A9（完整说明 orientation + 整体替换语义）、§7 第 5 条（A9 移出待办，只剩 A8）、§8 本条；
+`docs/spikes.md` 11.4 同步更正。
+
+**当前进度**：A6 / A7 由真机日志销账，A9 / A10 结案，**A 组只剩 A8**（Dock 重启偶发 26–31 s，根因未定，
+四个假说已被实验 12–14 全部证伪）。P0–P5 功能全落地，308 个测试全绿、零警告。
+
+**未解决**：A8（要复现必须带真实 App 的完整上下文）；B5 多显示器热插拔真机实测（需用户插外接屏）；
+A1–A3 / A5 真人手测；B9 注销/关机还原、B10 LaunchAgent 退回（需真注销一次）。
 
 ### 2026-09-20（第 18 次）— 更正第 16 次的 A9（**我自己读错了配置**）+ 清掉 `session.state` 那笔假欠账
 
