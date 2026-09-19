@@ -172,9 +172,9 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | 打包脚本 | `scripts/build-app.sh` | 编译 → 组装 `.app` → ad-hoc 签名 |
 | 显示器名解析 | `Spaces/ScreenNaming.swift` | `displayUUID → NSScreen.localizedName`；**纯解析可单测**，映射不到时如实说"未识别"而不回落成错的屏。桌面页据此按显示器分组 |
 | 其他项（文件夹/堆栈）编辑 | `Dock/DockStripRules.swift`、`UI/DockStripEditor.swift` | **只搬不造**：显示 / 排序 / 移除；拖入文件夹时明确拒绝并给替代做法（`DockItemRejection`）。**不能新建**的实测依据见 `docs/spikes.md` 实验 8 |
-| 测试 | `Tests/MultiDockTests/` | **319 个测试，全绿**（其中 8 个真实 Dock 验收默认跳过，需显式开启） |
+| 测试 | `Tests/MultiDockTests/` | **320 个测试，全绿**（其中 8 个真实 Dock 验收默认跳过，需显式开启） |
 | 设计文档 | `docs/PLAN.md` | 已按 P0 结论修订 |
-| 实验结论 | `docs/spikes.md` | **15 个实验**的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现；实验 8 是"其他项不能新建"；实验 9 是"切一次桌面黑屏几分钟"的根因；实验 10 是"每次退出都卡住"—— 同一条链，外加一个让所有"上限"静默失效的写法；实验 11 是用户真机日志复盘；实验 12–14 把"uptime 门槛"等四个假说逐个证伪；实验 15 给未解故障装取证仪表，15.2 是仪表自己的 bug（协议见证位协变陷阱），15.3 把第六个假说也证伪**） |
+| 实验结论 | `docs/spikes.md` | **15 个实验**的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现；实验 8 是"其他项不能新建"；实验 9 是"切一次桌面黑屏几分钟"的根因；实验 10 是"每次退出都卡住"—— 同一条链，外加一个让所有"上限"静默失效的写法；实验 11 是用户真机日志复盘；实验 12–14 把"uptime 门槛"等四个假说逐个证伪；实验 15 给未解故障装取证仪表，15.2 是仪表自己的 bug（协议见证位协变陷阱），15.3 把第六个假说也证伪，15.4 补上"我没在看"这个洞**） |
 
 ### 已完成：P2（编辑条 + 应用）✅ 2026-09-18
 
@@ -526,7 +526,7 @@ A4 的**逻辑侧已自动化**（`DockAcceptanceTests.testExternalDockChangeIsC
 | **`launchctl kickstart` 会阻塞几十秒**（2026-09-19 实测） | launchd 在退避里时这条命令**直到服务真被拉起才返回**（日志空白实测 54 / 60 / 64 秒）。所以它**绝不能 `waitUntilExit()`** —— 那会把 `@MainActor` 冻住那么久，整个 App（监视器、桌面轮询、toast、设置窗口）全部停摆。判据：500 ms 一轮的存活监视器在两分钟里只留一行日志 |
 | **Dock 进程不在时偏好域读回来是残缺的**（2026-09-19 实测） | Dock 死掉的窗口里 `CFPreferencesCopyMultiple` 读到「3 个图标、0 个其他项」，而真实 Dock 是 **15 + 1**。所以任何"读真实 Dock"的路径都要先看 Dock 在不在（`DockController.isDockAlive`），否则会把残缺内容写进配置。本条直接写坏了 `config.json` 里两条 override（见 §3 的「已完成：修掉「切一次桌面黑屏几分钟」」第 6 条） |
 | ⚠️ **重载期间 `DockPresenceMonitor` 是刻意静默的**（2026-09-20 复盘） | `tick()` 第一行就是 `guard !isReloading() else { return }` —— 我们自己正在重载时它**不计数、不记日志**（两条控制回路抢同一个服务会把 1 秒滚成两分钟，见实验 8.5）。**代价**：慢重启窗口里日志一片空白，看起来像"监视器没工作"，其实是设计如此。**排查慢重启时别把这段空白当成证据** —— 想知道 Dock 在不在，只能靠 `DockReloader` 自己的取证（实验 15） |
-| ⚠️ **`grep -a` 找不到 release 二进制里的短 ASCII 字符串字面量**（2026-09-20 实测） | Swift 对 ≤ 15 字节的字符串字面量用**小字符串（small string）**表示，字节被直接编进指令/寄存器，**不以连续字节序列存在于文件里**。实测：`"LS="`（3 B）、`"scan="`（6 B）、`"nil"`（3 B）在 release 二进制里 `grep -ac` 都是 **0**，而同一个二进制里 `"慢重启取证："`（21 B）和 `"Dock 不可用"`（在一条长格式串里）都能找到。→ **别用 `grep` 判断"新代码有没有进包"**，用字节级搜索（`python3 -c` 里 `open(p,'rb').read().count(b'...')`），或干脆查一个长中文字面量。本次差点因此误判"包是旧的" |
+| ⚠️ **`grep -a` 找不到 release 二进制里的短 ASCII 字符串字面量**（2026-09-20 实测，2026-09-20 二次修正） | ① Swift 对 ≤ 15 字节的字符串字面量用**小字符串（small string）**表示，字节被直接编进指令/寄存器，**不以连续字节序列存在于文件里**。实测：`"LS="`（3 B）、`"scan="`（6 B）、`"nil"`（3 B）在 release 二进制里 `grep -ac` 都是 **0**。② ⚠️ **更要命的是：`grep -a` 只要模式里含非 ASCII 字节就一律返回 0，哪怕字符串明明在**。2026-09-20 二次实测同一个二进制：`grep -ac "轮询"` → **0**、`grep -ac "Dock 不可用"` → **0**，而字节搜索分别得到 **3** 和 **2**；纯 ASCII 的 `grep -ac "SIGHUP"` 能出数（5）。→ **判据只能用字节级搜索**：`python3 -c "d=open(p,'rb').read(); print(d.count('最长间隔'.encode()))"`。本次差点因此误判"包是旧的" |
 | **release 构建会把只被间接引用的类型名优化掉**（2026-09-20 实测） | 同一个二进制里 `DockPIDProbe`（类型名）计数为 **0**，debug 里为 1 —— 所以"符号不在"不等于"代码没进去"。同上，判据要用行为或长字面量 |
 | ⚠️⚠️ **协议要求返回 `T?` 时，具体实现的返回类型必须逐字写成 `T?`**（2026-09-20 实测，代价极大） | 写成非可选的 `T` 时 Swift **不做返回类型协变匹配**，而是把它当成**另一个重载**，协议要求的**见证位由扩展里的默认实现满足**（返回 `nil`）。于是 `Real().method()` 有值、`(Real() as any P).method()` **恒为 nil**，**生产路径静默失效**（`DockReloader` 持有的是 `any DockProcessControlling`），而**替身单测全绿**（替身自己签的是 `T?`）。本次让 A8 的取证仪表**完全没接线**，直到写真机验收才发现。→ **有默认实现的协议要求，必须再写一条"走 `any` 协议"的守卫测试**；替身单测证明不了生产路径接通。守卫见 `DockProcessSafetyTests.testRealControlIsWiredAsTheProtocolWitness`，完整复盘见 `spikes.md` 实验 15.2 |
 | ⚠️ **"Dock 不可用 26046 ms" 可能是假的 —— 必须同时看"我有没有在看"**（2026-09-20，`spikes.md` 实验 15.4） | `DockReloader.waitForRestart` 的 `elapsed` 是**墙钟**，而轮询循环跑在 `@MainActor` 上：主线程被别的东西冻住时，循环跑不动 → 我们**根本没在看**，却照样把整段时间记成"Dock 不可用"。**"Dock 慢"与"我们瞎了"在旧日志里长得一模一样。** → 已补 **`waitPolls` + `waitLongestGapMS`**，跟着慢重启那一句日志出来：`… Dock 不可用 26046 ms；轮询 1738 次，最长间隔 18 ms；慢重启取证：…`。判据：次数 ≈ `elapsed / 15 ms` = 一直在看（launchd 侧）；次数远低、最长间隔**秒级** = 观察窗口断了（我们的 bug）。只在 `elapsed > 1` 时记，**快路径日志行一个字节不变**。⚠️ 别再引用 11.6 / 15 里那句"主线程是活的、不是假测量" —— 它**只覆盖 26 秒窗口的前 10 秒**（toast 证据到 `05:32:28.388` 为止） |
@@ -550,7 +550,7 @@ A4 的**逻辑侧已自动化**（`DockAcceptanceTests.testExternalDockChangeIsC
 
 ```bash
 swift build -c release --disable-sandbox   # 编译
-swift test --disable-sandbox               # 319 个测试（含 8 个默认跳过的真实 Dock 验收）
+swift test --disable-sandbox               # 320 个测试（含 8 个默认跳过的真实 Dock 验收）
 ./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
 open build/MultiDock.app                   # 运行（必须在 .app 里跑，菜单栏图标才正常）
 ./scripts/check-toast-window.sh --watch 12 # 客观验收 toast（零权限，读窗口元数据）
@@ -585,6 +585,7 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 - **给 `AppSettings` 加字段时，必须同时在它手写的 `init(from:)` 里补一行 `decodeIfPresent`**，否则旧配置文件缺这个键会导致整份配置解码失败、静默退回默认值（`ConfigStore.load()` 的行为）。
 - ⚠️ **用脚本核对 `config.json` 时，先把真实键名打出来**（`print(list(d.keys()))` / `list(override.keys())`），**不要凭记忆写字段名**。2026-09-20 踩过：脚本里写 `o.get('apps')` / `o.get('others')`，而真实键是 **`pinnedApps` / `otherItems`**，于是把"3 个图标"读成"0 个"、把"有 override"读成"全空"，并据此得出完全错误的结论写进了本文档。**一个字段名写错就足以伪造出一个不存在的数据损坏。** 判断"某条 override 是不是坏的"时，还要比**内容**而不只是数量：两条用途不同的桌面配出逐项相同的 override 才是坏数据指纹。
 - **可测性拆分**：跟 AppKit / 系统调用打交道的部分（窗口、私有 API、Dock 进程）单独放一个类型并抽成协议（`ToastPresenting`、`SpaceProviding`、`DockPreferenceAccessing`、`DockProcessControlling`），纯逻辑放另一个类型。这样行为能单测，剩下的才靠实测。
+- ⚠️⚠️ **协议要求的返回类型，具体实现必须逐字照抄 —— 差一个 `?` 就够毁掉整条生产路径。** Swift **不做返回类型协变匹配**：协议要求 `-> T?`，实现写成 `-> T`，编译器把它当**另一个重载**，协议要求的见证位就**由扩展里的默认实现满足**，于是 `(Real() as any P).m()` 永远返回默认值（通常是 `nil`），而 `Real().m()` 正常。**经具体类型调用测不出来，所有替身单测照样全绿。** 2026-09-20 实测：`pidProbe()` 就是这么让 A8 的取证仪表在生产路径上完全没接线；同一批排查里 `startTime(of:)` 签名是对的、但**没有守卫测试**，一旦写错，节流判据会从"进程年龄"静默退回"我们记不记得自己重启过"（P3 验收里同一场景 **45 ms → 1030 ms**）。**规矩：每加一条有默认实现的协议要求，就在 `DockProcessSafetyTests` 里补一条经 `any 协议` 调用的守卫测试**（`testRealControlIsWiredAsTheProtocolWitness` / `testRealStartTimeIsWiredAsTheProtocolWitness` 是模板）。系统排查配方见 skill `macos-dock-space-probe`；复盘见 `docs/spikes.md` 实验 15.2。
 - **`AppState` 的依赖全部可注入**（`dockController` / `configStore` / `baselineStore` / `provider`），并且 **AppState 内部不要直接调 `DockPreferences.readDomain()` 这类静态入口** —— 那会绕过注入点，测试里会读到真实系统的偏好域。要读就走 `dockController.readDomain()` / `captureLiveConfig()`。（P2 踩过：`captureCurrentDockAsDefault` 就是直接调静态方法，导致三个单测读到真实 Dock。）`provider` 可注入是为了让"预应用先于切换"能写成断言。
 - **测试里的替身类如果被 `@MainActor` 测试类嵌套，要显式标 `@MainActor`**：嵌套类型**不继承**外层的 actor 隔离，而 `DockWatcher` 的闭包都是 `@MainActor` 的，不标就报 `call to main actor-isolated initializer in a synchronous nonisolated context`。
 - **发信号/杀进程的代码必须自带"只碰确认过的 PID"闸门**，别指望调用方传对。见 §4 的 `-1` 陷阱。
@@ -693,8 +694,8 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 
 ## 7. 给下一个 session 的建议顺序
 
-1. 读本文件 → `docs/PLAN.md`（§3 核心机制、§3.10 桌面命名与 toast、§3.11 无痕与自愈、§3.3 退出流程、§4 阶段与验收）→ `docs/spikes.md`（**15 个实验结论，含对计划的多处修正；实验 5 有两个要命发现，实验 6 是节流窗口的判据修正，实验 7 是一条"别再做"的动画结论，实验 8 是"其他项不能新建"，实验 9 是"切桌面黑屏几分钟"的根因，实验 10 是"每次退出都卡住几分钟"的根因 + 那条 `withTaskGroup` 的静默失效，实验 11 是真机日志复盘，实验 12–14 把它的四个假说全部证伪，实验 15 是给未解故障装取证仪表 —— 15.2 仪表自己的 bug，15.3 第六个假说也被证伪**）。
-2. 跑一次基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，确认全绿（应为 **319 个测试通过、零警告**）。
+1. 读本文件 → `docs/PLAN.md`（§3 核心机制、§3.10 桌面命名与 toast、§3.11 无痕与自愈、§3.3 退出流程、§4 阶段与验收）→ `docs/spikes.md`（**15 个实验结论，含对计划的多处修正；实验 5 有两个要命发现，实验 6 是节流窗口的判据修正，实验 7 是一条"别再做"的动画结论，实验 8 是"其他项不能新建"，实验 9 是"切桌面黑屏几分钟"的根因，实验 10 是"每次退出都卡住几分钟"的根因 + 那条 `withTaskGroup` 的静默失效，实验 11 是真机日志复盘，实验 12–14 把它的四个假说全部证伪，实验 15 是给未解故障装取证仪表 —— 15.2 仪表自己的 bug，15.3 第六个假说也被证伪，15.4 补上"观察者自身存活性"这个洞**）。
+2. 跑一次基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，确认全绿（应为 **320 个测试通过、零警告**）。
 3. **动 Dock 相关代码前先读 §4 的七条**："launchd 重启节流"、"节流窗口判据"、"`-1` PID 陷阱"、
    "查 Dock PID 的代价"、"**`launchctl kickstart` 会阻塞几十秒 → 绝不能 `waitUntilExit()`**"、
    "**`withTaskGroup` 当"赛跑"用会让上限静默失效**"、"**协议要求 `T?` 时实现必须逐字写 `T?`**"。
@@ -743,6 +744,52 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-09-20（第 24 次）— **系统性排查协议见证位陷阱这一类 bug**：又抓到一条没守卫的要求
+
+**用户说**：「请继续执行任务」。A8 没有新的真机偶发，于是把上一轮那个 bug 当**一类**而不是一次事故来处理：
+**凡是"有默认实现的协议要求"，都有同一个静默失效面**，逐个查。
+
+**① 全仓枚举。** `Sources/` 里一共 4 个协议：`ToastPresenting`、`SpaceProviding`、
+`DockProcessControlling`、`DockPreferenceAccessing`。**只有 2 个带默认实现的扩展**：
+
+| 协议 | 带默认实现的要求 | 真实实现签名 | 结论 |
+|---|---|---|---|
+| `DockProcessControlling` | `pidProbe() -> DockPIDProbe?` | 已修成 `?` | ✅ 已修 + 有守卫（#22） |
+| `DockProcessControlling` | `startTime(of:) -> TimeInterval?` | `TimeInterval?`，**逐字一致** | ⚠️ **签名对，但没有守卫** → 本轮补上 |
+| `DockPreferenceAccessing` | `readMRUSpaces() -> Bool?` | 转调**必需**的 `readDomain()` | ✅ 构造上安全，不需要守卫 |
+
+**② 为什么"签名对"也要补守卫。** `startTime(of:)` 一旦被写成非可选，节流窗口的判据会
+**静默从"进程年龄"退回"我们记不记得自己重启过"** —— 这个退化是**有实测代价的**：
+P3 验收里同一个场景 **45 ms → 1030 ms**（用户看到 Dock 消失一秒多）。而它**没有任何测试能发现**，
+因为 5 个替身（`FakeDockProcess` ×2、`RevivableDock`、`FlakyDock`、`LyingProcess`）都靠这个默认实现活着。
+→ 新增 `testRealStartTimeIsWiredAsTheProtocolWitness()`，**经 `any DockProcessControlling` 调用**。
+
+**③ 为什么保留默认实现而不是删掉。** 那 5 个替身里有 3 个只关心别的行为，不想被迫实现全部要求。
+删默认实现会逼它们补空实现 —— 那只是把陷阱从"默认值"挪到"替身自己写错"，守卫测试才是对的修法。
+
+**④ 把规矩写进扩展本身。** `extension DockProcessControlling` 顶部加了一段 ⚠️⚠️ 警告，
+说明陷阱机制、实测代价、以及"每加一条有默认实现的要求就必须补一条经 `any` 调用的守卫测试"这条规矩。
+写在扩展里而不是只写文档，是因为**下一个加方法的人一定会先看到它**。
+
+**⑤ 全量回归**：`swift test --disable-sandbox` → **320 个测试、8 跳过、0 失败**（319 → 320，+1）。
+
+**⑥ 已同步**：`AGENTS.md` §5 代码约定（新增协议见证位规矩）、§3 / §5 / §7 测试数 319 → **320**、§8 本条；
+`spikes.md` 15.2 补充 `startTime(of:)` 守卫与本次全仓审计结论；`MEMORY.md`、`2026-09-20.md`；
+技能 `macos-dock-space-probe` 新增"这类陷阱怎么系统性排查"配方（3 条 `rg` + 判定表 + `viaProtocol` 守卫模板）。
+
+**⑦ 顺手把 §4 那条 `grep` 的坑改准了（差点又误判一次）。** 重新打包后按老习惯用
+`grep -a` 验"新代码有没有进包"，结果 `轮询` / `最长间隔` / `Dock 不可用` **全是 0** —— 差点判成"包是旧的"。
+改用字节搜索（`python3 -c "open(p,'rb').read().count(...)"`）同一个二进制：
+`最长间隔` **1**、`慢重启取证` **1**、`轮询` **3**、`Dock 不可用` **2**、`SIGHUP` **12**。
+→ **`grep -a` 只要模式里含非 ASCII 字节就一律返回 0，哪怕字符串明明在**（纯 ASCII 的 `SIGHUP` 能出数）。
+原来 §4 只写了"短 ASCII 字面量被小字符串优化"，**不完整**；已补上"含中文的模式一律 0"这半条。
+**判据只能用字节级搜索。**
+
+**当前进度**：P0–P5 全落地；真机验收 **8/8 绿**（本轮重跑，41.1 s）；A 组只剩 A8，**六条"我们的 bug"候选全部证伪**，
+只剩 launchd / Dock 归位本身，等真机偶发。
+
+**未解决**：A8 仍未定案；B5 多显示器热插拔真机实测（需用户插外接屏）；A1–A3 / A5 真人手测；B9 / B10（注销与重登录）。
 
 ### 2026-09-20（第 23 次）— 复核真机日志，**更正我自己的一处过度概括** + 给仪表补上"我们没在看"这个洞
 

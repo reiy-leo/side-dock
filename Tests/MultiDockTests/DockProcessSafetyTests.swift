@@ -86,6 +86,28 @@ final class DockProcessSafetyTests: XCTestCase {
                         + "\(probe.launchServices.map(String.init) ?? "nil")（真实 \(livePID)）")
     }
 
+    func testRealStartTimeIsWiredAsTheProtocolWitness() throws {
+        // 与上一条同一个道理：`startTime(of:)` 在协议里**也有一个返回 nil 的默认实现**。
+        // 真实实现如果把返回类型写成非可选的 `TimeInterval`，协议要求会由默认实现满足 →
+        // **经协议永远拿到 nil** → `DockReloader` 静默退回用内存里的 `lastRestartAt` 推算节流窗口。
+        //
+        // 那条退路的代价是**实测过的**：节流窗口的判据从「进程年龄」退回「我们记不记得自己重启过」
+        // 之后，P3 验收里同一个场景从 **45 ms 变成 1030 ms**（用户看到 Dock 消失一秒多）。
+        // 所以必须**经协议**调用 —— 经具体类型调用会选中另一个重载，测不出这个问题。
+        let viaProtocol: any DockProcessControlling = RealDockProcessControl()
+        let pid = try XCTUnwrap(viaProtocol.dockPID(), "Dock 不在运行，跳过")
+        let start = try XCTUnwrap(viaProtocol.startTime(of: pid),
+                                  "经协议拿不到启动时刻 —— 节流窗口会静默退回内存猜测（代价 1030 ms）")
+
+        let now = Date().timeIntervalSince1970
+        XCTAssertGreaterThan(start, 0, "启动时刻必须是正的 Unix 秒")
+        XCTAssertLessThanOrEqual(start, now + 1, "启动时刻不该出现在未来：\(start) vs \(now)")
+        // Dock 不可能比一年前还老；也不可能"还没启动"。
+        XCTAssertGreaterThan(start, now - 365 * 24 * 3600, "启动时刻早得离谱，可能读错了字段：\(start)")
+        // 与"进程年龄"交叉验证：拿得到年龄，且是非负数。
+        XCTAssertGreaterThanOrEqual(now - start, 0)
+    }
+
     func testDockProcessNameMatchesTheGuardConstant() throws {
         // 身份确认依赖进程名恰好是 "Dock"。若系统改了名字，闸门会静默失效（永远返回 false），
         // 表现为"Dock 重启失败"而不是"杀错进程"—— 但也要能被发现。

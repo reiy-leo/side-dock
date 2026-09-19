@@ -50,6 +50,18 @@ protocol DockProcessControlling: Sendable {
 }
 
 extension DockProcessControlling {
+    /// ⚠️⚠️ **这个扩展里的每个方法都是一个陷阱入口，加新方法前先读完这段。**
+    ///
+    /// 有默认实现的协议要求，具体实现的返回类型**必须与协议要求逐字相同** ——
+    /// Swift 不做返回类型协变匹配，写成非可选（或任何不同形状）会被当成**另一个重载**，
+    /// 于是协议要求的见证位**由这里的默认实现满足**，经 `any` 协议调用永远拿到默认值。
+    /// 实测（2026-09-20）：`pidProbe()` 就是这么让 A8 的取证仪表在生产路径上完全没接线的 ——
+    /// 而所有替身单测照样全绿。完整复盘见 `docs/spikes.md` 实验 15.2。
+    ///
+    /// **规矩**：每加一个有默认实现的要求，就必须在 `DockProcessSafetyTests` 里补一条
+    /// **经 `any DockProcessControlling` 调用**的守卫测试（经具体类型调用测不出来）。
+    /// 目前两条要求都有守卫：`pidProbe()` 与 `startTime(of:)`。
+
     /// 替身默认拿不到启动时刻 → `DockReloader` 退回用内存里的 `lastRestartAt` 推算。
     func startTime(of pid: pid_t) -> TimeInterval? { nil }
 

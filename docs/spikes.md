@@ -1152,6 +1152,28 @@ warning: comparing non-optional value of type 'Probe' to 'nil' always returns fa
   `let viaProtocol: any DockProcessControlling = RealDockProcessControl()` → 断言 `pidProbe()` 非 nil
   且 `procScan == 真实 Dock PID`。**关键是它故意不直接用具体类型。**
 
+#### 这一类 bug 的全仓审计（2026-09-20）
+
+修完不能收工 —— 这是**一类**bug，不是一次事故。**凡"有默认实现的协议要求"都有同一个静默失效面**。
+把 `Sources/` 里全部 4 个协议过了一遍，**只有 2 个扩展带默认实现**：
+
+| 协议 | 带默认实现的要求 | 真实实现签名 | 结论 |
+|---|---|---|---|
+| `DockProcessControlling` | `pidProbe() -> DockPIDProbe?` | 已修成 `?` | ✅ 已修 + 守卫 |
+| `DockProcessControlling` | `startTime(of:) -> TimeInterval?` | `TimeInterval?`，**逐字一致** | ⚠️ **签名对，但当时没有守卫** → 补上 |
+| `DockPreferenceAccessing` | `readMRUSpaces() -> Bool?` | 转调**必需**的 `readDomain()` | ✅ 构造上安全 |
+
+`startTime(of:)` 为什么"签名对也要补守卫"：它一旦被写成非可选，**节流窗口的判据会静默从"进程年龄"
+退回"我们记不记得自己重启过"**。这个退化**有实测代价** —— P3 验收里同一场景从 **45 ms 变成 1030 ms**
+（用户看到 Dock 消失一秒多），而**没有任何测试能发现**，因为 5 个替身
+（`FakeDockProcess` ×2、`RevivableDock`、`FlakyDock`、`LyingProcess`）全靠这个默认实现活着。
+→ 补 `testRealStartTimeIsWiredAsTheProtocolWitness()`，同样**经 `any` 协议调用**。
+
+默认实现**保留不删**：那 5 个替身里有 3 个只关心别的行为，不想被迫实现全部要求；删掉只会把陷阱
+从"默认值"挪到"替身自己写错"。守卫测试才是对的修法。
+
+**排查配方**（3 条 `rg` + 一张判定表）已写进 skill `macos-dock-space-probe`，下次加协议要求前先跑一遍。
+
 #### 附带的第二个坑：这条验收测试自己有竞态
 
 阈值先写成 `1 ms`（"正常重启几十毫秒，必然该有取证"）。**实测一次空、三次有**：
