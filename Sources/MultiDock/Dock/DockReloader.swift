@@ -121,7 +121,19 @@ struct RealDockProcessControl: DockProcessControlling {
     ///
     /// 与 `dockPID()` 的区别就是"不短路"—— `dockPID()` 只要首选路径有答案就不会去扫进程表，
     /// 所以从它的返回值里**看不出**两条路径有没有分叉。慢重启要的正是这个分叉信息。
-    func pidProbe() -> DockPIDProbe {
+    ///
+    /// ⚠️ **返回类型必须与协议要求逐字相同（`DockPIDProbe?`），不能写成非可选的 `DockPIDProbe`。**
+    /// 实测（2026-09-20）：写成非可选时 Swift 认为它是**另一个重载**，协议要求转而由扩展里的
+    /// 默认实现（返回 `nil`）满足 —— 于是**通过协议调用永远拿到 nil**，仪表在生产路径上完全是死的，
+    /// 而所有单测都过（替身的签名是对的）。最小复现：
+    /// ```swift
+    /// protocol P { func probe() -> Probe? }
+    /// extension P { func probe() -> Probe? { nil } }
+    /// struct Real: P { func probe() -> Probe { Probe() } }   // 协变返回
+    /// (Real() as any P).probe()   // → nil，默认实现抢到了见证位
+    /// ```
+    /// 回归守卫：`DockProcessSafetyTests.testRealControlIsWiredAsTheProtocolWitness`。
+    func pidProbe() -> DockPIDProbe? {
         DockPIDProbe(launchServices: Self.launchServicesDockPID(), procScan: Self.scanForDockPID())
     }
 

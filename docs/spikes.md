@@ -35,6 +35,12 @@
    下一次偶发时看那一行日志就能定案。判定规则见实验 15。
    ⚠️ **实验 15.1：真机验收 20 轮连切（Dock 年龄正好 ~1 s，与故障同构）最坏 74 ms、慢重启 0 次**
    —— 这已是**第五次没复现**，说明成因不在"连续重启"这个形状里，而在真实 App 的完整上下文。
+   ⚠️ **实验 15.2：仪表本身一开始是坏的** —— `RealDockProcessControl.pidProbe()` 的返回类型写成
+   非可选，撞上 Swift 的**协议见证位协变陷阱**，于是**通过协议调用永远拿到 nil**，生产路径上的
+   仪表完全是死的，而 6 条替身单测全绿。已修 + 加回归守卫（**故意走 `any` 协议**）。
+   ⚠️ **实验 15.3：第六个假说（LS 滞后）也被证伪** —— 定向测量 6 轮：`dockPID()` 的 LS 优先
+   造成的**危险窗口恒为 0 ms**（LS 在 ~25 ms 就松手，早于进程表看到新 Dock）。`dockPID()` 不要改。
+   → **"我们的 bug"这一侧已经没有候选了**，剩下只有 launchd / Dock 归位本身。
 7. **实验 9 与实验 10 的修复已被真机覆盖**：退出还原 **53–54 s → 0.01 s**（整条退出约 2 s）；
    切桌面的最坏值 **60–126 s → 26–31 s**。**正常路径稳定在 35–126 ms**，且连续 6 次快速重启也不慢。
 
@@ -1069,6 +1075,169 @@ GUI 事件循环 + `DockWatcher`（2 s 读偏好域）+ `DockPresenceMonitor`（
 > 顺带：`testKillingDockRecoversWithinThreeSeconds` 这次实测 **56 ms** 归位（`69452 → 69457`），
 > 而不是文档里那个 1072 ms。见 §4 的那行修正 —— **`kill -9` 的归位时间取决于 Dock 当时的年龄**，
 > 不是个常数。
+
+### 15.2 ⚠️ 仪表本身是坏的：Swift 的**协议见证位协变陷阱**（2026-09-20，已修）
+
+**这一节比仪表本身更值得读。** 仪表装好、6 条单测全绿、App 也重新打包了 —— 但它**在生产路径上
+完全是死的**，而且**只有真机验收能发现**。
+
+#### 怎么发现的
+
+给仪表写了一条真机验收测试（`DockAcceptanceTests/testSlowProbeTimelineWorksAgainstTheRealDock`），
+它的第一个断言就是"直读一次探针，必须是非 nil"。**第一条就炸了**：
+
+```
+XCTUnwrap failed: expected non-nil value of type "DockPIDProbe" - pidProbe() 返回 nil —— 取证仪表是坏的
+```
+
+#### 根因：默认实现抢走了见证位
+
+协议要求与实现分别是：
+
+```swift
+protocol DockProcessControlling {
+    func pidProbe() -> DockPIDProbe?          // 可选返回
+}
+extension DockProcessControlling {
+    func pidProbe() -> DockPIDProbe? { nil }  // 替身默认：不支持取证
+}
+struct RealDockProcessControl: DockProcessControlling {
+    func pidProbe() -> DockPIDProbe { ... }   // ⚠️ 非可选 —— 协变
+}
+```
+
+Swift **不做返回类型协变匹配**：`-> DockPIDProbe` 不被认为是 `-> DockPIDProbe?` 这个要求的实现，
+编译器把它当成**另一个重载**（两个函数都存在于类型上）。于是协议要求的见证位**由扩展里的默认实现满足**。
+
+后果是精确的、而且是静默的：
+
+```swift
+RealDockProcessControl().pidProbe()            // ✅ 有值（直接派发到具体方法）
+(RealDockProcessControl() as any DockProcessControlling).pidProbe()  // ❌ nil（默认实现）
+```
+
+而 `DockReloader` 持有的是 `any DockProcessControlling` —— **它永远拿到 nil**。
+`sample()` 里的 `guard let probe = process.pidProbe() else { return }` 于是每次直接返回，
+时间线恒为空数组，行为与"没装仪表"完全一样。
+
+编译器其实给了提示（在被调用的那一侧才会出现）：
+
+```
+warning: comparing non-optional value of type 'Probe' to 'nil' always returns false
+```
+
+#### 为什么 6 条单测全是绿的
+
+因为**替身是对的**：`FakeDockProcess` 自己声明的是 `func pidProbe() -> DockPIDProbe?`，
+签名与协议要求逐字相同，见证位正常。单测验的是"`DockReloader` 拿到探针答案后会怎么记"，
+**从来没验过"真货有没有接到那根线上"**。
+
+> **教训：替身单测证明不了生产路径接通。** 有默认实现的协议要求，必须**再写一条走 `any` 协议
+> 的守卫测试**，断言默认实现没被选中。
+
+#### 修法与回归守卫
+
+- 返回类型改成逐字相同：`func pidProbe() -> DockPIDProbe?`（`DockReloader.swift` 里带了最小复现注释）。
+- 新增 `DockProcessSafetyTests.testRealControlIsWiredAsTheProtocolWitness`：
+  `let viaProtocol: any DockProcessControlling = RealDockProcessControl()` → 断言 `pidProbe()` 非 nil
+  且 `procScan == 真实 Dock PID`。**关键是它故意不直接用具体类型。**
+
+#### 附带的第二个坑：这条验收测试自己有竞态
+
+阈值先写成 `1 ms`（"正常重启几十毫秒，必然该有取证"）。**实测一次空、三次有**：
+
+```
+# 偶发失败
+[A8 取证] 真机重载：SIGHUP 成功：PID 69602 → 71491，Dock 不可用 37 ms
+[A8 取证] 取证条数：0（上限 8）
+```
+
+原因是**探测机会出现在第二轮轮询里**（第一轮 `now` 还没越过窗口），而循环里的顺序是
+`dockPID()` 判定 **在** `sample()` **之前** —— 只要 `Task.sleep(15 ms)` 被拖长一点、
+Dock 恰好在第二轮之前回来，就会**先返回、一条不记**。
+
+修法：阈值改 `.zero`，让**第一轮就必然采样**，与轮询抖动解耦。改完连跑 4 次，每次都稳定 2 条。
+
+> **教训：验收测试里的"必然"要小心。** 只要断言依赖"某件事发生在某轮轮询之前"，
+> 它就是个竞态，与机器负载耦合。
+
+#### 修好之后真机长什么样
+
+```
+[A8 取证] 探针直读：LS=72409 scan=72409　dockPID()=72409
+[A8 取证] 真机重载：SIGHUP 成功：PID 72409 → 72516，Dock 不可用 37 ms；
+          慢重启取证：0ms LS=72409 scan=nil｜36ms LS=nil scan=72516
+```
+
+**这一行立刻产出了新线索**：发完 SIGHUP 后，`NSRunningApplication` 还在报**旧** Dock，
+而内核进程表已经空了 —— 见 15.3。
+
+### 15.3 第六个假说（LaunchServices 滞后）也被证伪 —— 定向测量（2026-09-20）
+
+#### 假说从哪来
+
+15.2 修好后第一次真机取证就显示 `0ms LS=<旧 PID> scan=nil`。这正好命中
+`RealDockProcessControl.dockPID()` 的结构：
+
+```swift
+func dockPID() -> pid_t? {
+    if let pid = launchServicesDockPID() { return pid }   // ⚠️ LS 优先
+    return scanForDockPID()                               // 只有 LS 给不出才扫进程表
+}
+```
+
+而 `DockReloader.waitForRestart()` 的判据是 `pid != oldPID`。
+**如果 LS 在重启窗口里持续返回那个正在退出的旧 Dock，`dockPID()` 就会一直返回 `oldPID`，
+等待方根本看不见重启已经发生** —— 它会一直等到 LS 松手。若 LS 的滞后能到秒级，这就是 A8。
+
+（这正好是实验 13 没测到的角度：实验 13 测的是"两条路径**答案是否一致**"，
+这次要测的是"**LS 什么时候放弃旧答案**"。）
+
+#### 测量
+
+新增脚本 `scripts/measure-launchservices-lag.swift`（**只读 + 发 SIGHUP**，与产品代码同构的安全闸门）：
+
+```bash
+swiftc -O -o /tmp/md-ls-lag scripts/measure-launchservices-lag.swift && /tmp/md-ls-lag 6
+```
+
+每轮：读 old PID → 发 SIGHUP → 每 **1 ms** 同时问两条路径，直到两路都看到新 PID 或超时 1.5 s。
+
+#### 结果（6 轮，全部一致）
+
+| 量 | 实测 |
+| --- | --- |
+| 进程表看到新 PID | 26–33 ms |
+| **LS 松手（不再报旧 PID）** | **11–29 ms** |
+| LS 看到新 PID | 70–93 ms |
+| `dockPID()`（LS 优先）感知到重启 | 26–33 ms |
+| **危险窗口（进程表已知新、`dockPID()` 还报旧）** | **6/6 = 0 ms** |
+| LS 相对进程表"看到新 PID"的滞后 | min 41 / 中位 57 / max 63 ms |
+
+#### 结论：**假说证伪，而且机制上不成立**
+
+关键在于 LS 的两件事是**分开的**：
+
+- **松手很早**（~11–29 ms）：SIGHUP 之后它很快就不再报旧 Dock；
+- **认领很晚**（~70–93 ms）：它要晚 ~50 ms 才认得新 Dock。
+
+而 `dockPID()` 是 **LS 优先 + nil 就回退扫进程表** —— LS 松手的那一刻回退就接管了，
+所以"认领晚"这半段**完全被回退吃掉**。危险窗口恒为 0：LS 放弃旧答案的时刻总是**早于**
+进程表看到新 Dock 的时刻（~25 ms vs ~30 ms）。
+
+> 附带观测：有几轮在 **400–550 ms** 处又出现一次 `LS=nil`（LS 短暂丢掉了已经认领的 Dock），
+> 随后恢复。同样被回退吃掉，无害。
+
+**意义**：这是第六个被证伪的假说，而且很可能是**最后一个"我们的 bug"候选**。
+剩下的解释只有 launchd / Dock 侧的"归位本身慢"。
+
+⚠️ **`dockPID()` 的路径选择不要改。** 判定规则表第 1 行说"把 `procScan` 提到首选"，
+**前提是时间线真的显示分叉** —— 15.3 已经证明正常重启下不会分叉。
+别再"顺手"把 scan 提到前面（那会让 `dockPID()` 在 LS 本来更快的时候变慢，且没有任何证据支持）。
+
+⚠️ **本测量的边界**：测的是**正常重启**（26–33 ms 归位）。A8 时 Dock 归位要 26 s ——
+但要让危险窗口成立，LS 得**抱着旧 PID 不放 26 秒**，与实测的 ~25 ms 差三个数量级。
+
 
 ---
 

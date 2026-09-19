@@ -120,6 +120,11 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 > ✅ **2026-09-20 已给慢重启装上取证仪表**（`docs/spikes.md` 实验 15）：慢于 1 秒的重载会采样
 > `pidProbe()` 的两条探测路径答案，写进那一行 `Dock 应用成功` 日志的 `慢重启取证：…` 段。
 > 正常路径**一次都不调用**，零开销。下次偶发时照实验 15 的判定规则读日志即可定案。
+> ⚠️ **但仪表一开始是坏的，2026-09-20 才发现**（实验 15.2）：`RealDockProcessControl.pidProbe()`
+> 的返回类型写成非可选，撞上 Swift 的**协议见证位协变陷阱** → **通过协议调用永远拿到 nil**，
+> 生产路径上仪表完全是死的，而 6 条替身单测全绿。已修 + 加**故意走 `any` 协议**的回归守卫。
+> ✅ **第六个假说也被证伪**（实验 15.3）：定向测量 6 轮，`dockPID()` 的 LS 优先造成的
+> **危险窗口恒为 0 ms**。**"我们的 bug"这一侧已经没有候选了**，`dockPID()` 的路径选择不要改。
 > 数据侧的那条**已结案**：默认 Dock（3 个图标 + `orientation = right`）是用户有意配的；
 > 两条 override 的图标与它相同**不构成损坏**，而且因为 override 的 `orientation` 是 `bottom`、
 > 清掉会让那两个桌面的 Dock 跑到右侧，**`config.json` 原样保留**（§6.3 A9）。
@@ -163,12 +168,13 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | toast 验收工具 | `scripts/check-toast-window.sh` | 用 `CGWindowListCopyWindowInfo` 读窗口元数据（零权限），`--watch` 报告出现/消失时刻 |
 | toast 外观预览器 | `scripts/preview-toast.swift` | 在假壁纸上画亮/深色胶囊并输出 PNG（`cacheDisplay` 抓自己的视图，**零权限**）。⚠️ 它是 `DesktopNameToast.swift` 的**副本**，改了那边要同步这里，否则预览骗人 |
 | P0 实验脚本 | `scripts/spike-*.{sh,swift}` | 重载策略 / 切桌面 / 停机时长 / 探测（含显示器 UUID 映射） |
+| LS 滞后测量脚本 | `scripts/measure-launchservices-lag.swift` | 定向测量 `NSRunningApplication` 在 Dock 重启窗口里**抱着旧 PID 多久**（1 ms 采样、两路同问）。**只读 + 发 SIGHUP**，用来证伪 A8 的第六个假说，见 `docs/spikes.md` 实验 15.3 |
 | 打包脚本 | `scripts/build-app.sh` | 编译 → 组装 `.app` → ad-hoc 签名 |
 | 显示器名解析 | `Spaces/ScreenNaming.swift` | `displayUUID → NSScreen.localizedName`；**纯解析可单测**，映射不到时如实说"未识别"而不回落成错的屏。桌面页据此按显示器分组 |
 | 其他项（文件夹/堆栈）编辑 | `Dock/DockStripRules.swift`、`UI/DockStripEditor.swift` | **只搬不造**：显示 / 排序 / 移除；拖入文件夹时明确拒绝并给替代做法（`DockItemRejection`）。**不能新建**的实测依据见 `docs/spikes.md` 实验 8 |
-| 测试 | `Tests/MultiDockTests/` | **314 个测试，全绿**（其中 7 个真实 Dock 验收默认跳过，需显式开启） |
+| 测试 | `Tests/MultiDockTests/` | **316 个测试，全绿**（其中 8 个真实 Dock 验收默认跳过，需显式开启） |
 | 设计文档 | `docs/PLAN.md` | 已按 P0 结论修订 |
-| 实验结论 | `docs/spikes.md` | **14 个实验**的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现；实验 8 是"其他项不能新建"；实验 9 是"切一次桌面黑屏几分钟"的根因；实验 10 是"每次退出都卡住"—— 同一条链，外加一个让所有"上限"静默失效的写法；实验 11 是用户真机日志复盘；实验 12–14 把实验 11 提出的"uptime 门槛"等四个假说逐个证伪**） |
+| 实验结论 | `docs/spikes.md` | **15 个实验**的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现；实验 8 是"其他项不能新建"；实验 9 是"切一次桌面黑屏几分钟"的根因；实验 10 是"每次退出都卡住"—— 同一条链，外加一个让所有"上限"静默失效的写法；实验 11 是用户真机日志复盘；实验 12–14 把"uptime 门槛"等四个假说逐个证伪；实验 15 给未解故障装取证仪表，15.2 是仪表自己的 bug（协议见证位协变陷阱），15.3 把第六个假说也证伪**） |
 
 ### 已完成：P2（编辑条 + 应用）✅ 2026-09-18
 
@@ -395,14 +401,18 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 **代码层面：计划里已定义的功能全部落地，但 2026-09-20 的真机日志复盘挖出一条必须再修的。** 剩下的分三类：
 
 - ⚠️ **A8：Dock 重启偶发慢到 26–31 秒，根因未定**（`spikes.md` 实验 11.6 与 12–15）。
-  **四个假说已被实测逐个推翻**（uptime 门槛 / 探测路径分叉 / 连发退避 / 写偏好诱因），
-  **不要按任何一个去改代码**；`minimumSpacing` 保持 1 s。
+  **五个假说已被实测逐个推翻**（uptime 门槛 / 探测路径分叉 / 连发退避 / 写偏好诱因 / **LS 滞后**），
+  **不要按任何一个去改代码**；`minimumSpacing` 保持 1 s，`dockPID()` 的 LS 优先也不要动。
   ✅ **已装取证仪表**（2026-09-20，实验 15）：慢重启（> 1 s）时 `DockReloader` 会采样
   `pidProbe()` 的两条路径答案并写进那一行 `Dock 应用成功` 日志（正常路径零开销）。
   下次复现时读 `慢重启取证：…` 就能区分「探测分叉（我们的 bug）」与「Dock 真的没回来（launchd）」。
   **判定规则见 `docs/spikes.md` 实验 15。别为了复现去反复折腾用户的 Dock。**
   ⚠️ **已试过第五次复现并失败**（实验 15.1）：真机验收 20 轮连切（Dock 年龄正好 ~1 s，与故障同构）
   **最坏 74 ms、慢重启 0 次**。→ 成因不在"连续重启"这个形状里，只在真实 App 的完整上下文里。
+  ⚠️ **仪表本身曾整个是死的**（实验 15.2，已修）：非可选返回类型撞上协议见证位协变陷阱 →
+  通过协议调用永远拿 nil。**已由真机验收测试 + 走 `any` 协议的守卫测试覆盖。**
+  ⚠️ **最后一个"我们的 bug"候选（LS 滞后）已证伪**（实验 15.3）：危险窗口 6/6 = 0 ms。
+  剩下只有 launchd / Dock 归位本身。**别再顺着这条线改探测代码。**
 - ✅ **A9 已结案（2026-09-20）**：用户确认默认 Dock 的 3 个图标（启动台 / FlClash / WorkBuddy AI，
   `orientation = right`）是**他有意配的**。`config.json` **原样保留、一个字节没动**。
   ⚠️ 两条 override（`计划 任务` / `密码 邮件`）的 `appearance.orientation` 是 `"bottom"`，
@@ -481,7 +491,7 @@ A4 的**逻辑侧已自动化**（`DockAcceptanceTests.testExternalDockChangeIsC
 | **枚举私有框架导出符号的方法** | `nm` 在磁盘上找不到 SkyLight（框架在 dyld 共享缓存里，磁盘无实体文件）。要在**进程内**解析：`_dyld_get_image_header` 拿镜像 → 遍历 `LC_SEGMENT_64` 取 `__LINKEDIT`/`__TEXT` → **`LC_SYMTAB.symoff`/`stroff` 是共享缓存内的文件偏移**，必须先经 `__LINKEDIT` 换算成 vmaddr 再取指针，直接当指针用会 SIGSEGV。脚本 `scripts/spike-symbols.swift`，本机 SkyLight 共 **23,474** 个导出符号 |
 | Dock 热重载 | **不存在**。post `com.apple.dock.prefchanged`（darwin 与分布式两种都试过）完全无效 |
 | Dock 重启 | `kill -HUP`：进程消失于 +13 ms、归位 +101 ms（**总不可用约 101 ms**）。`kill -TERM`：Dock 先做约 255 ms 清理，总不可用 **约 367–395 ms**。**主路径选 SIGHUP** |
-| **launchd 的重启节流**（P3 实测，`spikes.md` 实验 5） | 距上一次重启**不足约 1 秒**时再次重启，Dock 要 **约 1070 ms** 才归位；间隔 **≥ 1 秒**只要 **约 70 ms**。阈值在 0.6–1.0 s 之间。`com.apple.Dock.plist` 里**没有** `ThrottleInterval`，是 launchd 的隐式节流。→ `DockReloader.minimumSpacing` 默认 1 s 先等再重启（等待期间 Dock 可用），实测 Dock 不可用时长 **45–90 ms** |
+| **launchd 的重启节流**（P3 实测，`spikes.md` 实验 5） | 距上一次重启**不足约 1 秒**时再次重启，Dock 要 **约 1070 ms** 才归位；间隔 **≥ 1 秒**只要 **约 70 ms**。阈值在 0.6–1.0 s 之间。⚠️ **不是"隐式节流"** —— `com.apple.Dock.plist` 里**本来就写着 `ThrottleInterval = 1`**（`launchctl print gui/501/com.apple.Dock.agent` 显示 `minimum runtime = 1`）。→ `DockReloader.minimumSpacing` 默认 1 s 先等再重启（等待期间 Dock 可用），实测 Dock 不可用时长 **45–90 ms** |
 | ⚠️ **别被"uptime 门槛"骗了 —— 那个假说已被实测推翻**（2026-09-20，`spikes.md` 实验 11→12） | 真机日志里 uptime 6.5 s / 1 s 的两次重启花了 **26 046 / 31 039 ms**，而 uptime ≥ 30 s 的 4 次只要 50–126 ms，看起来就是"launchd 有 ~10 s 的 crash-uptime 门槛"。**但控制实验直接证伪**：uptime 6.0 / 12.0 / 20.0 s 各测一次 + 60 s 与 81 486 s 两个对照，**归位耗时 37–68 ms，一次都没被罚**。`com.apple.Dock.plist` 里写的本来就是 `ThrottleInterval = 1`（`launchctl print gui/501/com.apple.Dock.agent` 显示 `minimum runtime = 1`）。→ **`minimumSpacing` 不要动**。26–31 s 属偶发、根因未定，见 §6.3 A8 |
 | **节流窗口的判据是 Dock 进程的年龄，不是我们的记忆**（P4 实测修正） | 节流是**按服务**算的，与我们记不记得自己重启过无关。P4 验收里前一条用例刚重启完 Dock，紧接着新建的 `DockReloader`（`lastRestartAt` 为 nil）直接重启，被节流到 **1030 ms** —— 用户会看到 Dock 消失一秒多。→ 改成用 `proc_pidinfo(PROC_PIDTBSDINFO)` 读 `pbi_start_tvsec/tvusec` 算进程年龄（实测返回 **136 字节 = 结构体大小**，读得到）。改完 P3 第一轮从 **1030 ms → 45 ms**。拿不到年龄才退回内存记忆 |
 | **`kill -9` 掉 Dock 后的恢复** | ⚠️ **不是个常数，取决于 Dock 当时的年龄**。2026-09-18 首次实测 **1072 ms**（那时 Dock 刚被重启过，吃了一次隐式节流）；2026-09-20 真机验收里再测一次只要 **56 ms**（`69452 → 69457`，那时 Dock 已经活了约 1 秒、节流窗口已过）。→ **判据按"3 秒内必须出现新的正数 PID"给**，别按某个具体毫秒数写断言。`DockPresenceMonitor` 是兜底：**连续缺失 8 轮（默认 500 ms 一轮 = 4 秒）才动手**，之后每 60 轮（30 秒）才重试一次 `kickstart`（反复催只会加深 launchd 退避） |
@@ -515,6 +525,8 @@ A4 的**逻辑侧已自动化**（`DockAcceptanceTests.testExternalDockChangeIsC
 | ⚠️ **重载期间 `DockPresenceMonitor` 是刻意静默的**（2026-09-20 复盘） | `tick()` 第一行就是 `guard !isReloading() else { return }` —— 我们自己正在重载时它**不计数、不记日志**（两条控制回路抢同一个服务会把 1 秒滚成两分钟，见实验 8.5）。**代价**：慢重启窗口里日志一片空白，看起来像"监视器没工作"，其实是设计如此。**排查慢重启时别把这段空白当成证据** —— 想知道 Dock 在不在，只能靠 `DockReloader` 自己的取证（实验 15） |
 | ⚠️ **`grep -a` 找不到 release 二进制里的短 ASCII 字符串字面量**（2026-09-20 实测） | Swift 对 ≤ 15 字节的字符串字面量用**小字符串（small string）**表示，字节被直接编进指令/寄存器，**不以连续字节序列存在于文件里**。实测：`"LS="`（3 B）、`"scan="`（6 B）、`"nil"`（3 B）在 release 二进制里 `grep -ac` 都是 **0**，而同一个二进制里 `"慢重启取证："`（21 B）和 `"Dock 不可用"`（在一条长格式串里）都能找到。→ **别用 `grep` 判断"新代码有没有进包"**，用字节级搜索（`python3 -c` 里 `open(p,'rb').read().count(b'...')`），或干脆查一个长中文字面量。本次差点因此误判"包是旧的" |
 | **release 构建会把只被间接引用的类型名优化掉**（2026-09-20 实测） | 同一个二进制里 `DockPIDProbe`（类型名）计数为 **0**，debug 里为 1 —— 所以"符号不在"不等于"代码没进去"。同上，判据要用行为或长字面量 |
+| ⚠️⚠️ **协议要求返回 `T?` 时，具体实现的返回类型必须逐字写成 `T?`**（2026-09-20 实测，代价极大） | 写成非可选的 `T` 时 Swift **不做返回类型协变匹配**，而是把它当成**另一个重载**，协议要求的**见证位由扩展里的默认实现满足**（返回 `nil`）。于是 `Real().method()` 有值、`(Real() as any P).method()` **恒为 nil**，**生产路径静默失效**（`DockReloader` 持有的是 `any DockProcessControlling`），而**替身单测全绿**（替身自己签的是 `T?`）。本次让 A8 的取证仪表**完全没接线**，直到写真机验收才发现。→ **有默认实现的协议要求，必须再写一条"走 `any` 协议"的守卫测试**；替身单测证明不了生产路径接通。守卫见 `DockProcessSafetyTests.testRealControlIsWiredAsTheProtocolWitness`，完整复盘见 `spikes.md` 实验 15.2 |
+| **`NSRunningApplication` 在 Dock 重启窗口里"松手早、认领晚"**（2026-09-20 实测，6 轮） | 发 SIGHUP 后：LS 在 **11–29 ms** 就不再报旧 PID，但直到 **70–93 ms** 才认得新 PID；内核进程表（`proc_listpids`）**26–33 ms** 就看到新 Dock。→ 因为 `dockPID()` 是 **LS 优先 + nil 回退扫进程表**，这半段"认领晚"**完全被回退吃掉**：`dockPID()` 感知到重启的时刻 = 进程表时刻（26–33 ms），**危险窗口（进程表已知新、`dockPID()` 还报旧）6/6 = 0 ms**。附带：有几轮在 400–550 ms 处 LS 又短暂 `nil` 一次（丢掉已认领的 Dock），同样被回退吃掉。→ **A8 的第六个假说（LS 滞后）据此证伪；`dockPID()` 的 LS 优先不要改。** 测量脚本 `scripts/measure-launchservices-lag.swift`，见 `spikes.md` 实验 15.3 |
 | ⚠️ **配置损坏会自我固化，不会自愈**（2026-09-20 真机日志复盘，`spikes.md` 实验 11.4） | 残缺的 override 被 apply 到真实 Dock → 真实 Dock 真的变成 3 个图标 → `DockWatcher` **合法地**把这 3 个图标当成"用户的手动改动"回存 → 配置被自己钉死。日志原文：`05:32:12.243 写入 9 个键` → `05:32:12.401 检测到真实 Dock 上的手动改动：3 个图标、0 个其他项` → `05:32:12.422 计划 任务：回存手动改动：3 个图标`。**所以"看 Dock 在不在"的闸门只挡住了 Dock 死掉那一段，挡不住"Dock 活着但我们刚把它写成残缺的"。** 修数据只能用户手动「从当前 Dock 抓取」 |
 | **显示器名怎么取** | `NSScreen.localizedName`（如「内建视网膜显示器」）；与 SkyLight `displayUUID` 的换算沿用 `CGDisplayCreateUUIDFromDisplayID`（本文件上文已实测逐字符相同）。**解析不到时不要回落成某台真实屏的名字**，要如实说"未识别显示器（UUID 前 8 位…）" |
 | 风险项 | 本机 `mru-spaces = 1`（自动重排空间），会打乱桌面顺序、破坏"下一个桌面"直觉 → 设置页给显式开关，**用户主动点击才改** |
@@ -534,7 +546,7 @@ A4 的**逻辑侧已自动化**（`DockAcceptanceTests.testExternalDockChangeIsC
 
 ```bash
 swift build -c release --disable-sandbox   # 编译
-swift test --disable-sandbox               # 314 个测试（含 7 个默认跳过的真实 Dock 验收）
+swift test --disable-sandbox               # 316 个测试（含 8 个默认跳过的真实 Dock 验收）
 ./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
 open build/MultiDock.app                   # 运行（必须在 .app 里跑，菜单栏图标才正常）
 ./scripts/check-toast-window.sh --watch 12 # 客观验收 toast（零权限，读窗口元数据）
@@ -544,6 +556,7 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ```
 
 - ⚠️ **必须加 `--disable-sandbox`**（2026-09-18 起）。SwiftPM 自己的 `sandbox-exec` 在本机环境里会 `sandbox_apply: Operation not permitted`，manifest 编译直接失败，报 `error: 'multi-dock': Invalid manifest`。这不是代码问题，加了这个参数就好。
+  **`./scripts/build-app.sh` 已内置这个参数**（2026-09-20 补上，之前它裸调 `swift build` 会直接失败）。
 - **`swift test` 现在可用了**：`Package.swift` 已加 `MultiDockTests` 测试目标。（旧版这里写的"会报 no tests found"已过时。）
 - **真实 Dock 验收默认跳过**（`DockAcceptanceTests`，靠环境变量开启）。它会写 `com.apple.dock` 并重启 Dock 几十次，跑完把操作前的全量域写回去；中间产物落在 `/tmp/multidock-acceptance-*.plist`。**跑的时候别手动改 Dock**，否则会报假失败。
 - 想更保险就先手工备份：`defaults export com.apple.dock /tmp/dock-backup.plist`。
@@ -621,7 +634,7 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | A5 | **「连切 5 次只显示最终名字」只做了单测**，没做真机连击 | 真机是否闪烁未实测 | 单测 `testRapidSwitchKeepsOnlyLatestTextAndHidesOnce` 覆盖调度逻辑；真机需手动快速点菜单栏 |
 | A6 | **「切桌面不再黑屏几分钟」还没真机复验**（实验 9 的修复只过了单测） | 这是用户报的最严重故障之一，没复验等于没确认修好 | ⚠️ **2026-09-20 复盘用户真机日志：大部分通过。** 05:02 打包的二进制（**晚于**实验 9 / 10 两个 commit）跑出 6 次真实 apply：**正常路径全是 50–126 ms**（57 / 126 / 84 / 50 ms）。但另两次是 **26 046 ms 与 31 039 ms**。⚠️ **那两次的"原因"一度被归到 `minimumSpacing` 上，已被实验 12–14 证伪**（见 A8）。结论：**60–126 s 那一档没了，26–31 s 这一档偶发、根因未定。** 复核口径：连切十次桌面后，`Dock 不可用` 应稳定在 100 ms 量级 |
 | A7 | **「退出不再卡住几分钟」没做真机复验**（实验 10 的修复只过了单测） | 用户报的最严重故障，且是**每次**退出都中招 | ✅ **2026-09-20 复盘用户真机日志：通过。** `05:58:46.001 退出还原流程结束，用时 0.01s`（旧版 **53.12 s / 54.05 s**），整条退出约 2 s，其中 2 s 是 `prepareForTermination` 的等待窗口、**不是 Dock 缺失**。唯一尾巴：这次走了 `!settled` 分支（`还原未完成（退出时还有一次应用没落地），已留下标记`）→ `session.state` 留 `needsSelfHeal = true, pid = 0`，属预期兜底；但**副作用见 A8 第 2 条** |
-| A8 | **Dock 重启偶发慢到 26–31 秒**（2026-09-20 真机日志挖出，根因**未定**） | 偶发；正常路径稳定 35–126 ms，所以影响远小于实验 9 的 60–126 s | ⚠️ **四个假说已被实测逐个推翻，别按它们改代码**（`spikes.md` 实验 11.6 与 12–14）：① ~~launchd 有 10 s uptime 门槛~~ → 实验 12：uptime 6/12/20/60 s **全 37–68 ms**；② ~~`NSRunningApplication` 返回陈旧实例导致探测不到~~ → 实验 13：两条路径 41–116 ms 同量级、无分叉；③ ~~连续快速重启累积退避~~ → 实验 13：6 次连发（间隔 2 s）**全正常**；④ ~~写偏好是诱因~~ → 实验 14：幂等写 + SIGHUP **5 轮 35–46 ms**。**→ `minimumSpacing` 保持 1 s 不动**（plist 里本来就是 `ThrottleInterval = 1`）。已被排除的观察：真机那两次慢重启期间主线程是活的（同一窗口 toast 的 1 秒定时器准时触发）→ **不是假测量，Dock 当时真的不在**。**→ 2026-09-20 已装取证仪表**（`spikes.md` 实验 15）：慢于 1 秒的重载会采样 `pidProbe()`（`NSRunningApplication` vs `proc_listpids`）并写进那一行日志的 `慢重启取证：…` 段，**正常路径一次都不调用**（`testFastRestartDoesNotProbeAtAll` 守着）。下次复现时按实验 15 的判定规则读：早期条目 `scan=<新 PID>` 而 `LS=<旧 PID>` = 探测分叉（我们的 bug）；两条都 `nil` = Dock 真的没回来（launchd 的事）。⚠️ **别为了复现去反复折腾用户的 Dock** —— 偶发故障（那天 6 次中 2 次），等它自己出现。**第五次尝试（2026-09-20 真机验收 20 轮连切，实验 15.1）也没复现**：Dock 年龄正好 ~1 s、与故障同构，结果 **最坏 74 ms、慢重启 0 次** → 成因只在真实 App 的完整上下文里，不在"连续重启"这个形状里 |
+| A8 | **Dock 重启偶发慢到 26–31 秒**（2026-09-20 真机日志挖出，根因**未定**） | 偶发；正常路径稳定 35–126 ms，所以影响远小于实验 9 的 60–126 s | ⚠️ **五个假说已被实测逐个推翻，别按它们改代码**（`spikes.md` 实验 11.6 / 12–14 / **15.3**）：① ~~launchd 有 10 s uptime 门槛~~ → 实验 12：uptime 6/12/20/60 s **全 37–68 ms**；② ~~`NSRunningApplication` 返回陈旧实例导致探测不到~~ → 实验 13：两条路径 41–116 ms 同量级、无分叉；③ ~~连续快速重启累积退避~~ → 实验 13：6 次连发（间隔 2 s）**全正常**；④ ~~写偏好是诱因~~ → 实验 14：幂等写 + SIGHUP **5 轮 35–46 ms**；⑤ ~~LS 抱着旧 PID 不放导致 `dockPID()` 看不见重启~~ → **实验 15.3：定向测量 6 轮，危险窗口 6/6 = 0 ms**（LS 在 11–29 ms 就松手，早于进程表看到新 Dock 的 26–33 ms）。**→ `minimumSpacing` 保持 1 s、`dockPID()` 的 LS 优先都不要动**（plist 里本来就是 `ThrottleInterval = 1`）。已被排除的观察：真机那两次慢重启期间主线程是活的（同一窗口 toast 的 1 秒定时器准时触发）→ **不是假测量，Dock 当时真的不在**。**→ 2026-09-20 已装取证仪表**（`spikes.md` 实验 15）：慢于 1 秒的重载会采样 `pidProbe()`（`NSRunningApplication` vs `proc_listpids`）并写进那一行日志的 `慢重启取证：…` 段，**正常路径一次都不调用**（`testFastRestartDoesNotProbeAtAll` 守着）。下次复现时按实验 15 的判定规则读：早期条目 `scan=<新 PID>` 而 `LS=<旧 PID>` = 探测分叉（我们的 bug）；两条都 `nil` = Dock 真的没回来（launchd 的事）。⚠️ **别为了复现去反复折腾用户的 Dock** —— 偶发故障（那天 6 次中 2 次），等它自己出现。**第五次尝试（2026-09-20 真机验收 20 轮连切，实验 15.1）也没复现**：Dock 年龄正好 ~1 s、与故障同构，结果 **最坏 74 ms、慢重启 0 次** → 成因只在真实 App 的完整上下文里，不在"连续重启"这个形状里。⚠️ **仪表自己一开始也是坏的**（实验 15.2，已修 + 加走 `any` 协议的守卫测试）：非可选返回类型撞上协议见证位协变陷阱 → 通过协议调用永远拿 nil。**至此"我们的 bug"这一侧已经没有候选了。** |
 | A9 | ~~两条桌面 override 与默认 Dock 的图标相同 = 坏数据~~ | ~~切过去会得到 3 图标的 Dock~~ | ✅ **已结案（2026-09-20）**：**用户确认默认 Dock 那 3 个图标（启动台 / FlClash / WorkBuddy AI）+ `orientation = right` 是他有意配的** → "图标相同"不再构成损坏证据，他完全可能给那两条也配了同一组。⚠️ **而且它们不能清成「沿用默认」**：override 的 `orientation = "bottom"`，默认是 `"right"`，而 `effectiveConfig(for:)` 是**整体替换**（`binding(for:)?.override ?? settings.defaultDock`）→ 清掉会让那两个桌面的 Dock **跑到屏幕右侧**，是可见的行为改变。**结论：`config.json` 原样保留，要改由用户在 UI 里自己改。** ⚠️ 本节数字在 2026-09-20 被更正过两次，第一次是我读取脚本用错 JSON 键名（`apps`/`others` ≠ 真实键 `pinnedApps`/`otherItems`）读出的假象 —— 见 §5 那条约定 |
 | A10 | ~~`session.state` 的假欠账会在下次启动抹掉用户自己加的 Qoder CN~~ | ~~用户的 Dock 改动被无声回退~~ | ✅ **已解决（2026-09-20）**：那笔债是假的 —— 日志里 `05:58:45.991 开始还原到原始 Dock：15 个图标` 之后 Dock 确实回到了基准态，`needsSelfHeal` 只是 `prepareForTermination` 发现"有排队中的 apply 没落地"留下的兜底标记。已备份后移除 `session.state`（`session.state.bak-20260920-044624`）。**注意 `impliesDirtyDock` 是 `appliedFingerprint != nil \|\| needsSelfHeal == true`，只清 `needsSelfHeal` 不够** |
 | **B. 待做的功能（已排期）** | | | |
@@ -676,27 +689,32 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 
 ## 7. 给下一个 session 的建议顺序
 
-1. 读本文件 → `docs/PLAN.md`（§3 核心机制、§3.10 桌面命名与 toast、§3.11 无痕与自愈、§3.3 退出流程、§4 阶段与验收）→ `docs/spikes.md`（**14 个实验结论，含对计划的多处修正；实验 5 有两个要命发现，实验 6 是节流窗口的判据修正，实验 7 是一条"别再做"的动画结论，实验 8 是"其他项不能新建"，实验 9 是"切桌面黑屏几分钟"的根因，实验 10 是"每次退出都卡住几分钟"的根因 + 那条 `withTaskGroup` 的静默失效，实验 11 是真机日志复盘，实验 12–14 把它的四个假说全部证伪**）。
-2. 跑一次基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，确认全绿（应为 **314 个测试通过、零警告**）。
-3. **动 Dock 相关代码前先读 §4 的六条**："launchd 重启节流"、"节流窗口判据"、"`-1` PID 陷阱"、
+1. 读本文件 → `docs/PLAN.md`（§3 核心机制、§3.10 桌面命名与 toast、§3.11 无痕与自愈、§3.3 退出流程、§4 阶段与验收）→ `docs/spikes.md`（**15 个实验结论，含对计划的多处修正；实验 5 有两个要命发现，实验 6 是节流窗口的判据修正，实验 7 是一条"别再做"的动画结论，实验 8 是"其他项不能新建"，实验 9 是"切桌面黑屏几分钟"的根因，实验 10 是"每次退出都卡住几分钟"的根因 + 那条 `withTaskGroup` 的静默失效，实验 11 是真机日志复盘，实验 12–14 把它的四个假说全部证伪，实验 15 是给未解故障装取证仪表 —— 15.2 仪表自己的 bug，15.3 第六个假说也被证伪**）。
+2. 跑一次基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，确认全绿（应为 **316 个测试通过、零警告**）。
+3. **动 Dock 相关代码前先读 §4 的七条**："launchd 重启节流"、"节流窗口判据"、"`-1` PID 陷阱"、
    "查 Dock PID 的代价"、"**`launchctl kickstart` 会阻塞几十秒 → 绝不能 `waitUntilExit()`**"、
-   "**`withTaskGroup` 当"赛跑"用会让上限静默失效**"。
+   "**`withTaskGroup` 当"赛跑"用会让上限静默失效**"、"**协议要求 `T?` 时实现必须逐字写 `T?`**"。
    踩到节流会让 Dock 消失一秒多；踩到 `-1` 会杀掉用户的全部进程；踩到同步 `kickstart` 会把整个 App 冻住两分钟
-   （见 `docs/spikes.md` 实验 9）；踩到任务组那个坑会写出一堆"看着有上限、其实没有"的等待（实验 10）。
+   （见 `docs/spikes.md` 实验 9）；踩到任务组那个坑会写出一堆"看着有上限、其实没有"的等待（实验 10）；
+   踩到见证位那个坑会让整条功能**静默不接线而单测全绿**（实验 15.2）。
 4. 需要动 Dock 的改动，验收用 `MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`；**跑之前先 `defaults export com.apple.dock` 备份，且中途别手动改 Dock**。
-   ✅ **2026-09-20 实跑通过：7 个用例全绿、38.6 s**，跑完 Dock 域与备份逐键一致（只差 `mod-count`）。
+   ✅ **2026-09-20 实跑通过：8 个用例全绿、40.7 s**，跑完 Dock 域与备份逐键一致（只差 `mod-count`）。
    ⚠️ **退出码可能是非 0，那不是测试失败** —— 是 SwiftPM 报的
    `[sandbox] … /Users/apple/.swiftpm/security (file-write-unlink)` 拦截消息。判据看
    `Executed N tests, with 0 failures`。`testSwitchingBetweenTwoDesktopConfigsIsStable` 会把
    **慢重启（≥300 ms）连同取证时间线单独打印**，是抓 A8 最省事的入口。
-5. **只剩 A8 一条待攻**（2026-09-20 第 19 次更新；A6 / A7 已由用户真机日志销账，**A9 已由用户结案**）：
+   ⚠️ **`testSlowProbeTimelineWorksAgainstTheRealDock` 的阈值必须是 `.zero` 而不是 `1 ms`** ——
+   后者有竞态（探测机会在第二轮轮询，Dock 若在那之前回来就先返回、一条不记），实测一次空三次有。见实验 15.2。
+5. **只剩 A8 一条待攻**（2026-09-20 第 22 次更新；A6 / A7 已由用户真机日志销账，**A9 已由用户结案**）：
    - ✅ **A9 已结案**：默认 Dock 的 3 个图标是用户有意配的；两条 override 的 `orientation = "bottom"`
      与默认的 `"right"` 不同，**不是副本、不能清成沿用默认**（整体替换语义）。
      `config.json` 已按用户意愿原样保留，**别去动它**。
    - ✅ **A10 已处理**：`session.state` 那笔假欠账已清（备份在 `session.state.bak-20260920-044624`），
      下次启动不会再把用户自己加的 Qoder CN 抹掉。
-   - ⚠️ **A8**：Dock 重启偶发慢到 **26–31 s**，**根因未定**。`spikes.md` 实验 11.6 已列清**四个被推翻的假说**
-     （含"把 `minimumSpacing` 提到 10 s"那条）—— **别再试这四个方向**。
+   - ⚠️ **A8**：Dock 重启偶发慢到 **26–31 s**，**根因未定**。`spikes.md` 实验 11.6 已列清**五个被推翻的假说**
+     （含"把 `minimumSpacing` 提到 10 s"那条，以及实验 15.3 的"LS 滞后"）—— **别再试这五个方向**。
+     **"我们的 bug"这一侧已经没有候选了**：仪表已真机验过（15.2 修好后 4/4 稳定产出时间线），
+     探测路径的两条答案在正常重启下**不分叉**（危险窗口 0 ms）。
      **下一步不是去复现，而是等它自己出现**：取证仪表已装进 `build/MultiDock.app`（实验 15），
      真机下一次偶发时 `multidock.log` 里那一行会出现 `慢重启取证：…`，照实验 15 的判定规则读即可定案。
      ⚠️ 排查时记住：慢重启窗口里 `DockPresenceMonitor` **刻意静默**（§4 有一条），日志空白是预期。
@@ -718,6 +736,80 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-09-20（第 22 次）— **挖出并修掉取证仪表的致命 bug**（协议见证位协变陷阱）+ **证伪第六个假说**（LS 滞后）
+
+**用户说**：「继续任务。如果上下文快满了，就新建一个 session 继续任务」。
+
+上一轮把 A8 的取证仪表装好了、6 条替身单测全绿、App 也重新打包了 —— 这轮按计划给它写真机验收测试，
+**结果第一次跑就炸了**。这条记录的重点是"仪表是坏的"和"最后一个假说也被证伪"。
+
+**① 仪表在生产路径上完全是死的（最值钱的发现）。** 新写的
+`DockAcceptanceTests/testSlowProbeTimelineWorksAgainstTheRealDock` 第一条断言就失败：
+
+```
+XCTUnwrap failed: expected non-nil value of type "DockPIDProbe" - pidProbe() 返回 nil —— 取证仪表是坏的
+```
+
+根因：协议要求 `func pidProbe() -> DockPIDProbe?`，扩展里有默认实现 `{ nil }`，而具体类型
+`RealDockProcessControl` 写的是**非可选**的 `-> DockPIDProbe`。Swift **不做返回类型协变匹配** ——
+它把具体方法当成**另一个重载**，协议要求的**见证位由默认实现满足**。于是：
+
+```swift
+RealDockProcessControl().pidProbe()                                   // ✅ 有值
+(RealDockProcessControl() as any DockProcessControlling).pidProbe()   // ❌ nil
+```
+
+而 `DockReloader` 持有的正是 `any DockProcessControlling` → `sample()` 里
+`guard let probe = process.pidProbe() else { return }` 每次直接返回，时间线恒为空。
+**6 条替身单测全绿，因为替身自己签的就是 `T?`** —— 替身单测证明不了生产路径接通。
+
+修法：返回类型改成逐字 `DockPIDProbe?`（源码里带了最小复现注释）；新增
+`DockProcessSafetyTests.testRealControlIsWiredAsTheProtocolWitness`，**故意走 `any` 协议**调用并断言非 nil。
+
+**② 验收测试自己有竞态，也修了。** 阈值先写 `1 ms`，实测**一次空、三次有** —— 探测机会出现在
+**第二轮**轮询里，而 `dockPID()` 的判定排在 `sample()` **之前**，只要 `Task.sleep(15 ms)` 被拖长、
+Dock 恰好在第二轮之前回来，就会**先返回、一条不记**。改成 `.zero` 后连跑 4 次，每次都稳定 2 条：
+
+```
+[A8 取证] 真机重载：SIGHUP 成功：PID 72409 → 72516，Dock 不可用 37 ms；
+          慢重启取证：0ms LS=72409 scan=nil｜36ms LS=nil scan=72516
+```
+
+**③ 这一行立刻产出新线索 → 定向测量 → 第六个假说被证伪。** 时间线显示发完 SIGHUP 后
+`NSRunningApplication` 还在报**旧** Dock。新增脚本 `scripts/measure-launchservices-lag.swift`
+（只读 + 发 SIGHUP，与产品代码同构的安全闸门），1 ms 采样同时问两条路径，跑 6 轮：
+
+| 量 | 实测 |
+| --- | --- |
+| 进程表看到新 PID | 26–33 ms |
+| **LS 松手（不再报旧 PID）** | **11–29 ms** |
+| LS 看到新 PID | 70–93 ms |
+| **危险窗口（进程表已知新、`dockPID()` 还报旧）** | **6/6 = 0 ms** |
+
+机制上也不成立：LS **松手很早**、只是**认领新 PID 晚**（~50 ms），而 `dockPID()` 是
+**LS 优先 + nil 回退扫进程表** —— 回退把那半段完全吃掉了。**A8 的"我们的 bug"候选至此清空。**
+
+**④ 全量回归**：`swift test --disable-sandbox` → **316 个测试、8 跳过、0 失败**；
+真机验收 `MULTIDOCK_DOCK_ACCEPTANCE=1 … --filter DockAcceptanceTests` → **8/8 绿、40.7 s**；
+跑完 `defaults export com.apple.dock` 与备份**逐键一致**（只差 `mod-count`）。
+
+**⑤ 顺手修掉 `build-app.sh` 的一个死结**：它裸调 `swift build`，在本机环境里直接
+`sandbox_apply: Operation not permitted` → `Invalid manifest` 而失败。已给它两个调用都补上
+`--disable-sandbox`。**重新打包已验证**：`build/MultiDock.app` 里能找到长中文字面量 `慢重启取证`
+（1 次；`DockPIDProbe` 计数为 0 是 release 的间接引用优化，正常）。
+
+**⑥ 已同步**：`spikes.md` 摘要第 6 条 + 新增 **15.2 / 15.3**；`AGENTS.md` §3 顶部与未完成、§3 脚本表
+（新增 LS 滞后测量脚本）、§3 测试数 314 → **316**、§4 新增两条环境事实（协议见证位陷阱、LS 松手早认领晚）
++ 更正"节流不是隐式"（plist 里本来就写着 `ThrottleInterval = 1`）、§5 构建片段、§6.3 A8、§7 第 1–5 条、§8 本条；
+`MEMORY.md`（并压回 3000 字符量级）、`2026-09-20.md`、技能 `macos-dock-space-probe`（新增见证位陷阱、
+竞态、LS 松手早认领晚三节）。
+
+**当前进度**：P0–P5 全落地；A6 / A7 由真机日志销账，A9 / A10 结案；
+真机验收 **8/8 绿**；**A 组只剩 A8，且"我们的 bug"一侧已无候选**（仪表已真机验过、探测不分叉）。
+
+**未解决**：**A8 仍未定案** —— 只剩 launchd / Dock 归位本身，等真机下一次偶发把过程写进 `multidock.log`；
+B5 多显示器热插拔真机实测（需用户插外接屏）；A1–A3 / A5 真人手测；B9 / B10（注销与重登录）。
 
 ### 2026-09-20（第 21 次）— 跑真机 Dock 验收（7/7 绿）+ **第五次复现 A8 失败**（`spikes.md` 实验 15.1）
 

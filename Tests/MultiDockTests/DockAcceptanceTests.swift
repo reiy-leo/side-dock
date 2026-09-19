@@ -414,6 +414,101 @@ final class DockAcceptanceTests: XCTestCase {
         """)
     }
 
+    // MARK: - A8 取证仪表的真机验证（`docs/spikes.md` 实验 15）
+
+    /// **仪表本身也必须实测。**
+    ///
+    /// 为什么需要这条：A8 的取证仪表（`pidProbe()` / `probeTimeline`）只有**替身**单测覆盖，
+    /// `RealDockProcessControl.pidProbe()` 在真机上一次都没被调用过 ——
+    /// 而它恰恰是"万一 A8 真的发生时"唯一的证据来源。**证据链本身没验过，等于没有。**
+    /// 更糟的是：如果它是坏的，我们会在**最需要它的那一刻**才发现。
+    ///
+    /// 做法：把 `slowProbeThreshold` 压到 **0**，让一次**正常**的重启（几十毫秒）也走取证路径。
+    /// 这样不用等偶发故障就能验三件事：
+    /// 1. 时间线真的会被产出；
+    /// 2. 每条都**同时**带两条探测路径的答案（少一条就没法判分叉）；
+    /// 3. 收尾那一条的 `scan` **等于真实的新 Dock PID** —— 证明探针读的是真东西，不是过期值。
+    ///
+    /// ⚠️ **阈值必须是 0，不能是 1 ms**（2026-09-20 实测踩到）：探测机会出现在**第二轮**轮询里
+    /// （第一轮 `now` 还没越过窗口），而 `dockPID()` 的判定排在 `sample` **之前** ——
+    /// 只要 `Task.sleep(15ms)` 被拖长一点、Dock 恰好在第二轮之前回来，就会**先返回、一条不记**。
+    /// 这条测试当时就是这么偶发失败的（同样的代码一次空、三次有），**是测试的竞态，不是仪表的毛病**。
+    /// 阈值 0 让第一轮就必然采样，与轮询抖动解耦。
+    ///
+    /// ⚠️ 会真的重启 Dock 一次；默认跳过，`MULTIDOCK_DOCK_ACCEPTANCE=1` 才跑。
+    func testSlowProbeTimelineWorksAgainstTheRealDock() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment[Self.enableFlag] == "1",
+            "会真的重启 Dock；设 \(Self.enableFlag)=1 才跑"
+        )
+
+        let before = DockPreferences.readDomain()
+        XCTAssertFalse(before.isEmpty, "读不到 com.apple.dock，验收无意义")
+
+        // ---- 第一段：探针直读。此刻 Dock 处于稳定态，两条路径必须指向同一个活着的进程 ----
+        let control = RealDockProcessControl()
+        let livePID = try XCTUnwrap(control.dockPID(), "拿不到 Dock PID，验收无意义")
+        let probe = try XCTUnwrap(control.pidProbe(), "pidProbe() 返回 nil —— 取证仪表是坏的")
+        print("""
+        [A8 取证] 探针直读：\(probe.summary)　dockPID()=\(livePID)
+        [A8 取证] 两条路径是否一致：\(probe.launchServices == livePID && probe.procScan == livePID)
+        """)
+        // `proc_listpids` 是内核进程表，是事实来源，必须严格相等。
+        XCTAssertEqual(probe.procScan, livePID, "proc_listpids 路径必须看到真实 Dock")
+        // `NSRunningApplication` 在**非 `.app` 进程**（xctest runner 就是）里**查不到 Dock 是已知的**，
+        // 所以这里只要求"要么查不到、要么必须一致" —— 这条恰好能抓住"返回一个陈旧/错误的 PID"
+        // 那类 bug，也就是 A8 假说 ② 的形状。
+        XCTAssertTrue(probe.launchServices == nil || probe.launchServices == livePID,
+                      "NSRunningApplication 路径返回了一个既不是 nil 也不是真实 Dock 的 PID："
+                        + "\(probe.launchServices.map(String.init) ?? "nil")（真实 \(livePID)）")
+
+        // ---- 第二段：让正常重启也走取证 ----
+        let reloader = DockReloader(
+            process: control,
+            timeout: .seconds(30),
+            pollInterval: .milliseconds(15),
+            fallbackGrace: .milliseconds(500),
+            minimumSpacing: .zero,
+            slowProbeThreshold: .zero,
+            probeInterval: .milliseconds(5),
+            probeSampleCap: 8
+        )
+
+        do {
+            let outcome = await reloader.reload(strategy: .auto)
+            print("""
+            [A8 取证] 真机重载：\(outcome.description)
+            [A8 取证] 取证条数：\(outcome.probeTimeline.count)（上限 8）
+            """)
+
+            XCTAssertTrue(outcome.succeeded, "重载没成功，取证无从谈起：\(outcome.description)")
+            XCTAssertFalse(outcome.probeTimeline.isEmpty,
+                           "阈值 1 ms 下必然该有取证；空说明仪表没接上")
+            XCTAssertLessThanOrEqual(outcome.probeTimeline.count, 8, "取证条数必须封顶")
+
+            for line in outcome.probeTimeline {
+                XCTAssertTrue(line.contains("LS=") && line.contains("scan="),
+                              "每条取证都必须同时带两条路径，否则判不了分叉：\(line)")
+            }
+
+            // 收尾那条必须已经看到新 Dock。看不到的话，说明探针读的是过期值 ——
+            // 那 A8 真发生时的"证据"就是假的，比没有证据更坏。
+            let newPID = try XCTUnwrap(outcome.newPID)
+            XCTAssertTrue(outcome.probeTimeline.last?.contains("scan=\(newPID)") ?? false,
+                          "收尾取证没看到新 PID \(newPID)：\(outcome.probeTimeline.last ?? "无")")
+        } catch {
+            await Self.writeBack(before, label: "A8 取证验收异常还原")
+            throw error
+        }
+
+        let restored = await Self.writeBack(before, label: "A8 取证验收结束还原")
+        let illegal = Self.differences(between: before, and: restored)
+            .subtracting(DockPreferences.whitelistedKeys)
+            .subtracting(Self.dockSelfMutatingKeys)
+        XCTAssertTrue(illegal.isEmpty, "还原后白名单外的键仍有差异：\(illegal.sorted())")
+        XCTAssertEqual(Set(before.keys), Set(restored.keys), "键集合必须完全一致")
+    }
+
     // MARK: - P5+ 验收：外部改动真实 Dock → 识别并回存（覆盖 `AGENTS.md` §6.3 的 A4）
 
     /// 覆盖 `AGENTS.md` §6.3 的 **A4** —— 那条一直挂着"要手动拖一个图标进 Dock 才验得了"。

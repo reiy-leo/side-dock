@@ -66,13 +66,32 @@ final class DockProcessSafetyTests: XCTestCase {
                           "dockPID() 平均 \(Int(average * 1000)) ms，太慢会拖慢每一次重启判定")
     }
 
+    func testRealControlIsWiredAsTheProtocolWitness() throws {
+        // ⚠️ 这条守的是一个**静默失效**，2026-09-20 实测踩过：
+        // 协议要求 `func pidProbe() -> DockPIDProbe?`，而扩展里有一个返回 `nil` 的默认实现。
+        // 真实实现如果把返回类型写成**非可选**的 `DockPIDProbe`，Swift 会把它当成"另一个重载"，
+        // 协议要求转而由**默认实现**满足 —— 于是**经协议调用永远拿到 nil**，
+        // A8 的取证仪表在生产路径上完全死掉，而所有单测照样全绿（替身的签名是对的）。
+        //
+        // 所以必须**经协议**调用。经具体类型调用会选中那个重载，测不出这个问题。
+        let viaProtocol: any DockProcessControlling = RealDockProcessControl()
+        let probe = try XCTUnwrap(viaProtocol.pidProbe(),
+                                  "经协议调用拿到 nil —— 真实实现没被装成见证，取证仪表是死的")
+        let livePID = try XCTUnwrap(control.dockPID(), "Dock 不在运行，跳过")
+        XCTAssertEqual(probe.procScan, livePID, "proc_listpids 路径必须看到真实 Dock")
+        // `NSRunningApplication` 在非 `.app` 进程（xctest runner 就是）里查不到 Dock 是已知的，
+        // 所以只要求"要么查不到、要么一致" —— 这恰好能抓住"返回陈旧/错误 PID"那类 bug。
+        XCTAssertTrue(probe.launchServices == nil || probe.launchServices == livePID,
+                      "NSRunningApplication 路径返回了既不是 nil 也不是真实 Dock 的 PID："
+                        + "\(probe.launchServices.map(String.init) ?? "nil")（真实 \(livePID)）")
+    }
+
     func testDockProcessNameMatchesTheGuardConstant() throws {
         // 身份确认依赖进程名恰好是 "Dock"。若系统改了名字，闸门会静默失效（永远返回 false），
         // 表现为"Dock 重启失败"而不是"杀错进程"—— 但也要能被发现。
         let pid = try XCTUnwrap(control.dockPID())
         XCTAssertTrue(control.signal(pid, 0), "身份确认应当认出真正的 Dock")
     }
-
     func testRealDockStartTimeIsReadable() throws {
         // `DockReloader` 靠进程年龄推算 launchd 的节流窗口（`proc_pidinfo(PROC_PIDTBSDINFO)`）。
         // 读不出来会退回内存记忆 —— 那条路在"别人刚重启过 Dock"时是错的，
