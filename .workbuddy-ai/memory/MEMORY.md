@@ -71,4 +71,7 @@ SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.s
   回归守卫要断言墙钟。
 - **配置损坏会自我固化**：残缺 override 被 apply → 真实 Dock 真的变残缺 → `DockWatcher` 合法地把它当
   "用户手动改动"回存 → 钉死。修代码不会自动修数据。
+- ⚠️ **用脚本核对 `config.json` 前先把真实键名打出来**（真实键是 `pinnedApps` / `otherItems`，
+  **不是** `apps` / `others`）。2026-09-20 就因为凭记忆写键名，把"3 个图标"读成"0 个"，
+  据此得出一个**不存在的**数据损坏结论并写进了文档。一个字段名写错足以伪造出一份假证据。
 - **同一个文件不要在同一条消息里发两个编辑** —— 会静默丢掉一个（症状是报错指向一个你明明写过的符号）。

@@ -848,13 +848,30 @@ func waitForIdle(upTo limit: Duration) async -> Bool {
 
 ### 11.4 顺带记录：配置已被写坏，且不会自愈
 
-`~/Library/Application Support/MultiDock/config.json`（2026-09-19 05:32 写）当前状态：
+> ⚠️ **这一节在 2026-09-20 被更正过一次。** 初版写的是"三个桌面 override 全部为空"，
+> **那是错的** —— 当时的读取脚本用错了 JSON 键名（写 `apps` / `others`，真实键是 `pinnedApps` / `otherItems`），
+> 于是把有内容的 override 读成了空。**教训：核对配置前先 `print(list(d.keys()))` 把真实键名打出来**，
+> 不要凭记忆写字段名；一个字段名写错就能把"3 项"读成"0 项"，并据此得出完全错误的结论。
 
-- 默认 Dock `pinnedApps` = **3 项**（启动台 / FlClash / WorkBuddy AI），`otherItems` = 0；
-- 三个桌面（`计划 任务` / `密码 邮件` / `LLM`）的 override **全部为空**（`pinnedApps: []`、`otherItems: []`）。
+`~/Library/Application Support/MultiDock/config.json`（2026-09-19 05:32 写）**用正确的键名重读**后的真实状态：
+
+| 目标 | `pinnedApps` | `otherItems` | 内容 |
+| --- | --- | --- | --- |
+| 默认 Dock | **3** | 0 | 启动台 / FlClash / WorkBuddy AI |
+| `密码 邮件` | **3** | 0 | 启动台 / FlClash / WorkBuddy AI ← **与默认逐项相同** |
+| `计划 任务` | **3** | 0 | 启动台 / FlClash / WorkBuddy AI ← **与默认逐项相同** |
+| `LLM` | **15** | 1 | 启动台 / 滴答清单 / Chrome / … / OrbStack ← 正常 |
 
 而**真实 Dock 是健康的**：`persistent-apps` **16 项**、`persistent-others` 1 项、`tilesize 36` / `orientation bottom` / `autohide false`。
 基准快照是 15 项（用户后来自己加了 Qoder CN，所以真实是 16）。
+
+**坏在哪**：两个用途完全不同的桌面配出了**完全相同、且只有 3 个图标的独立配置** ——
+这是"override 被默认 Dock 的内容覆盖"的指纹，不是人手配出来的。
+它与 2026-09-18 的文档记录（"`计划 任务` 与 `密码 邮件` 两条 override 已被写成 3 个图标、0 个其他项，`LLM` 那条是对的"）
+**逐项吻合**，说明这两条从 09-18 起就一直是坏的，没有被进一步恶化。
+
+⚠️ **默认 Dock 那 3 个图标不一定是坏的**：它的 `appearance.orientation = "right"`（真实 Dock 是 `bottom`），
+那是明显的手工选择 → 默认 Dock 很可能是**用户故意配的精简底座**。**不要擅自改它，要问。**
 
 日志里能看到损坏的**固化路径**（这是实验 9.4 那个 bug 的续集）：
 
@@ -867,9 +884,14 @@ func waitForIdle(upTo limit: Duration) async -> Bool {
 即：残缺的 override 被 apply 到真实 Dock → 真实 Dock 变成 3 个图标 → `DockWatcher` **合法地**
 把这 3 个图标当成"用户的手动改动"回存 → 配置被自己钉死。**这是正反馈，不会自愈。**
 
-⚠️ 还有一个**待爆的副作用**：`session.state` 里 `needsSelfHeal = true, pid = 0`
-→ 下次启动会"还原到基准（15 项）"，**把用户后来自己加的 Qoder CN 抹掉**。
-无痕原则本身要求这样，但用户需要知道这一条会在下次启动时发生。
+⚠️ **另一条待爆的副作用（2026-09-20 已处理）**：`session.state` 里 `needsSelfHeal = true` **且**
+`appliedFingerprint != nil`（`impliesDirtyDock` 两条都命中）→ 下次启动会"还原到基准（15 项）"，
+**把用户后来自己加的 Qoder CN 抹掉**。
+
+但这笔债是**假的**：日志里 `05:58:45.991 开始还原到原始 Dock：15 个图标` 之后 Dock 确实回到了基准态
+（用户后来才加的 Qoder CN，所以现在是 16 项）。`needsSelfHeal` 是因为 `prepareForTermination`
+发现有排队中的 apply 没落地才留下的兜底标记，**还原本身成功了**。
+→ 已备份后移除 `session.state`（`session.state.bak-20260920-044624`），让这笔不存在的债失效。
 
 ### 11.5 数据修复（只能手动）
 
