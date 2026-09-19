@@ -345,6 +345,14 @@ struct ReloadOutcome: Sendable, Equatable {
 /// **Dock 没有热重载**（P0 实测：post 任何通知都无效），只能让 Dock 进程重启。
 /// 主路径 `SIGHUP`（约 101 ms 不可用），兜底 `SIGTERM` + `launchctl kickstart`。
 ///
+/// ⚠️ **launchd 偶尔会把 Dock 的重新拉起拖到几十秒（A8），正解是"催"而不是"等"。**
+/// `launchctl kickstart`（**不带 `-k`**）是 launchd 那条**绕过重启节流**的官方通道：
+/// 真机 `2026-09-19 05:33:16` 那次，SIGHUP 等满 30 s 没等到 Dock，而紧接着的一发
+/// `kickstart` **0.5 秒**就把 Dock 拉回来了。而它在 Dock 已经跑着时是**无害的 no-op**
+/// （2026-09-20 实测 PID `80643 → 80643` 不变、退出码 0），所以可以随时打。
+/// 于是 `waitForRestart(nudge:)` 在 500 ms 处就催一发，把最坏情况从 **26–31 秒**压到 **1 秒内**。
+/// 详见 `docs/spikes.md` 实验 16。
+///
 /// ⚠️ **绝不用 AppleEvent 优雅退出**：`/System/Library/LaunchAgents/com.apple.Dock.plist` 是
 /// `KeepAlive = {AfterInitialDemand:1, SuccessfulExit:0}`，退出码 0 时 launchd **不会**把 Dock 拉回来，
 /// 用户会当场失去 Dock。只走信号路径。
@@ -361,17 +369,45 @@ struct ReloadOutcome: Sendable, Equatable {
 final class DockReloader {
 
     private let process: any DockProcessControlling
-    /// 等 Dock 归位的上限。**必须明显长于 launchd 的退避尺度**（真机实测几十秒，见
-    /// `docs/spikes.md` 实验 8.5），否则一次正常的慢拉起会被我们误判成"SIGHUP 失败"，
-    /// 紧接着升级到 `SIGTERM` + `kickstart -k` —— 那一发 `-k` 会把 launchd 正要拉起的
-    /// Dock 再杀一次，把 1 秒的节流滚成两分钟的 Dock 死亡。2026-09-19 就是这么踩的。
+    /// 主路径（SIGHUP / SIGTERM）等归位的上限。
+    ///
+    /// **正常路径只要 35–126 ms**，所以这个上限只需要"明显长于正常"，**不需要长到能容忍
+    /// launchd 的退避** —— 退避由 `nudgeAfter` 那一发 `kickstart` 解决（见下）。
+    ///
+    /// ⚠️ **这里原本是 30 s，理由是"launchd 的退避尺度是几十秒"（实验 8.5）。2026-09-20
+    /// 复核真机日志发现那个理由被用错了地方**：`05:33:16` 那次，SIGHUP 等满 30 s 也没等到 Dock，
+    /// 而**紧接着的一发 `kickstart` 只用 0.5 秒就把 Dock 拉回来了**。也就是说 launchd 确实在拖，
+    /// 但 `kickstart` 本来就是**绕过重启节流**的那条官方通道 —— 干等 30 s 换不到任何东西，
+    /// 只是把用户的 26–31 秒 Dock 缺失坐满。见 `docs/spikes.md` 实验 16。
     private let timeout: Duration
     private let pollInterval: Duration
+    /// 等归位期间，如果过了这么久还没见到新 Dock，就**踢一发 `kickstart`**。
+    ///
+    /// 注意语义：**这不是放弃，是催一下**。`kickstart`（**不带 `-k`**）在 Dock 已经跑着时
+    /// 是**无害的 no-op** —— 2026-09-20 真机实测：PID `80643 → 80643` 未变、退出码 0。
+    /// 所以这一发随时可以打，打早了、打错了都不伤；而它恰好是 launchd 那条绕过节流的通道。
+    private let nudgeAfter: Duration
+    /// **催办的重复间隔。**
+    ///
+    /// 为什么要重复：`nudgeAfter` 到点时 Dock 有可能**还活着**（正在处理 SIGHUP 退出），
+    /// 那一刻的 `kickstart` 对 launchd 来说是 no-op —— 真机验收里 `nudgeAfter: 0` 那一发就是白打的。
+    /// 而 A8 要防的恰恰是"launchd 之后不肯再把它拉起来"，所以想再补一发。
+    /// 重复本身是安全的：对活着的 Dock 是无害 no-op，对死掉的 Dock 就是"立刻起来"。
+    ///
+    /// ⚠️ **但重复是"尽力而为"，不是保证**：`RealDockProcessControl.kickstart()` 有一道
+    /// `LaunchctlParking.hasOutstanding` 闸门（上一发 `launchctl` 进程没退出就不叠发）。
+    /// 真机验收实测到了这一点 —— 第一发之后第二发被闸门吞掉了。
+    /// 好在生产默认 `nudgeAfter` = 500 ms 时 Dock 早已死透，**第一发就是有效的"立刻起来"**，
+    /// 重复只是保险。别把"看到多发"当成必要条件。
+    private let nudgeInterval: Duration
     /// 发完 SIGTERM 后、动 `kickstart` 之前给的宽限。等的是「launchd 自己把 Dock 拉回来」，
     /// 免得正常机器上也白等一次 `kickstart`。
     private let fallbackGrace: Duration
     /// 两次重启之间的最小间隔，用来错开 launchd 的重启节流（见类文档）。
     private let minimumSpacing: Duration
+    /// **`kickstart` 之后**等归位的上限。这条通道实测是"一发就活"（0.5 s），但仍留足余量，
+    /// 覆盖"launchd 自己也在忙"的情况 —— 它才是真正需要几十秒耐心的一段。
+    private let kickstartTimeout: Duration
     /// 等待超过这么久才开始取证采样。默认 1 秒 —— 正常路径只要几十毫秒，永不触发。
     private let slowProbeThreshold: Duration
     /// 取证采样间隔。
@@ -383,10 +419,13 @@ final class DockReloader {
 
     init(
         process: any DockProcessControlling = RealDockProcessControl(),
-        timeout: Duration = .seconds(30),
+        timeout: Duration = .seconds(3),
         pollInterval: Duration = .milliseconds(15),
+        nudgeAfter: Duration = .milliseconds(500),
+        nudgeInterval: Duration = .seconds(1),
         fallbackGrace: Duration = .milliseconds(500),
         minimumSpacing: Duration = .milliseconds(1000),
+        kickstartTimeout: Duration = .seconds(30),
         slowProbeThreshold: Duration = .seconds(1),
         probeInterval: Duration = .milliseconds(100),
         probeSampleCap: Int = 24
@@ -394,8 +433,11 @@ final class DockReloader {
         self.process = process
         self.timeout = timeout
         self.pollInterval = pollInterval
+        self.nudgeAfter = nudgeAfter
+        self.nudgeInterval = nudgeInterval
         self.fallbackGrace = fallbackGrace
         self.minimumSpacing = minimumSpacing
+        self.kickstartTimeout = kickstartTimeout
         self.slowProbeThreshold = slowProbeThreshold
         self.probeInterval = probeInterval
         self.probeSampleCap = max(1, probeSampleCap)
@@ -425,51 +467,71 @@ final class DockReloader {
                                  spacingWait: spacingWait)
         }
 
-        if strategy == .auto {
-            process.signal(oldPID, SIGHUP)
-            let wait = await waitForRestart(after: oldPID)
-            if let newPID = wait.pid {
-                return outcome(.sighup, oldPID: oldPID, newPID: newPID,
-                               started: started, spacingWait: spacingWait,
-                               probeTimeline: wait.probeTimeline,
-                               polls: wait.polls, longestGapMS: wait.longestGapMS)
-            }
-        } else {
-            process.signal(oldPID, SIGTERM)
-            let wait = await waitForRestart(after: oldPID)
-            if let newPID = wait.pid {
-                return outcome(.sigterm, oldPID: oldPID, newPID: newPID,
-                               started: started, spacingWait: spacingWait,
-                               probeTimeline: wait.probeTimeline,
-                               polls: wait.polls, longestGapMS: wait.longestGapMS)
-            }
+        // 主路径：`.auto` 发 SIGHUP，`.sigterm` 直接发 SIGTERM。两条路都是"发信号 → 等归位"，
+        // 只是标签不同，所以合成一段。
+        //
+        // ⚠️ `nudge: true` —— 等待期间如果过了 `nudgeAfter`（默认 500 ms）还没见到新 Dock，
+        // 就催一发 `kickstart`。这是 A8 的**正解**：launchd 偶尔会把 Dock 的重新拉起拖到几十秒，
+        // 而 `kickstart` 是绕过它节流的官方通道（真机实测 0.5 s 生效），且在 Dock 已跑着时无害。
+        let primary: ReloadOutcome.Method = strategy == .auto ? .sighup : .sigterm
+        process.signal(oldPID, strategy == .auto ? SIGHUP : SIGTERM)
+        let wait = await waitForRestart(after: oldPID, nudge: true)
+        if let newPID = wait.pid {
+            return outcome(primary, oldPID: oldPID, newPID: newPID,
+                           started: started, spacingWait: spacingWait,
+                           probeTimeline: wait.probeTimeline,
+                           polls: wait.polls, longestGapMS: wait.longestGapMS)
         }
 
-        // 兜底：确保 Dock 以信号致死，再用 launchd 拉回。
-        let dyingPID = process.dockPID() ?? oldPID
-        process.signal(dyingPID, SIGTERM)
+        // ⚠️ **兜底之前先确认"要打的那只 Dock 还是我们那一只"。**
+        //
+        // `process.dockPID()` 读的是**此刻**的 Dock。如果 launchd 恰好在超时前后把它拉回来了，
+        // 这个 PID 已经是**新**的 —— 对着新 Dock 发 SIGTERM 等于把刚恢复的服务再杀一次。
+        // 超时从 30 s 缩到 3 s 之后这个竞态窗口反而更容易撞上，所以必须挡住。
+        if let revived = process.dockPID(), revived > 0, revived != oldPID {
+            return outcome(primary, oldPID: oldPID, newPID: revived,
+                           started: started, spacingWait: spacingWait,
+                           probeTimeline: wait.probeTimeline,
+                           polls: wait.polls, longestGapMS: wait.longestGapMS)
+        }
+
+        // 兜底：确保 Dock 以信号致死，再用 launchd 拉回。此时 `dockPID()` 要么是 nil（已死），
+        // 要么还是 `oldPID`（没死透），两种情况都不会误伤新 Dock。
+        if let dying = process.dockPID() { process.signal(dying, SIGTERM) }
         // 给它一点时间死透；这段时间内 launchd 可能自己就把它拉回来了。
-        let grace = await waitForRestart(after: dyingPID, timeout: fallbackGrace)
+        let grace = await waitForRestart(after: oldPID, timeout: fallbackGrace)
         if let newPID = grace.pid {
             return outcome(.sigterm, oldPID: oldPID, newPID: newPID,
                            started: started, spacingWait: spacingWait,
-                           probeTimeline: grace.probeTimeline,
+                           probeTimeline: Self.mergeTimelines([
+                               ("主路径", wait.probeTimeline), ("升级 SIGTERM 后", grace.probeTimeline),
+                           ]),
                            polls: grace.polls, longestGapMS: grace.longestGapMS)
         }
         process.kickstart()
-        let kicked = await waitForRestart(after: dyingPID)
+        let kicked = await waitForRestart(after: oldPID, timeout: kickstartTimeout)
         if let newPID = kicked.pid {
             return outcome(.kickstart, oldPID: oldPID, newPID: newPID,
                            started: started, spacingWait: spacingWait,
-                           probeTimeline: kicked.probeTimeline,
+                           probeTimeline: Self.mergeTimelines([
+                               ("主路径", wait.probeTimeline),
+                               ("升级 SIGTERM 后", grace.probeTimeline),
+                               ("kickstart 后", kicked.probeTimeline),
+                           ]),
                            polls: kicked.polls, longestGapMS: kicked.longestGapMS)
         }
 
+        // ⚠️ 失败路径**必须带上主路径那一段** —— 催办记录就在里面，而它恰恰是
+        // "为什么没归位"最直接的线索。原来这里只带 `kicked` 的，等于把最有用的证据丢了。
         return ReloadOutcome(method: .failed, oldPID: oldPID, newPID: nil,
                              elapsed: Date().timeIntervalSince(started),
                              spacingWait: spacingWait,
-                             probeTimeline: kicked.probeTimeline,
-                             waitPolls: kicked.polls, waitLongestGapMS: kicked.longestGapMS)
+                             probeTimeline: Self.mergeTimelines([
+                                 ("主路径", wait.probeTimeline),
+                                 ("升级 SIGTERM 后", grace.probeTimeline),
+                                 ("kickstart 后", kicked.probeTimeline),
+                             ]),
+                             waitPolls: wait.polls, waitLongestGapMS: wait.longestGapMS)
     }
 
     /// 退出流程专用的重启：**只发一发信号，最多看它一眼，绝不升级**。
@@ -563,7 +625,13 @@ final class DockReloader {
     /// 等待超过 `slowProbeThreshold` 之后开始**取证**：每 `probeInterval` 问一次
     /// `pidProbe()`，只在**答案变化**时记一条（外加首尾各一条）。这样一次 30 秒的慢重启
     /// 通常只留 2–4 条，但足以定案「慢在探测还是慢在 launchd 拉起」。
-    private func waitForRestart(after oldPID: pid_t, timeout: Duration? = nil) async -> RestartWait {
+    ///
+    /// - Parameter nudge: 为真时，等待超过 `nudgeAfter` 还没见到新 Dock 就**踢一发
+    ///   `kickstart`**，之后每 `nudgeInterval` 补一发，全部记进取证时间线。
+    ///   **只有 `reload()` 会打开它**：退出路径（`reloadForQuit`）刻意不踢 ——
+    ///   那条路 1.5 秒就走人，踢了也没人看结果。
+    private func waitForRestart(after oldPID: pid_t, timeout: Duration? = nil,
+                                nudge: Bool = false) async -> RestartWait {
         let start = ContinuousClock.now
         let deadline = start + (timeout ?? self.timeout)
         let probeFrom = start + slowProbeThreshold
@@ -575,6 +643,10 @@ final class DockReloader {
         var polls = 0
         var lastIteration = start
         var longestGap = Duration.zero
+        /// 催办：到点就催，**并且每 `nudgeInterval` 重复一次** —— 第一发很可能落在
+        /// "Dock 还活着、正在退出"的窗口里（那是个 no-op），必须等它真死了再补。
+        var nudges = 0
+        var nextNudgeAt = start + nudgeAfter
 
         /// 记一条。`force` 为真时无视"答案没变"也记（用于首尾两条）。
         func sample(at instant: ContinuousClock.Instant, force: Bool) {
@@ -599,6 +671,18 @@ final class DockReloader {
                 return RestartWait(pid: pid, probeTimeline: timeline,
                                    polls: polls, longestGapMS: Self.milliseconds(longestGap))
             }
+            // 催一发 `kickstart`。⚠️ 这**不是**放弃等待 —— 只是把 launchd 那条绕过节流的
+            // 通道打开。Dock 已经跑着时它是无害的 no-op（真机实测 PID 不变、退出码 0），
+            // 所以"催早了"不构成风险；而"催晚了"就是用户多盯着空桌面看几十秒。
+            if nudge, now >= nextNudgeAt {
+                nudges += 1
+                nextNudgeAt = now + nudgeInterval
+                process.kickstart()
+                if timeline.count < probeSampleCap {
+                    let ms = Int((Self.seconds(start.duration(to: now)) * 1000).rounded())
+                    timeline.append("\(ms)ms 催 kickstart #\(nudges)（Dock 还没归位）")
+                }
+            }
             if now >= nextProbeAt {
                 sample(at: now, force: false)
                 nextProbeAt = now + probeInterval
@@ -614,6 +698,20 @@ final class DockReloader {
     /// `Duration` → 毫秒（四舍五入）。
     private static func milliseconds(_ duration: Duration) -> Int {
         Int((seconds(duration) * 1000).rounded())
+    }
+
+    /// 把几段取证时间线拼成一条，非空段之间插一行段名。
+    ///
+    /// **为什么必须插段名**：每段的时间戳都是从**各自**的等待起点算起的，直接首尾相接会读成
+    /// "时间倒流"（`…800ms … ｜ 20ms …`）。升级路径上有三段等待（主路径 / SIGTERM / kickstart），
+    /// 所以段名不是装饰，是判读的前提。单段时不会多出任何东西。
+    private static func mergeTimelines(_ segments: [(name: String, entries: [String])]) -> [String] {
+        var merged: [String] = []
+        for segment in segments where !segment.entries.isEmpty {
+            if !merged.isEmpty { merged.append("── \(segment.name) ──") }
+            merged.append(contentsOf: segment.entries)
+        }
+        return merged
     }
 
     private func outcome(

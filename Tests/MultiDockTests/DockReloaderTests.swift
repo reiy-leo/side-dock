@@ -13,8 +13,12 @@ final class DockReloaderTests: XCTestCase {
             process: process,
             timeout: .milliseconds(200),
             pollInterval: .milliseconds(2),
+            // 这一组测的是「信号策略」本身，不是 A8 的催办。把 `nudgeAfter` 放到 `timeout` 之外，
+            // 让「催 kickstart」那条路在这些用例里**不可能**被走到 —— 要测它请用下面专门的用例。
+            nudgeAfter: .seconds(60),
             fallbackGrace: .milliseconds(20),
-            minimumSpacing: .zero   // 测试不睡那 1 秒节流窗口
+            minimumSpacing: .zero,   // 测试不睡那 1 秒节流窗口
+            kickstartTimeout: .milliseconds(200)
         )
     }
 
@@ -196,8 +200,10 @@ final class DockReloaderTests: XCTestCase {
             process: process,
             timeout: .milliseconds(120),
             pollInterval: .milliseconds(2),
+            nudgeAfter: .seconds(60),
             fallbackGrace: .milliseconds(20),
-            minimumSpacing: .zero   // 测试不睡那 1 秒节流窗口
+            minimumSpacing: .zero,   // 测试不睡那 1 秒节流窗口
+            kickstartTimeout: .milliseconds(120)
         )
 
         let outcome = await reloader.reload(strategy: .auto)
@@ -263,8 +269,10 @@ final class DockReloaderTests: XCTestCase {
             process: process,
             timeout: .milliseconds(80),
             pollInterval: .milliseconds(2),
+            nudgeAfter: .seconds(60),
             fallbackGrace: .milliseconds(20),
-            minimumSpacing: .milliseconds(200)
+            minimumSpacing: .milliseconds(200),
+            kickstartTimeout: .milliseconds(80)
         )
 
         let startedFirst = Date()
@@ -465,10 +473,16 @@ final class DockReloaderTests: XCTestCase {
     // 还是两条路径都只看到 nil（Dock 真的没回来，launchd 的事）。
 
     /// 带取证参数的 reloader。`slowProbeThreshold` 压到 20 ms，让"慢"在单测里可复现。
+    ///
+    /// `nudgeAfter` 默认**关掉**（60 秒）：这一组测的是取证与存活性，不该被"催 kickstart"
+    /// 那条路抢先救活。要测催办请显式传一个小值。
     private func makeProbingReloader(
         _ process: FakeDockProcess,
         timeout: Duration = .milliseconds(300),
         pollInterval: Duration = .milliseconds(2),
+        nudgeAfter: Duration = .seconds(60),
+        nudgeInterval: Duration = .seconds(60),
+        kickstartTimeout: Duration = .milliseconds(300),
         slowProbeThreshold: Duration = .milliseconds(20),
         probeInterval: Duration = .milliseconds(5),
         probeSampleCap: Int = 24
@@ -477,8 +491,11 @@ final class DockReloaderTests: XCTestCase {
             process: process,
             timeout: timeout,
             pollInterval: pollInterval,
+            nudgeAfter: nudgeAfter,
+            nudgeInterval: nudgeInterval,
             fallbackGrace: .milliseconds(20),
             minimumSpacing: .zero,
+            kickstartTimeout: kickstartTimeout,
             slowProbeThreshold: slowProbeThreshold,
             probeInterval: probeInterval,
             probeSampleCap: probeSampleCap
@@ -618,5 +635,128 @@ final class DockReloaderTests: XCTestCase {
         let healthyOutcome = await makeProbingReloader(healthy).reload(strategy: .auto)
         XCTAssertLessThan(healthyOutcome.waitLongestGapMS, 70,
                           "没被冻住时最长间隔不该接近 80 ms：\(healthyOutcome.description)")
+    }
+
+    // MARK: - A8 的正解：**催一发 `kickstart`**（`docs/spikes.md` 实验 16）
+    //
+    // 真机日志里那两次 26 / 31 秒，关键线索不是"慢"，而是**后面那半截**：
+    // `05:33:16` 那次 SIGHUP 等满 30 s 也没等到 Dock，紧接着的一发 `kickstart`
+    // **0.5 秒**就把它拉回来了。也就是说 launchd 确实在拖，而 `kickstart` 正是绕过它
+    // 重启节流的那条官方通道 —— 干等 30 s 换不到任何东西，只是把用户的缺失坐满。
+    //
+    // 所以现在：等超过 `nudgeAfter`（生产默认 500 ms）还没见到新 Dock，就催一发。
+    // **安全性**：`kickstart`（**不带 `-k`**）在 Dock 已经跑着时是无害的 no-op ——
+    // 2026-09-20 真机实测 PID `80643 → 80643` 未变、退出码 0。
+
+    func testSlowRestartIsNudgedWithKickstart() async {
+        // 替身要 600 轮（约 1.2 s）才把 Dock 放回来 —— 远超过 nudgeAfter。
+        let process = FakeDockProcess(restartsOn: [SIGHUP], restartDelayPolls: 600)
+
+        let outcome = await makeProbingReloader(
+            process, timeout: .seconds(5), nudgeAfter: .milliseconds(50)
+        ).reload(strategy: .auto)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertEqual(process.kickstartCount, 1, "该催、且只催一次（替身第一发就把 Dock 放回来了）")
+        XCTAssertLessThan(outcome.elapsed, 0.5,
+                          "催办要在几百毫秒内就把 Dock 拉回来，而不是干等满 1.2 s：\(outcome.description)")
+        XCTAssertEqual(outcome.method, .sighup, "发出去的仍然是 SIGHUP，催办只是补刀")
+        XCTAssertTrue(outcome.probeTimeline.contains { $0.contains("催 kickstart") },
+                      "催办必须留痕，否则真机复发时看不出是它救的：\(outcome.probeTimeline)")
+    }
+
+    func testNudgeRepeatsWhileTheDockStaysAway() async {
+        // ⚠️ **这条守的是"第一发白打了"这个真实窗口。**
+        //
+        // `nudgeAfter` 到点时 Dock 很可能**还活着**（正在处理 SIGHUP 退出），那一刻的
+        // `kickstart` 对 launchd 来说是 no-op。而 A8 要防的恰恰是"launchd 之后不肯再拉它"。
+        // 所以催办必须**重复**：`kickstartRestarts: false` 让替身对催办毫无反应，
+        // 于是每过一个 `nudgeInterval` 就该再催一发。
+        let process = FakeDockProcess(restartsOn: [], kickstartRestarts: false)
+
+        let outcome = await makeProbingReloader(
+            process,
+            timeout: .milliseconds(500),
+            nudgeAfter: .milliseconds(50),
+            nudgeInterval: .milliseconds(100)
+        ).reload(strategy: .auto)
+
+        XCTAssertFalse(outcome.succeeded, "替身对任何信号都不回应，这条用例的前提")
+        XCTAssertGreaterThanOrEqual(process.kickstartCount, 3,
+                                    "500 ms 的等待里（50 ms 起、每 100 ms 一发）该催 4 发左右")
+        XCTAssertTrue(outcome.probeTimeline.contains { $0.contains("催 kickstart #3") },
+                      "每一发都要留痕并编号：\(outcome.probeTimeline)")
+    }
+
+    func testFastRestartIsNeverNudged() async {
+        // **零开销护栏**：正常路径几十毫秒就回来了，绝不能因此白起一个 `launchctl` 进程。
+        // `nudgeAfter` 压到 1 ms 让这条护栏最敏感 —— 而判定顺序是"先看新 PID、再考虑催"，
+        // 所以快路径永远走不到催办那一步。
+        let process = FakeDockProcess(restartsOn: [SIGHUP])
+
+        let outcome = await makeProbingReloader(process, nudgeAfter: .milliseconds(1))
+            .reload(strategy: .auto)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertEqual(process.kickstartCount, 0, "快路径一次都不该催")
+        XCTAssertTrue(outcome.probeTimeline.isEmpty, "快路径也不该留催办记录")
+    }
+
+    func testNudgeDoesNotFireWhenTheDockReturnsFirst() async {
+        // 替身 20 ms 就归位，`nudgeAfter` 设 200 ms → 催办来不及开口。
+        let process = FakeDockProcess(restartsOn: [SIGHUP], restartDelayPolls: 10)
+
+        let outcome = await makeProbingReloader(process, nudgeAfter: .milliseconds(200))
+            .reload(strategy: .auto)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertEqual(process.kickstartCount, 0)
+    }
+
+    func testProductionDefaultsNudgeEarlyEnough() async {
+        // 上面几条都传了自定义 `nudgeAfter`，所以还得有一条**钉住生产默认值**的用例：
+        // 默认值被悄悄调大（或 `timeout` 被调小到催办之前）时，这里必须炸。
+        // 生产默认 `pollInterval` 是 15 ms，所以 60 轮 ≈ 900 ms 的慢重启。
+        let process = FakeDockProcess(restartsOn: [SIGHUP], restartDelayPolls: 60)
+
+        let started = Date()
+        let outcome = await DockReloader(process: process, minimumSpacing: .zero)
+            .reload(strategy: .auto)
+        let wall = Date().timeIntervalSince(started)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertEqual(process.kickstartCount, 1, "默认配置下就该催一发")
+        XCTAssertLessThan(wall, 0.8,
+                          "默认 nudgeAfter 是 500 ms，900 ms 的慢重启该在 500 ms 出头就结束：\(wall) s")
+    }
+
+    func testFallbackNeverSignalsAFreshlyRestartedDock() async {
+        // ⚠️ **回归护栏。** 兜底路径原本写的是 `let dyingPID = process.dockPID() ?? oldPID`
+        // 再对 `dyingPID` 发 SIGTERM —— 万一 launchd 恰好在超时前后把 Dock 拉回来了，
+        // `dockPID()` 读到的就是**新** PID，那一发 SIGTERM 会把刚恢复的 Dock 再杀一次。
+        // 超时从 30 s 缩到 3 s 之后这个窗口反而更容易撞上，所以必须挡住。
+        //
+        // 构造：`timeout: .zero` 让主路径一轮都不轮询就超时；替身 `restartDelayPolls: 0`
+        // 表示"收到信号后立刻归位"，于是兜底的第一眼 `dockPID()` 就看到了**新** PID。
+        // 这正是要防的那个瞬间。
+        let process = FakeDockProcess(pid: 100, restartsOn: [SIGHUP], restartDelayPolls: 0)
+
+        let reloader = DockReloader(
+            process: process,
+            timeout: .zero,
+            pollInterval: .milliseconds(2),
+            nudgeAfter: .seconds(60),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .zero,
+            kickstartTimeout: .milliseconds(50)
+        )
+        let outcome = await reloader.reload(strategy: .auto)
+
+        XCTAssertTrue(outcome.succeeded, "Dock 已经回来了，就该当成功：\(outcome.description)")
+        XCTAssertEqual(outcome.newPID, 1001)
+        XCTAssertEqual(process.signals, [SIGHUP],
+                       "只该有主路径那一发 SIGHUP；对刚归位的 Dock 补 SIGTERM 会把它再杀一次")
+        XCTAssertFalse(process.signals.contains(SIGTERM))
+        XCTAssertEqual(process.kickstartCount, 0, "Dock 已经回来了，不该再催")
     }
 }

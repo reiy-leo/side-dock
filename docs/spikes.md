@@ -12,7 +12,7 @@
 > `docs/PLAN.md` 的一处假设，实验 7 是一条**明确的不做项**（别再去试）；实验 8 是一条**明确的不做项**（其他项不能新建）；
 > 实验 9、10 是同一条自我放大链的两个触发点（切桌面 / 退出）；实验 11 是**用户真机日志**复盘，修正了实验 5 的节流阈值；
 > **实验 12–14 是三个控制实验，把实验 11 提出的四个假说全部证伪**；**实验 15 是给这个未解故障
-> 装取证仪表**（结论待定，等下一次真机复现）。共 **15 个实验**。
+> 装取证仪表**；**实验 16 落地修法（不等，催）并把代价从 26–31 s 压到 ~1–3.5 s**。共 **16 个实验**。
 
 1. **不存在热重载**。写偏好后无论 post 什么通知，Dock 都不会重新读取——必须重启 Dock 进程。
 2. **重启很快**：SIGHUP 后 Dock 仅约 **101 ms** 不可用；SIGTERM 约 **395 ms**（Dock 收到 TERM 会先做约 255 ms 清理再退出）。→ **主路径定为 SIGHUP**，SIGTERM + kickstart 作兜底。
@@ -26,9 +26,18 @@
    | --- | --- | --- |
    | launchd 有 ~10 s 的 uptime 门槛 | 实验 12 | ❌ uptime 6 / 12 / 20 / 60 s **全部 37–68 ms** |
    | `dockPID()` 优先走 `NSRunningApplication` 会拿到陈旧实例 | 实验 13 | ❌ 两条路径 41–116 ms 同量级，无分叉 |
-   | 连续快速重启触发退避 | 实验 13 | ❌ 6 次连发（间隔 2 s）**全部正常** |
+   | 连续快速重启触发退避 | 实验 13 | ❌ 6 次连发（间隔 2 s）**全部正常** —— ⚠️ 但**间隔 2 s 根本没构成违规**（`ThrottleInterval` = 1 s），这条"证伪"站不住，**实验 16.2 用 10 轮零间隔重测才算真的证伪** |
    | 写偏好这一步是诱因 | 实验 14 | ❌ 幂等写 + SIGHUP，5 轮 **35–46 ms** |
    → **`minimumSpacing` 不要动**（`com.apple.Dock.plist` 里 `ThrottleInterval` 本来就是 1）。26–31 s 属**偶发、根因未定**。
+   ⚠️ **实验 16：修法已落地，代价从 26–31 s 压到 ~1–3.5 s** —— 关键在于真机日志里一直被忽略的那半截：
+   `05:33:16` 那次 **SIGHUP 等满 30 s 没等到，紧接着一发 `kickstart` 只用 0.5 s 就把它拉回来了**。
+   于是 `kickstart` 从"30 秒后的兜底"提到"**500 ms 后的催办**"（`nudgeAfter`），`timeout` 30 s → 3 s。
+   配套实测：① **连续零间隔重启 10 轮，延迟恒为 ~1016 ms、不累积**（假说 ③ 至此真证伪，
+   那 ~1 s 是**硬顶**不是斜坡）；② `kickstart`（不带 `-k`）对**运行中**的 Dock 是无害 no-op
+   （PID `80643 → 80643`）；③ 顺手修掉"对刚归位的 Dock 补 SIGTERM 会把它再杀一次"这个潜伏 bug。
+   机制推断：`KeepAlive = {SuccessfulExit: 0}` 只在**异常退出**时自动拉起，Dock 若干净退出就**不会**
+   被重新调度，直到有东西**显式要求** —— `kickstart` 正是那个要求。**成因本身仍未直接观测到**
+   （系统日志在沙箱里读不到），预测与下一次复现的读法见实验 16.4 / 16.8。
    ⚠️ **剩下的两种病因旧日志分不出来**（"探测分叉" vs "Dock 真的没回来"），因为重载期间
    `DockPresenceMonitor` 刻意静默、`waitForRestart` 只记结果不记过程 →
    **实验 15 已给慢路径装上取证仪表**（`DockPIDProbe` / `probeTimeline`，正常路径零开销）。
@@ -1326,6 +1335,166 @@ toast 的 4 组开合只覆盖 **18.675 → 28.388（前 10 秒）**。**后 16.
 
 ---
 
+## 实验 16：A8 的修法 —— **别等，催**（2026-09-20）
+
+用户说「解决 A8 剩余的问题」。前面六条"我们的 bug"候选全被证伪、只剩 launchd 一侧，于是这轮
+**不再找新假说，而是回到真机日志里那条一直没被当回事的线索**，并顺手把一条"证伪"重新验了一遍。
+
+### 16.1 ⚠️ 先纠正一条：假说 ③ 的"证伪"站不住
+
+实验 13 把「连续快速重启触发退避」判成 ❌，依据是 **"6 次连发（间隔 2 s）全部正常"**。
+
+**可是 `com.apple.Dock.plist` 里 `ThrottleInterval` 本来就是 1 s** ——
+**间隔 2 s 的重启根本不构成节流违规**。也就是说这条假说**从来没在真正的违规条件下被测过**。
+真机那两次失败恰好落在这个没测过的形状上：故障前后的重启是**挤在一起**的（05:32:12 一次、
+05:32:18 又要在 6.5 s 内再来一次），而不是隔开 2 秒。
+
+### 16.2 补测：把 Dock 的存活时间压到 1 秒以内，连打 10 轮
+
+脚本：`scripts/measure-launchd-backoff.swift`（新增）。轮与轮之间**不等待**，
+每轮记旧 Dock 的存活时长、SIGHUP → 看到新 PID 的延迟，超过 3 s 未归位就自动催一发 `kickstart`。
+
+```
+[A8 退避] 第  1 轮：旧 PID 87395（存活 82.1s）→ 87686　延迟 30 ms
+[A8 退避] 第  2 轮：旧 PID 87686（存活 0.0s）→ 87687　延迟 1012 ms
+[A8 退避] 第  3 轮：旧 PID 87687（存活 0.0s）→ 87688　延迟 1016 ms
+[A8 退避] 第  4 轮：旧 PID 87688（存活 0.0s）→ 87689　延迟 1019 ms
+[A8 退避] 第  5 轮：旧 PID 87689（存活 0.0s）→ 87691　延迟 1017 ms
+[A8 退避] 第  6 轮：旧 PID 87691（存活 0.0s）→ 87692　延迟 1019 ms
+[A8 退避] 第  7 轮：旧 PID 87692（存活 0.0s）→ 87693　延迟 1016 ms
+[A8 退避] 第  8 轮：旧 PID 87693（存活 0.0s）→ 87694　延迟 1013 ms
+[A8 退避] 第  9 轮：旧 PID 87694（存活 0.0s）→ 87695　延迟 1016 ms
+[A8 退避] 第 10 轮：旧 PID 87695（存活 0.0s）→ 87696　延迟 1021 ms
+
+延迟序列（ms）：[30, 1012, 1016, 1019, 1017, 1019, 1016, 1013, 1016, 1021]
+最小 30　中位 1016　最大 1021
+需要 kickstart 的轮数：0 / 10
+```
+
+**两条结论，都很干净：**
+
+1. **存活时间 < 1 s 时，launchd 恒定把归位压到 ~1016 ms —— 不累积、不增长、不漂移。**
+   → 假说 ③ 到这一刻才算**真的被证伪**（在正确的实验条件下）。
+2. **那 ~1 s 是一个硬顶，不是斜坡的起点。** 所以 26–31 s **不可能**是节流累积出来的。
+
+> ⚠️ 附带：`launchctl kickstart` **不能**绕过这 1 秒节流。真机验收里 `nudgeAfter: 0`
+> 那一发催在 SIGHUP 之后 0 ms，Dock 仍然到 **1037 ms** 才回来。催办解决的不是节流，
+> 是**"launchd 压根没打算把它拉起来"**（见 16.4）。
+
+### 16.3 真机日志里那半截一直被忽略了：**催一发就活**
+
+回头逐字看 `05:33:16` 那次：
+
+```
+05:33:16.817 kickstart 成功：PID 39143 → 39164，Dock 不可用 31039 ms（先等了 1032 ms 错开节流）
+```
+
+`31039 ms` 里 **30000 ms 是 SIGHUP 那条路等满的超时**、500 ms 是 SIGTERM 的宽限，
+**剩下的约 540 ms 才是 `kickstart` 发出去之后 Dock 归位的时间**。
+
+也就是说：**SIGHUP 等 30 秒等不到的东西，`kickstart` 0.5 秒就拿到了。**
+前面几轮一直在争论"launchd 为什么慢"，却没人问一句 —— **我们手里本来就有一条能立刻拿到它的通道，
+只是把它排在了 30 秒之后。**
+
+### 16.4 机制（推断，附可检验的预测）
+
+`/System/Library/LaunchAgents/com.apple.Dock.plist` 的 KeepAlive 是
+`{AfterInitialDemand: 1, SuccessfulExit: 0}`。`man launchd.plist`：
+
+> `SuccessfulExit`：为真时，**只要程序正常退出**就重新拉起；为假时，**只要程序异常退出**
+> （被信号杀死）就重新拉起。
+
+所以：
+
+- Dock **被 SIGHUP 打死**（异常退出）→ launchd 自动拉起，~1 s（16.2 实测）。
+- Dock **干净退出**（exit 0）→ launchd **不会**重新调度它，直到**有东西显式要求**。
+  而这个"要求"可以是任何 XPC 客户端去连它的服务 —— **什么时候来、来不来，都不由我们决定**。
+  这就是"偶发"的来源。
+
+`launchctl kickstart`（不带 `-k`）正是那个**显式的"现在就跑"要求**，所以一发就活。
+
+**可检验的预测**（真机复现时一步就能定案）：在那段"一直没归位"的窗口里执行
+
+```bash
+/bin/launchctl print gui/501/com.apple.Dock.agent | grep -E "state|runs|last terminating"
+```
+
+- 干净退出那一路 → `state` 不是 `running`，且 **`last terminating signal` 缺失**；
+- 正常（被信号打死）那一路 → `last terminating signal = Hangup: 1`（**这是本机现在的值**）。
+
+本实验在**正常重启窗口**里采到的样子（`launchctl print` 单次约 0.5 s，只能在窗口里抓一两发）：
+
+```
+state = xpcproxy            ← 正在被拉起（xpcproxy 是 launchd 的 trampoline）
+minimum runtime = 1
+runs = 778
+immediate reason = semaphore
+last terminating signal = Hangup: 1
+```
+
+### 16.5 顺手排除的两条
+
+| 检查 | 结果 |
+| --- | --- |
+| Dock 是不是在**崩溃循环**（自拼 tile 那类会让它 SIGABRT） | ❌ `~/Library/Logs/DiagnosticReports/` 与 `/Library/Logs/DiagnosticReports/` **都没有 Dock 的崩溃报告** |
+| 能不能读**系统日志**看 launchd 的原话 | ❌ 不行。`/usr/bin/log show` 一律 `log: Cannot run while sandboxed`；**即使申请脱离沙箱也一样**（`log` 自己做了 `sandbox_check`）。`launchd` 那句 `Service only ran for … Pushing respawn out by …` 拿不到，只能靠 `launchctl print` 侧写 |
+
+### 16.6 修法（`DockReloader`）
+
+一句话：**把 `kickstart` 从"30 秒后的兜底"提到"500 毫秒后的催办"。**
+
+| 改动 | 值 | 为什么 |
+| --- | --- | --- |
+| 新增 `nudgeAfter` | `500 ms` | 到点还没见到新 Dock 就催一发 `kickstart`。正常路径 35–126 ms，永不触发 |
+| 新增 `nudgeInterval` | `1 s` | 重复催。⚠️ **尽力而为**：`LaunchctlParking.hasOutstanding` 闸门会吞掉叠发的（真机验收实测到第二发被吞） |
+| `timeout` | **30 s → 3 s** | 原值 30 s 的理由是"launchd 的退避尺度是几十秒"（实验 8.5）—— 16.2 证明那个尺度是 **1 s**，理由不成立了。3 s ≈ 正常值的 24 倍，足够宽容 |
+| 新增 `kickstartTimeout` | `30 s` | 真正需要耐心的那一段挪到这里：**催完之后**再给 30 s |
+| **PID 守卫** | 新增 | 兜底原本是 `let dyingPID = process.dockPID() ?? oldPID` 再对 `dyingPID` 发 SIGTERM —— 如果 launchd 恰好在超时前后把 Dock 拉回来了，读到的就是**新** PID，那一发 SIGTERM 会把刚恢复的 Dock **再杀一次**。超时缩短后这个窗口更容易撞上，必须挡住 |
+| 失败路径的取证 | 修 | 原来只带最后一段（`kicked`）的时间线，**把最有用的主路径那段丢了**（催办记录就在里面）。现在三段拼接并标段名 |
+
+安全性前提是**实测**过的，不是推理：
+
+```
+$ launchctl kickstart gui/501/com.apple.Dock.agent    # Dock 正在运行
+kickstart 前 Dock PID = 80643
+kickstart 退出码 = 0
+kickstart 后 Dock PID = 80643        ← 未变
+⇒ 对运行中的 Dock 是无害的 no-op
+```
+
+### 16.7 验证
+
+| 项 | 结果 |
+| --- | --- |
+| 全量单测 | **327 个测试、9 跳过、0 失败**（320 → 327，+7） |
+| 真机验收 | **9/9 绿、43.1 s**（新增 `testPrematureNudgeIsHarmlessAgainstTheRealDock`） |
+| 真机催办实测 | `nudgeAfter: 0` → `0ms 催 kickstart #1`，重载照常成功，**Dock 只换了一次 PID**（800 ms 后仍是同一只）—— 催早了不引起第二次弹跳 |
+| Dock 域 | 与备份逐字节一致（只差 `mod-count`）；`config.json` SHA1 未变 |
+
+新增/改动的用例：`testSlowRestartIsNudgedWithKickstart`、`testNudgeRepeatsWhileTheDockStaysAway`、
+`testFastRestartIsNeverNudged`、`testNudgeDoesNotFireWhenTheDockReturnsFirst`、
+`testProductionDefaultsNudgeEarlyEnough`（钉住生产默认值）、
+`testFallbackNeverSignalsAFreshlyRestartedDock`（PID 守卫）。
+
+### 16.8 这轮之后 A8 还剩什么
+
+**修好的是"代价"，不是"成因"。**
+
+- ✅ 最坏情况从 **26–31 s** 压到 **~1–3.5 s**：不再干等 30 s，500 ms 就把那条"显式要求"通道打开。
+- ✅ 顺手修掉一个真实潜伏 bug（对刚归位的 Dock 补 SIGTERM）。
+- ❌ **launchd 为什么偶尔不调度那次重新拉起，仍未直接观测到**（16.4 是机制推断 + 可检验预测）。
+  系统日志拿不到（16.5），只能等下一次真机复现时用 `launchctl print` 侧写。
+
+**下一次复现时的读法（顺序很重要）：**
+
+1. 先看 `轮询 N 次，最长间隔 M ms` —— **M 是秒级就说明我们没在看**（实验 15.4），下面都不用看。
+2. 再看时间线里的 `催 kickstart #n` —— 有它说明催办真的开了火。
+3. 最后跑一次 `launchctl print … | grep -E "state|last terminating"`：
+   **`last terminating signal` 缺失 = 干净退出 = 16.4 的机制成立**；仍是 `Hangup: 1` 就说明还有第三个成因。
+
+
+---
+
 ## 复现方法
 
 ```bash
@@ -1352,4 +1521,10 @@ swift scripts/spike-symbols.swift Transition Cube
 swift scripts/spike-restart-spacing.swift 20 12 6
 swift scripts/spike-pid-detection.swift 6 2
 swift scripts/spike-preference-write.swift 5 2
+
+# launchd 重启延迟会不会随连续快速重启累积（实验 16，轮间不等待、会反复重启 Dock）
+swiftc -O -o /tmp/md-backoff scripts/measure-launchd-backoff.swift && /tmp/md-backoff 10
+
+# LaunchServices 在重启窗口里滞后多久（实验 15.3）
+swiftc -O -o /tmp/md-ls-lag scripts/measure-launchservices-lag.swift && /tmp/md-ls-lag 6
 ```

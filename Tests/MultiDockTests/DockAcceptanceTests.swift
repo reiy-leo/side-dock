@@ -463,12 +463,18 @@ final class DockAcceptanceTests: XCTestCase {
                         + "\(probe.launchServices.map(String.init) ?? "nil")（真实 \(livePID)）")
 
         // ---- 第二段：让正常重启也走取证 ----
+        // ⚠️ `nudgeAfter` 在这里**刻意关掉**：这条用例要的是"两条探测路径的时间线"，
+        // 而催办那条记录（`…催了一发 kickstart…`）不含 `LS=`/`scan=`，会打乱下面的断言。
+        // 催办本身由两条专门的用例覆盖：单测 `testSlowRestartIsNudgedWithKickstart`，
+        // 真机 `testPrematureNudgeIsHarmlessAgainstTheRealDock`。
         let reloader = DockReloader(
             process: control,
             timeout: .seconds(30),
             pollInterval: .milliseconds(15),
+            nudgeAfter: .seconds(60),
             fallbackGrace: .milliseconds(500),
             minimumSpacing: .zero,
+            kickstartTimeout: .seconds(30),
             slowProbeThreshold: .zero,
             probeInterval: .milliseconds(5),
             probeSampleCap: 8
@@ -502,6 +508,72 @@ final class DockAcceptanceTests: XCTestCase {
         }
 
         let restored = await Self.writeBack(before, label: "A8 取证验收结束还原")
+        let illegal = Self.differences(between: before, and: restored)
+            .subtracting(DockPreferences.whitelistedKeys)
+            .subtracting(Self.dockSelfMutatingKeys)
+        XCTAssertTrue(illegal.isEmpty, "还原后白名单外的键仍有差异：\(illegal.sorted())")
+        XCTAssertEqual(Set(before.keys), Set(restored.keys), "键集合必须完全一致")
+    }
+
+    // MARK: - A8 正解的真机验证：**催早了也不能出事**
+
+    /// `launchctl kickstart`（**不带 `-k`**）到底会不会伤到已经跑着的 Dock ——
+    /// 这是整个 A8 修法（等 500 ms 就催一发）的安全性前提，必须在真机上钉死，不能靠推理。
+    ///
+    /// **做法**：把 `nudgeAfter` 压到 **0**，于是催办在**第一轮轮询**就开火 ——
+    /// 那一刻 Dock 甚至还没死透（正常重启要几十毫秒）。也就是说这条用例把
+    /// **最坏的一种催办时机**强制打开：对着一个活着的 Dock 踢 `kickstart`。
+    ///
+    /// 断言三件事：① 重载照常成功；② Dock **只换了一次 PID**（催办没有引起第二次弹跳）；
+    /// ③ 催办确实发生了（时间线里有痕迹）—— 否则这条用例什么都没验到。
+    ///
+    /// ⚠️ 会真的重启 Dock 一次；默认跳过，`MULTIDOCK_DOCK_ACCEPTANCE=1` 才跑。
+    func testPrematureNudgeIsHarmlessAgainstTheRealDock() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment[Self.enableFlag] == "1",
+            "会真的重启 Dock；设 \(Self.enableFlag)=1 才跑"
+        )
+
+        let before = DockPreferences.readDomain()
+        XCTAssertFalse(before.isEmpty, "读不到 com.apple.dock，验收无意义")
+
+        let control = RealDockProcessControl()
+        let reloader = DockReloader(
+            process: control,
+            timeout: .seconds(5),
+            pollInterval: .milliseconds(15),
+            nudgeAfter: .zero,          // ⚠️ 故意压到 0：第一轮就催，等于对着活着的 Dock 踢一发
+            fallbackGrace: .milliseconds(500),
+            minimumSpacing: .zero,
+            kickstartTimeout: .seconds(30),
+            slowProbeThreshold: .zero,
+            probeInterval: .milliseconds(5),
+            probeSampleCap: 8
+        )
+
+        do {
+            let outcome = await reloader.reload(strategy: .auto)
+            print("""
+            [A8 催办] 真机重载：\(outcome.description)
+            [A8 催办] 时间线：\(outcome.probeTimeline)
+            """)
+
+            XCTAssertTrue(outcome.succeeded, "重载必须照常成功：\(outcome.description)")
+            XCTAssertTrue(outcome.probeTimeline.contains { $0.contains("催 kickstart") },
+                          "nudgeAfter=0 下必然催了；没有就说明这条路没被走到：\(outcome.probeTimeline)")
+
+            // ② Dock 只该换一次 PID：催办不能引起第二次弹跳。
+            let newPID = try XCTUnwrap(outcome.newPID)
+            try await Task.sleep(for: .milliseconds(800))
+            let settledPID = try XCTUnwrap(control.dockPID(), "重载后 Dock 又不见了")
+            XCTAssertEqual(settledPID, newPID,
+                           "催办引起了第二次重启：重载后是 \(newPID)，800 ms 后变成 \(settledPID)")
+        } catch {
+            await Self.writeBack(before, label: "A8 催办验收异常还原")
+            throw error
+        }
+
+        let restored = await Self.writeBack(before, label: "A8 催办验收结束还原")
         let illegal = Self.differences(between: before, and: restored)
             .subtracting(DockPreferences.whitelistedKeys)
             .subtracting(Self.dockSelfMutatingKeys)

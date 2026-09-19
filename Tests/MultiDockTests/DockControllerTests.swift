@@ -174,8 +174,10 @@ final class DockControllerTests: XCTestCase {
                 process: process,
                 timeout: .milliseconds(300),
                 pollInterval: .milliseconds(2),
+                nudgeAfter: .seconds(60),   // 关掉"催 kickstart"，让信号策略本身可测
                 fallbackGrace: .milliseconds(20),
-                minimumSpacing: .zero   // 测试不睡那 1 秒节流窗口
+                minimumSpacing: .zero,   // 测试不睡那 1 秒节流窗口
+                kickstartTimeout: .milliseconds(300)
             ),
             backup: backup,
             onOutcome: onOutcome
