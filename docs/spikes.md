@@ -17,8 +17,18 @@
 3. **程序化切桌面可用且极快（P0 粗测 20 ms，后经实验 7 精测为 0–6 ms），但不触发 `NSWorkspaceActiveSpaceDidChangeNotification`**。→ SpaceObserver 必须以**轮询为主**，通知只能当优化。
 4. **切桌面的"左右滑动动画"做不到**（实验 7）：程序化切空间是硬切（0–6 ms），SkyLight 不暴露带过渡的入口；唯一像入口的会话级开关**写后读不回**、碰了就破无痕原则；`SLSWillSwitchSpaces` 签名未知、猜错直接段错误。**零权限 + 无痕下无解，不要再试。**
 5. **其他项（文件夹 / 堆栈）不能由 App 新建**（实验 8）：自拼的 `directory-tile` Dock 不认领（不补 `GUID`），字段不全的形状还会让 Dock **SIGABRT 进崩溃循环**。→ 只搬不造。
-6. **launchd 的节流门槛是 Dock 的 uptime，不是我们的重启间隔**（实验 11，用户真机日志）：实验 5 记的"间隔 ≥ 1 s 就没事"只在"上次重启很久以前"成立。**uptime 6.5 s 的重启实测被罚 26 s、uptime 1 s 被罚 31 s**，而 uptime ≥ 30 s 的 4 次全是 50–126 ms。→ 快速连切桌面会互相续退避，`minimumSpacing = 1 s` **定小了**（建议提到 10 s，尚未实施）。
-7. **实验 9 与实验 10 的修复已被真机覆盖**：退出还原 **53–54 s → 0.01 s**（整条退出约 2 s）；切桌面的最坏值 **60–126 s → 26–31 s**（残余部分由上面第 6 条解释）。
+6. ⚠️ **"Dock 重启被罚几十秒"的四个假说已被逐个实测推翻**（实验 11 提出，实验 12–14 证伪）：
+   真机日志里 uptime 6.5 s / 1 s 的两次重启花了 26 s / 31 s，而 uptime ≥ 30 s 的 4 次只要 50–126 ms。
+   看起来像"uptime 门槛"，但**控制实验一次都没复现**：
+   | 假说 | 实验 | 结果 |
+   | --- | --- | --- |
+   | launchd 有 ~10 s 的 uptime 门槛 | 实验 12 | ❌ uptime 6 / 12 / 20 / 60 s **全部 37–68 ms** |
+   | `dockPID()` 优先走 `NSRunningApplication` 会拿到陈旧实例 | 实验 13 | ❌ 两条路径 41–116 ms 同量级，无分叉 |
+   | 连续快速重启触发退避 | 实验 13 | ❌ 6 次连发（间隔 2 s）**全部正常** |
+   | 写偏好这一步是诱因 | 实验 14 | ❌ 幂等写 + SIGHUP，5 轮 **35–46 ms** |
+   → **`minimumSpacing` 不要动**（`com.apple.Dock.plist` 里 `ThrottleInterval` 本来就是 1）。26–31 s 属**偶发、根因未定**。
+7. **实验 9 与实验 10 的修复已被真机覆盖**：退出还原 **53–54 s → 0.01 s**（整条退出约 2 s）；
+   切桌面的最坏值 **60–126 s → 26–31 s**。**正常路径稳定在 35–126 ms**，且连续 6 次快速重启也不慢。
 
 ---
 
@@ -826,19 +836,15 @@ func waitForIdle(upTo limit: Duration) async -> Bool {
 
 **相关性是干净的：uptime ≥ 30 s 的 4 次全部 50–126 ms；uptime 6.5 s 与 1 s 的 2 次是 26 s 与 31 s。**
 
-### 11.3 结论：1 秒的阈值不够，它只挡住了第一档
+### 11.3 相关性与因果：看起来像"uptime 门槛"，**但这是错的**（见 11.6）
 
-实验 5 记的是"间隔 < 1 s → 1070 ms，≥ 1 s → 70 ms"。那条**只在"上次重启很久以前"的前提下成立**。
-launchd 的真正判据是**服务的 uptime**：进程活得不够久就退出，会被算成一次崩溃，退避**按次数递增**。
-本机实测的门槛在 6.5 s（已触发）与 34 s（未触发）之间，符合 launchd 经典的 **10 s crash-uptime** 约定。
+实验 5 记的是"间隔 < 1 s → 1070 ms，≥ 1 s → 70 ms"。真机数据看起来在说：
+那条只在"上次重启很久以前"成立，真正的判据是 **Dock 进程的 uptime**。
+本机 6.5 s 触发、34 s 未触发，落在经典的 **10 s crash-uptime** 附近 —— **这个解释很顺，但它是错的。**
 
-于是**快速连切桌面**这个最自然的用法必然踩雷：用户连切 4 次（05:32:18 / 20 / 22 / 24 / 27），
-`request()` 的单槽位只把**还没起跑的**合并掉，最终仍落下 **2 笔** apply；
-每笔都要重启一次 Dock，间隔远小于 10 s → 每笔都把上一任 Dock 的"短命退出"记成崩溃 → **互相续退避**。
-
-这也解释了为什么实验 9 的修复只把 60–126 s 压到 26–31 s 而没有归零：
-它解决的是**放大器**（同步 `kickstart` 冻主线程、监视器补刀、5 s 超时误升级），
-没有解决**燃料**（我们自己在 10 s 门槛内反复重启 Dock）。
+**11.6 记录了对它的证伪。** 控制实验（实验 12）直接测了 uptime 6 / 12 / 20 / 60 s 的重启，
+**全部 37–68 ms**，一次都没被罚。所以 11.2 那张表里的相关性**不是因果**：
+真正区分好坏两组的不是 uptime，而是别的东西（尚未找到）。
 
 ### 11.4 顺带记录：配置已被写坏，且不会自愈
 
@@ -865,16 +871,50 @@ launchd 的真正判据是**服务的 uptime**：进程活得不够久就退出�
 → 下次启动会"还原到基准（15 项）"，**把用户后来自己加的 Qoder CN 抹掉**。
 无痕原则本身要求这样，但用户需要知道这一条会在下次启动时发生。
 
-### 11.5 建议的修法（未实施）
+### 11.5 数据修复（只能手动）
 
-1. **`DockReloader.minimumSpacing` 从 1 s 提到 10 s**，对齐 launchd 的 crash-uptime 门槛。
-   判据已经有现成的基础设施（`proc_pidinfo` 读 Dock 进程年龄），只需换常数。
-   代价：连切桌面时第二笔要等最多 10 s 才生效（**期间 Dock 可用**，显示的是上一个桌面的配置）；
-   收益：不再进入几十秒的退避。按"宁等不闪"的既有取舍，这笔账是划算的。
-2. 更彻底的做法是"**短窗口内干脆不重启**，把目标留给下一次切换" —— 但那会让"切到某桌面就该看到它的 Dock"偶尔失效，
-   需要用户拍板。
-3. 数据修复只能用户手动做：设置 → 桌面 → 每个桌面「从当前 Dock 抓取」；通用页同样重抓一次默认 Dock。
-   代码修好不会自动修数据。
+`config.json` 的损坏只能用户自己修：设置 → 桌面 → 每个桌面「从当前 Dock 抓取」；通用页同样重抓一次默认 Dock。
+**代码修好不会自动修数据。** 逐桌面的 override 内容已经丢了（Dock 域一次只装得下一套配置，备份里也没有），
+恢复不了，只能重抓。
+
+### 11.6 ⚠️ 后续实验把这个结论**证伪了**（2026-09-20，实验 12–14）
+
+11.3 那个"uptime 门槛"解释很顺，所以在改 `DockReloader.minimumSpacing` 之前先做了控制实验 ——
+**结果三次全是否定，不要按 11.3 去改代码。**
+
+| # | 脚本 | 假说 | 结果 |
+| --- | --- | --- | --- |
+| 12 | `scripts/spike-restart-spacing.swift` | launchd 有 ~10 s 的 uptime 门槛 | ❌ **推翻**。uptime 6.0 / 12.0 / 20.0 s 各测一次，加上 60 s 与 81 486 s 两个对照，**归位耗时 37–68 ms**，一次都没被罚 |
+| 13 | `scripts/spike-pid-detection.swift` | `dockPID()` 优先走 `NSRunningApplication` 会在重启窗口里返回陈旧实例，导致 `waitForRestart` 看不见已经回来的 Dock | ❌ **推翻**。A 路径（`proc_listpids`）41–63 ms、B 路径（`NSRunningApplication`）78–116 ms，**同量级、无分叉** |
+| 13 | 同上 | 连续快速重启会累积退避 | ❌ **推翻**。**6 次连发、间隔 2 s**，归位全部 41–116 ms |
+| 14 | `scripts/spike-preference-write.swift` | 慢的是「写偏好 + 重启」这个组合（App 会先写偏好，而前两个实验只发信号） | ❌ **推翻**。**幂等写**白名单 9 个键（值原样写回，事后核对域零变化）再 SIGHUP，5 轮 **35–46 ms** |
+
+**所以 11.2 那张表里的相关性不是因果。** 真正区分好坏两组的变量还没找到。
+四条被排除的假说连同原始数字一起留在这里，**免得下一个 agent 再花一轮去试**。
+
+**当下的立场**：
+
+- **不要改 `minimumSpacing`。** `com.apple.Dock.plist` 里写的本来就是 `ThrottleInterval = 1`
+  （`launchctl print gui/501/com.apple.Dock.agent` 显示 `minimum runtime = 1`），
+  实验 12 也证明 6 s 的 uptime 完全够用。把它提到 10 s 只会让配置生效白白晚 10 秒，换不到任何东西。
+- 26–31 s 是**偶发**，正常路径（单次重启、uptime 充足）稳定在 **35–126 ms**，连续 6 次快速重启也不慢。
+  它对用户的实际影响远小于实验 9 那个 60–126 s。
+- 下一步要复现它，得带上**真实 App 的完整上下文**（GUI 应用 + `DockWatcher` / `DockPresenceMonitor` / `SpaceObserver` 三个轮询同时跑），
+  而不是继续加控制实验 —— 已经排除的四个方向别再试。
+- 有一条**没有被排除**的观察值得留着：真机那两次慢重启发生时，App 的主线程是活的
+  （同一窗口里 toast 的 1 秒定时器准时触发了：`05:32:27.364 显示` → `05:32:28.388 隐藏`），
+  所以**不是主线程被冻住**导致的假测量 —— Dock 当时**真的**不在。
+
+### 11.7 实验脚本
+
+```bash
+swift scripts/spike-restart-spacing.swift 20 12 6      # 实验 12：uptime 门槛（已证伪）
+swift scripts/spike-pid-detection.swift 6 2            # 实验 13：两条探测路径 + 连发重启
+swift scripts/spike-preference-write.swift 5 2         # 实验 14：写偏好 + SIGHUP
+```
+
+三个脚本都**只重启 Dock、不改语义**（实验 14 是幂等写），跑完会确认 Dock 活着；
+实验 14 会写 `com.apple.dock`，跑前先 `defaults export com.apple.dock <备份路径>`。
 
 ---
 
@@ -899,4 +939,9 @@ swiftc -O scripts/spike-dock-downtime.swift -o /tmp/downtime && /tmp/downtime HU
 # 枚举 SkyLight 的导出符号（只读、零权限，用于查「有没有对应的私有 API」）
 swift scripts/spike-symbols.swift
 swift scripts/spike-symbols.swift Transition Cube
+
+# Dock 重启间距 / PID 探测路径 / 写偏好 + 重启（实验 12–14，都会真的重启 Dock）
+swift scripts/spike-restart-spacing.swift 20 12 6
+swift scripts/spike-pid-detection.swift 6 2
+swift scripts/spike-preference-write.swift 5 2
 ```

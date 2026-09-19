@@ -64,8 +64,9 @@ SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.s
 - **发信号前必须拒绝 `pid <= 0` 并确认进程名是 `Dock`** —— Dock 重启窗口里 `NSRunningApplication`
   会返回 `-1`，`kill(-1, sig)` = 杀掉当前用户**全部进程**。
 - **`launchctl kickstart` 绝不能 `waitUntilExit()`** —— launchd 退避时它会阻塞几十秒，而这条在 `@MainActor` 上。
-- **launchd 的节流判据是 Dock 进程的 uptime（门槛约 10 s），不是我们的重启间隔** ——
-  在门槛内反复重启会**互相续退避**，实测 26–31 秒 Dock 不可用。
+- ⚠️ **别信"Dock 重启被罚是因为 uptime 太短"** —— 这个假说（连同另外三个）已被实验 12–14 **实测证伪**：
+  uptime 6 s 的重启只要 37–68 ms，`com.apple.Dock.plist` 里本来就是 `ThrottleInterval = 1`。
+  **`minimumSpacing` 不要动。** 偶发的 26–31 s 根因未定，见 `docs/spikes.md` 实验 11.6。
 - **`withTaskGroup` 当"赛跑"用会让上限静默失效**（返回值对、墙钟错）→ 带上限的等待必须**轮询可观察标志**，
   回归守卫要断言墙钟。
 - **配置损坏会自我固化**：残缺 override 被 apply → 真实 Dock 真的变残缺 → `DockWatcher` 合法地把它当

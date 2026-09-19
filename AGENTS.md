@@ -112,12 +112,13 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 
 > ⚠️ **从 P2 起，代码真的会改用户的 Dock 了。** 写路径已接线：设置页「立即应用」→ `DockController` → 写偏好 + 重启 Dock。无痕原则靠 `LifecycleController` 的退出还原 + 会话标记兜底（见 §3 的 P2 小节）。
 
-> ⚠️ **2026-09-20 状态检查（用户真机日志复盘）**：实验 9 / 10 的修复**已被真机覆盖并确认有效**
-> （退出还原 53–54 s → **0.01 s**；切桌面最坏值 60–126 s → **26–31 s**）。
-> 但挖出**两条必须处理的新问题**：**A8** 快速连切桌面仍会吃 26–31 s 的 launchd 退避
-> （`minimumSpacing = 1 s` 定小了，门槛其实是 **10 s uptime**），**A9** `config.json` 已被写坏
-> （默认 Dock 3 项、三个 override 全空）而真实 Dock 健康 —— **用户下次应用配置会把好 Dock 写坏**。
-> 详见 `docs/spikes.md` **实验 11** 与 §6.3 A6 / A7 / A8 / A9。
+> ⚠️ **2026-09-20 状态检查 + 三个控制实验**：实验 9 / 10 的修复**已被真机日志确认有效**
+> （退出还原 53–54 s → **0.01 s**；切桌面最坏值 60–126 s → **26–31 s**，正常路径稳定 35–126 ms）。
+> 但另有一次 **26–31 s** 的偶发慢重启。它一度被归因到 `minimumSpacing`（"launchd 有 10 s uptime 门槛"），
+> **该归因已被实验 12–14 逐个推翻** —— 详见 `docs/spikes.md` **实验 11.6**。
+> **`minimumSpacing` 保持 1 s 不动**，根因未定（§6.3 A8）。
+> 另有一条**必须用户手动处理**的：`config.json` 已被写坏（默认 Dock 3 项、三个 override 全空），
+> 而真实 Dock 健康 —— **用户下次应用配置会把好 Dock 写坏**（§6.3 A9）。
 
 ### 已完成
 
@@ -161,7 +162,7 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | 其他项（文件夹/堆栈）编辑 | `Dock/DockStripRules.swift`、`UI/DockStripEditor.swift` | **只搬不造**：显示 / 排序 / 移除；拖入文件夹时明确拒绝并给替代做法（`DockItemRejection`）。**不能新建**的实测依据见 `docs/spikes.md` 实验 8 |
 | 测试 | `Tests/MultiDockTests/` | **308 个测试，全绿**（其中 7 个真实 Dock 验收默认跳过，需显式开启） |
 | 设计文档 | `docs/PLAN.md` | 已按 P0 结论修订 |
-| 实验结论 | `docs/spikes.md` | **11 个实验**的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现；实验 8 是"其他项不能新建"；实验 9 是"切一次桌面黑屏几分钟"的根因；实验 10 是"每次退出都卡住"—— 同一条链，外加一个让所有"上限"静默失效的写法；实验 11 是用户真机日志复盘，修正了实验 5 的节流阈值 —— launchd 的门槛是 uptime 10 s，不是我们的重启间隔**） |
+| 实验结论 | `docs/spikes.md` | **14 个实验**的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现；实验 8 是"其他项不能新建"；实验 9 是"切一次桌面黑屏几分钟"的根因；实验 10 是"每次退出都卡住"—— 同一条链，外加一个让所有"上限"静默失效的写法；实验 11 是用户真机日志复盘；实验 12–14 把实验 11 提出的"uptime 门槛"等四个假说逐个证伪**） |
 
 ### 已完成：P2（编辑条 + 应用）✅ 2026-09-18
 
@@ -387,11 +388,12 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 
 **代码层面：计划里已定义的功能全部落地，但 2026-09-20 的真机日志复盘挖出一条必须再修的。** 剩下的分三类：
 
-- ⚠️ **A8：快速连切桌面时 Dock 仍会消失 26–31 秒**（`spikes.md` 实验 11）。根因是
-  `DockReloader.minimumSpacing = 1 s` 挡不住 launchd 的 **10 s crash-uptime 门槛** ——
-  我们自己在门槛内反复重启，互相续退避。**修法明确（1 s → 10 s），但要用户拍板那个代价。**
+- ⚠️ **A8：Dock 重启偶发慢到 26–31 秒，根因未定**（`spikes.md` 实验 11.6 与 12–14）。
+  **四个假说已被实测逐个推翻**（uptime 门槛 / 探测路径分叉 / 连发退避 / 写偏好诱因），
+  **不要按任何一个去改代码**；`minimumSpacing` 保持 1 s。要复现必须带上真实 App 的完整上下文。
 - ⚠️ **A9：`config.json` 已损坏**（默认 Dock 只剩 3 项、三个桌面 override 全空），
-  而真实 Dock 是健康的（16 项）。**用户下次应用配置会把好 Dock 写坏**，只能用户手动「从当前 Dock 抓取」。
+  而真实 Dock 是健康的（16 项）。**用户下次应用配置会把好 Dock 写坏**，只能用户手动「从当前 Dock 抓取」；
+  逐桌面 override 的内容已丢，恢复不了。
 - **多显示器热插拔的真机实测**（§6.3 B5）：映射键、插拔后自动刷新、toast 定位、桌面页的显示器名分组都已实现，
   但**本机只有一台显示器，必须用户插一台外接屏才能验**。
 - **真人手测 5 条**（§6.3 A 组）：改名输入框、两个按钮、图标条拖拽、菜单栏连击，外加
@@ -465,7 +467,7 @@ A4 的**逻辑侧已自动化**（`DockAcceptanceTests.testExternalDockChangeIsC
 | Dock 热重载 | **不存在**。post `com.apple.dock.prefchanged`（darwin 与分布式两种都试过）完全无效 |
 | Dock 重启 | `kill -HUP`：进程消失于 +13 ms、归位 +101 ms（**总不可用约 101 ms**）。`kill -TERM`：Dock 先做约 255 ms 清理，总不可用 **约 367–395 ms**。**主路径选 SIGHUP** |
 | **launchd 的重启节流**（P3 实测，`spikes.md` 实验 5） | 距上一次重启**不足约 1 秒**时再次重启，Dock 要 **约 1070 ms** 才归位；间隔 **≥ 1 秒**只要 **约 70 ms**。阈值在 0.6–1.0 s 之间。`com.apple.Dock.plist` 里**没有** `ThrottleInterval`，是 launchd 的隐式节流。→ `DockReloader.minimumSpacing` 默认 1 s 先等再重启（等待期间 Dock 可用），实测 Dock 不可用时长 **45–90 ms** |
-| ⚠️ **上面那条只在"上次重启很久以前"成立**（2026-09-20 用户真机日志修正，`spikes.md` 实验 11） | launchd 的真正判据是**服务的 uptime**：活得不够久就退出 = 一次崩溃，退避**按次数递增**。实测门槛在 **6.5 s（已触发）与 34 s（未触发）之间**，符合经典的 **10 s crash-uptime**。用户真机 6 次 apply 的相关性很干净：**uptime ≥ 30 s 的 4 次全是 50–126 ms；uptime 6.5 s → 26 046 ms；uptime 1 s → 31 039 ms**。→ **`minimumSpacing = 1 s` 定小了**，快速连切桌面（最自然的用法）会互相续退避。**建议提到 10 s，尚未实施**（见 §6.3 A8） |
+| ⚠️ **别被"uptime 门槛"骗了 —— 那个假说已被实测推翻**（2026-09-20，`spikes.md` 实验 11→12） | 真机日志里 uptime 6.5 s / 1 s 的两次重启花了 **26 046 / 31 039 ms**，而 uptime ≥ 30 s 的 4 次只要 50–126 ms，看起来就是"launchd 有 ~10 s 的 crash-uptime 门槛"。**但控制实验直接证伪**：uptime 6.0 / 12.0 / 20.0 s 各测一次 + 60 s 与 81 486 s 两个对照，**归位耗时 37–68 ms，一次都没被罚**。`com.apple.Dock.plist` 里写的本来就是 `ThrottleInterval = 1`（`launchctl print gui/501/com.apple.Dock.agent` 显示 `minimum runtime = 1`）。→ **`minimumSpacing` 不要动**。26–31 s 属偶发、根因未定，见 §6.3 A8 |
 | **节流窗口的判据是 Dock 进程的年龄，不是我们的记忆**（P4 实测修正） | 节流是**按服务**算的，与我们记不记得自己重启过无关。P4 验收里前一条用例刚重启完 Dock，紧接着新建的 `DockReloader`（`lastRestartAt` 为 nil）直接重启，被节流到 **1030 ms** —— 用户会看到 Dock 消失一秒多。→ 改成用 `proc_pidinfo(PROC_PIDTBSDINFO)` 读 `pbi_start_tvsec/tvusec` 算进程年龄（实测返回 **136 字节 = 结构体大小**，读得到）。改完 P3 第一轮从 **1030 ms → 45 ms**。拿不到年龄才退回内存记忆 |
 | **`kill -9` 掉 Dock 后的恢复** | 实测 **1072 ms** 归位（`KeepAlive` 让 launchd 拉起它，但会先吃一次隐式节流，所以不是 100 ms 级）。判据：3 秒内必须出现**新的正数 PID**。`DockPresenceMonitor` 是兜底（连续缺失 2 次才动手，之后每 4 轮重试一次 `kickstart`） |
 | **`NSRunningApplication` 会返回 `processIdentifier == -1`** | Dock 重启窗口里 `runningApplications(withBundleIdentifier: "com.apple.dock")` 会返回一个**正在退出**的实例，其 PID 是 **-1**（实测复现）。`kill(-1, sig)` = 发给**当前用户全部进程**，`kill(0, sig)` = 整个进程组。**必须过滤 `> 0`，并在发信号前用 `proc_name` 确认进程名是 `Dock`** |
@@ -598,10 +600,10 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | A3 | **图标条的拖拽（排序 / 拖出移除 / 从访达拖 `.app` 进来）没被真人拖过** | `onDrag` / `dropDestination` 的真机手感与边界未验证 | 请手动拖一次。排序逻辑由 `DockStripRulesTests` + `AppStateDockTests` 覆盖 |
 | A4 | **P3 验收里"在真实 Dock 手动拖入一个图标，切走再切回仍在"**（真人拖拽是纯 UI 操作，脚本化要辅助功能权限，与硬约束冲突） | 这条是 `DockWatcher` **回存路径的唯一真实检验** | ✅ **逻辑侧已自动化（2026-09-18）**：`DockAcceptanceTests.testExternalDockChangeIsCapturedBackToActiveDesktop` 用 `defaults write` + 真实 `DockReloader().reload()` 复现"外部改动"，走**真实 2 秒轮询**（不手动 `tick()`），两种落点（默认 Dock / 逐桌面 override）都覆盖，并断言回存期间 **Dock PID 不变**。真人拖一次仍建议做（验证拖拽 UI 本身），但已不再是唯一检验 |
 | A5 | **「连切 5 次只显示最终名字」只做了单测**，没做真机连击 | 真机是否闪烁未实测 | 单测 `testRapidSwitchKeepsOnlyLatestTextAndHidesOnce` 覆盖调度逻辑；真机需手动快速点菜单栏 |
-| A6 | **「切桌面不再黑屏几分钟」还没真机复验**（实验 9 的修复只过了单测） | 这是用户报的最严重故障之一，没复验等于没确认修好 | ⚠️ **2026-09-20 复盘用户真机日志：部分通过。** 05:02 打包的二进制（**晚于**实验 9 / 10 两个 commit）跑出 6 次真实 apply：**uptime ≥ 30 s 的 4 次全是 50–126 ms**（57 / 126 / 84 / 50 ms）—— 正常路径已经好了；但**快速连切桌面时仍出现 26 046 ms 与 31 039 ms**，原因是 `minimumSpacing = 1 s` 挡不住 launchd 的 **10 s crash-uptime 门槛**（`spikes.md` 实验 11）。→ **转为 A8 处理**。旧版"连切十次看日志"的核对口径不变，另加一条：`Dock 不可用` **必须全部 < 1 s** |
+| A6 | **「切桌面不再黑屏几分钟」还没真机复验**（实验 9 的修复只过了单测） | 这是用户报的最严重故障之一，没复验等于没确认修好 | ⚠️ **2026-09-20 复盘用户真机日志：大部分通过。** 05:02 打包的二进制（**晚于**实验 9 / 10 两个 commit）跑出 6 次真实 apply：**正常路径全是 50–126 ms**（57 / 126 / 84 / 50 ms）。但另两次是 **26 046 ms 与 31 039 ms**。⚠️ **那两次的"原因"一度被归到 `minimumSpacing` 上，已被实验 12–14 证伪**（见 A8）。结论：**60–126 s 那一档没了，26–31 s 这一档偶发、根因未定。** 复核口径：连切十次桌面后，`Dock 不可用` 应稳定在 100 ms 量级 |
 | A7 | **「退出不再卡住几分钟」没做真机复验**（实验 10 的修复只过了单测） | 用户报的最严重故障，且是**每次**退出都中招 | ✅ **2026-09-20 复盘用户真机日志：通过。** `05:58:46.001 退出还原流程结束，用时 0.01s`（旧版 **53.12 s / 54.05 s**），整条退出约 2 s，其中 2 s 是 `prepareForTermination` 的等待窗口、**不是 Dock 缺失**。唯一尾巴：这次走了 `!settled` 分支（`还原未完成（退出时还有一次应用没落地），已留下标记`）→ `session.state` 留 `needsSelfHeal = true, pid = 0`，属预期兜底；但**副作用见 A8 第 2 条** |
-| A8 | **快速连切桌面时 Dock 仍消失 26–31 秒**（实验 9 的残余，2026-09-20 真机日志挖出） | 连切桌面是最自然的用法，用户必然遇到；表现为"切几下桌面 Dock 就没了半分钟" | ⏳ **待用户拍板后再改**。修法：① `DockReloader.minimumSpacing` **1 s → 10 s**（对齐 launchd 的 crash-uptime 门槛，判据基础设施已就绪），代价是连切时第二笔最多等 10 s 才生效、**期间 Dock 可用**；② 更彻底的是"10 s 窗口内干脆不重启，把目标留给下一次切换"，但会让"切到某桌面就该看到它的 Dock"偶尔失效。**另有一条待爆的副作用**：`session.state` 现在是 `needsSelfHeal = true, pid = 0`，**下次启动会还原到基准（15 项），把用户后来自己加的 Qoder CN 抹掉** |
-| A9 | **配置数据已损坏且不会自愈**（2026-09-20 真机日志复盘） | 用户下次点「立即应用」或切桌面，会把**健康的**真实 Dock（16 项）写成 3 项或空 | ⏳ **只能用户手动修**：设置 → 桌面 → 每个桌面「从当前 Dock 抓取」；通用页同样重抓一次默认 Dock。当前 `config.json`：默认 Dock `pinnedApps` = 3 项（启动台 / FlClash / WorkBuddy AI）、三个桌面 override 全空；真实 Dock 健康（16 + 1，基准 15 + 1）。**修代码不会自动修数据**。见 `spikes.md` 实验 11.4 |
+| A8 | **Dock 重启偶发慢到 26–31 秒**（2026-09-20 真机日志挖出，根因**未定**） | 偶发；正常路径稳定 35–126 ms，所以影响远小于实验 9 的 60–126 s | ⚠️ **四个假说已被实测逐个推翻，别按它们改代码**（`spikes.md` 实验 11.6 与 12–14）：① ~~launchd 有 10 s uptime 门槛~~ → 实验 12：uptime 6/12/20/60 s **全 37–68 ms**；② ~~`NSRunningApplication` 返回陈旧实例导致探测不到~~ → 实验 13：两条路径 41–116 ms 同量级、无分叉；③ ~~连续快速重启累积退避~~ → 实验 13：6 次连发（间隔 2 s）**全正常**；④ ~~写偏好是诱因~~ → 实验 14：幂等写 + SIGHUP **5 轮 35–46 ms**。**→ `minimumSpacing` 保持 1 s 不动**（plist 里本来就是 `ThrottleInterval = 1`）。已被排除的观察：真机那两次慢重启期间主线程是活的（同一窗口 toast 的 1 秒定时器准时触发）→ **不是假测量，Dock 当时真的不在**。下一步要复现必须带上**真实 App 的完整上下文**（GUI + `DockWatcher` / `DockPresenceMonitor` / `SpaceObserver` 三个轮询同时跑） |
+| A9 | **配置数据已损坏且不会自愈**（2026-09-20 真机日志复盘） | 用户下次点「立即应用」或切桌面，会把**健康的**真实 Dock（16 项）写成 3 项或空 | ⏳ **只能用户手动修**：设置 → 桌面 → 每个桌面「从当前 Dock 抓取」；通用页同样重抓一次默认 Dock。当前 `config.json`：默认 Dock `pinnedApps` = 3 项（启动台 / FlClash / WorkBuddy AI）、三个桌面 override 全空；真实 Dock 健康（16 + 1，基准 15 + 1，用户自己加了 Qoder CN）。**逐桌面 override 的内容已丢，恢复不了。** 见 `spikes.md` 实验 11.4 |
 | **B. 待做的功能（已排期）** | | | |
 | B5 | **多显示器仍未真机实测**（P5 唯一剩下的）：映射键、插拔后自动刷新、toast 的 `displayUUID → NSScreen` 定位都实现了，但本机只有一台显示器 | 插外接显示器后映射可能串 | **只能靠用户插一台外接屏实测**。调试面板已加「显示器数量」与每个桌面的 `displayUUID` 前 8 位，核对时用 |
 | B6 | ~~全屏 App 空间的过滤只有单测覆盖~~ | 每次进全屏可能误切 Dock | ✅ **已解决（2026-09-18）**：真机回归通过，见 §4 的「全屏过滤的真机回归」与 `scripts/check-fullscreen-filter.swift` |
@@ -654,7 +656,7 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 
 ## 7. 给下一个 session 的建议顺序
 
-1. 读本文件 → `docs/PLAN.md`（§3 核心机制、§3.10 桌面命名与 toast、§3.11 无痕与自愈、§3.3 退出流程、§4 阶段与验收）→ `docs/spikes.md`（**11 个实验结论，含对计划的多处修正；实验 5 有两个要命发现，实验 6 是节流窗口的判据修正，实验 7 是一条"别再做"的动画结论，实验 8 是"其他项不能新建"，实验 9 是"切桌面黑屏几分钟"的根因，实验 10 是"每次退出都卡住几分钟"的根因 + 那条 `withTaskGroup` 的静默失效，实验 11 修正实验 5 的节流阈值**）。
+1. 读本文件 → `docs/PLAN.md`（§3 核心机制、§3.10 桌面命名与 toast、§3.11 无痕与自愈、§3.3 退出流程、§4 阶段与验收）→ `docs/spikes.md`（**14 个实验结论，含对计划的多处修正；实验 5 有两个要命发现，实验 6 是节流窗口的判据修正，实验 7 是一条"别再做"的动画结论，实验 8 是"其他项不能新建"，实验 9 是"切桌面黑屏几分钟"的根因，实验 10 是"每次退出都卡住几分钟"的根因 + 那条 `withTaskGroup` 的静默失效，实验 11 是真机日志复盘，实验 12–14 把它的四个假说全部证伪**）。
 2. 跑一次基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，确认全绿（应为 **308 个测试通过、零警告**）。
 3. **动 Dock 相关代码前先读 §4 的六条**："launchd 重启节流"、"节流窗口判据"、"`-1` PID 陷阱"、
    "查 Dock PID 的代价"、"**`launchctl kickstart` 会阻塞几十秒 → 绝不能 `waitUntilExit()`**"、
@@ -662,13 +664,12 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
    踩到节流会让 Dock 消失一秒多；踩到 `-1` 会杀掉用户的全部进程；踩到同步 `kickstart` 会把整个 App 冻住两分钟
    （见 `docs/spikes.md` 实验 9）；踩到任务组那个坑会写出一堆"看着有上限、其实没有"的等待（实验 10）。
 4. 需要动 Dock 的改动，验收用 `MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`；**跑之前先 `defaults export com.apple.dock` 备份，且中途别手动改 Dock**。
-5. **最该催的两条已变成 A8 与 A9**（2026-09-20 更新；A6 / A7 已由用户真机日志销账）：
-   - **A8**：快速连切桌面时 Dock 仍消失 **26–31 s**。根因与修法见 `spikes.md` 实验 11：
-     `DockReloader.minimumSpacing` **1 s → 10 s**（对齐 launchd 的 crash-uptime 门槛）。
-     这是**唯一一条"已知根因 + 已知修法 + 未实施"**的项，但要先跟用户确认那个代价（连切时第二笔最多等 10 s 才生效）。
-   - **A9**：`config.json` 已损坏（默认 Dock 3 项、三个 override 全空），真实 Dock 健康（16 项）。
+5. **最该处理的两条是 A9 与 A8**（2026-09-20 更新；A6 / A7 已由用户真机日志销账）：
+   - **A9（先做这个）**：`config.json` 已损坏（默认 Dock 3 项、三个 override 全空），真实 Dock 健康（16 项）。
      **在用户重抓之前，别点「立即应用」，也别启动 App 去切桌面** —— 会把好 Dock 写坏。
      另外 `session.state` 现在是 `needsSelfHeal = true, pid = 0`，**下次启动会自动还原到基准（15 项）并抹掉用户自己加的 Qoder CN**。
+   - **A8**：Dock 重启偶发慢到 **26–31 s**，**根因未定**。`spikes.md` 实验 11.6 已列清**四个被推翻的假说**
+     （含"把 `minimumSpacing` 提到 10 s"那条）—— **别再试这四个方向**。要往下走必须复现真实 App 的完整上下文。
    - 真要再跑真机复验时：⚠️ **改了代码一定要重新 `./scripts/build-app.sh` 才算装上去** ——
      A6 已经在 2026-09-19 被"跑了一个修复前的二进制"骗过去一次。复验前**先把 `multidock.log` 转走**（旧版单测把它灌满了假记录，
      真历史已被 512 KB 环形截断挤掉；新版测试不再写它了）。
@@ -687,6 +688,43 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-09-20（第 17 次）— **推翻了上一轮自己写的根因**：三个控制实验把"Dock 重启被罚几十秒"的四个假说逐个证伪
+
+**背景**：第 16 次从用户真机日志里发现两次 Dock 重启花了 26 046 / 31 039 ms，
+而 uptime ≥ 30 s 的 4 次只要 50–126 ms。当时把它归因成"launchd 有 ~10 s 的 crash-uptime 门槛"，
+并建议把 `DockReloader.minimumSpacing` 从 1 s 提到 10 s。**用户说"继续"之后，
+先做控制实验再改代码 —— 结果那个归因是错的。**
+
+**做了什么**（三个新 spike 脚本，全部只重启 Dock、不改语义）：
+
+| 实验 | 脚本 | 假说 | 结果 |
+| --- | --- | --- | --- |
+| 12 | `scripts/spike-restart-spacing.swift` | launchd 有 ~10 s uptime 门槛 | ❌ **推翻**：uptime 6.0 / 12.0 / 20.0 s + 60 s / 81 486 s 对照，**全 37–68 ms** |
+| 13 | `scripts/spike-pid-detection.swift` | `NSRunningApplication` 返回陈旧实例 → `waitForRestart` 看不见已归位的 Dock | ❌ **推翻**：A 路径 41–63 ms、B 路径 78–116 ms，同量级无分叉 |
+| 13 | 同上 | 连续快速重启累积退避 | ❌ **推翻**：**6 次连发、间隔 2 s，全 41–116 ms** |
+| 14 | `scripts/spike-preference-write.swift` | 「写偏好 + 重启」这个组合是诱因 | ❌ **推翻**：幂等写白名单 9 键（事后核对域零变化）再 SIGHUP，**5 轮 35–46 ms** |
+
+**顺带核实的两件事**：
+- `com.apple.Dock.plist` 里写的就是 `ThrottleInterval = 1`，
+  `launchctl print gui/501/com.apple.Dock.agent` 显示 `minimum runtime = 1` —— 与"10 秒门槛"矛盾。
+- 真机那两次慢重启期间**主线程是活的**（同一窗口里 toast 的 1 秒定时器准时触发：
+  `05:32:27.364 显示` → `05:32:28.388 隐藏`）→ **不是主线程被冻住导致的假测量，Dock 当时真的不在**。
+
+**结论与改动**：
+1. ⚠️ **`minimumSpacing` 保持 1 s 不动** —— 第 16 次那条建议**作废**。提到 10 s 只会让配置生效白白晚 10 秒。
+2. 26–31 s 定性为**偶发、根因未定**。正常路径稳定 35–126 ms，连续 6 次快速重启也不慢，
+   实际影响远小于实验 9 那个 60–126 s。
+3. **没动任何产品代码**（`Sources/` 与 `Tests/` 零改动），所以第 16 次的 **308 测试全绿 / 零警告** 结论继续成立。
+4. 实验做完核对过 Dock 域：与实验前备份**逐键完全一致**（忽略 `mod-count` / `recent-apps` / `trash-full`），
+   `persistent-apps` 仍是 16 项、`persistent-others` 1 项、`tilesize 36` / `orientation bottom` / `autohide false`。
+
+**文档更新**：`docs/spikes.md` 摘要第 6 条改写、**实验 11.3 改写为"相关性不是因果"、新增 11.6（证伪表）与 11.7（脚本用法）**、
+复现方法补三个脚本；本文件 §3 顶部状态块改写、§3 未完成的两条重写、§4 那条"uptime 门槛"行改写、
+§6.3 A6 / A8 / A9 重写、§7 第 5 条重写。
+
+**未解决**：**A9 优先**（`config.json` 已损坏，用户手动「从当前 Dock 抓取」前别启动 App 去切桌面）；
+**A8**（根因未定，四个方向已排除，别重试）；B5（多显示器真机）、A1–A3 / A5（真人手测）、B9 / B10（注销与重登录）。
 
 ### 2026-09-20（第 16 次）— 项目状态检查：实验 9/10 的修复**已被真机覆盖**，但挖出 A8（连切桌面仍 26–31 s）与 A9（配置已写坏）
 
