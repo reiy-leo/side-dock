@@ -2,6 +2,29 @@ import AppKit
 import Darwin
 import Foundation
 
+/// 诊断快照：两条 PID 探测路径**此刻各自**的答案。
+///
+/// 存在的唯一理由，是把「Dock 重启偶发慢到 26–31 秒」这个未解故障变成**能自证**的。
+/// 真机上那两次慢重启的日志只写了结果（`Dock 不可用 26046 ms`），没写**过程** ——
+/// 于是四种解释都能套上去，四个假说全被实验 12–14 证伪之后仍然定不了案。
+///
+/// 这一层仪表要区分的是**两种截然不同的病因**：
+/// - `procScan` 早就看到新 PID、`launchServices` 迟迟看不到 → **探测分叉**（我们的 bug）；
+/// - 两条路径都只看到 `nil` → **Dock 真的没回来**（launchd 的事，我们改不了）。
+///
+/// 只有第一种才该改代码。见 `docs/spikes.md` 实验 11.6 与实验 15。
+struct DockPIDProbe: Sendable, Equatable {
+    /// `NSRunningApplication`（`dockPID()` 的首选路径）。
+    var launchServices: pid_t?
+    /// `proc_listpids` + `proc_name`（内核进程表，实测 0.02 ms，是事实来源）。
+    var procScan: pid_t?
+
+    /// 给日志用的一小段。`nil` 是有效信息（"这条路径此刻查不到 Dock"）。
+    var summary: String {
+        "LS=\(launchServices.map(String.init) ?? "nil") scan=\(procScan.map(String.init) ?? "nil")"
+    }
+}
+
 /// Dock 进程操作的能力抽象。
 ///
 /// 抽出来是为了让「重启判定与兜底顺序」能脱离真实 Dock 单测 —— 与 `SpaceProviding` 隔离私有 API 同理。
@@ -19,11 +42,19 @@ protocol DockProcessControlling: Sendable {
     /// 用来推算 launchd 的重启节流窗口（见 `DockReloader`）——
     /// 那个窗口是 **Dock 进程年龄**的函数，不是"我们记不记得自己重启过"的函数。
     func startTime(of pid: pid_t) -> TimeInterval?
+    /// 诊断用：两条探测路径各自的答案。**只为慢重启取证**，正常路径不调用。
+    ///
+    /// 刻意做成带默认实现的可选能力：测试替身没有"两条路径"这回事，
+    /// 返回 nil 就表示"这个替身不支持取证"，`DockReloader` 会照常工作、只是不带时间线。
+    func pidProbe() -> DockPIDProbe?
 }
 
 extension DockProcessControlling {
     /// 替身默认拿不到启动时刻 → `DockReloader` 退回用内存里的 `lastRestartAt` 推算。
     func startTime(of pid: pid_t) -> TimeInterval? { nil }
+
+    /// 替身默认不支持取证 → 慢重启只会记下"Dock 不可用多久"，不记两条路径的分叉。
+    func pidProbe() -> DockPIDProbe? { nil }
 }
 
 /// `launchctl` 子进程的收纳处。
@@ -68,18 +99,30 @@ struct RealDockProcessControl: DockProcessControlling {
 
     func dockPID() -> pid_t? {
         // 首选：LaunchServices 查询（实测单次 0.6–1.4 ms）。
-        //
-        // **必须过滤 `processIdentifier > 0`**：实测在 Dock 重启的窗口里，这里会返回一个
-        // **正在退出**的实例，它的 `processIdentifier` 是 **-1**。把 -1 当成有效 PID 的后果
-        // 见 `signal(_:_:)` 里的安全闸门说明 —— 那是能毁掉用户整个图形会话的。
-        if let app = NSRunningApplication
-            .runningApplications(withBundleIdentifier: Self.dockBundleIdentifier)
-            .first(where: { !$0.isTerminated && $0.processIdentifier > 0 }) {
-            return app.processIdentifier
-        }
+        if let pid = Self.launchServicesDockPID() { return pid }
         // 兜底：非 .app 进程（例如 `swift test` 的 xctest runner）里上一条可能查不到，
         // 但 Dock 一定在跑。直接扫进程表，避免误判成"Dock 不在"。
         return Self.scanForDockPID()
+    }
+
+    /// 首选路径：LaunchServices。
+    ///
+    /// **必须过滤 `processIdentifier > 0`**：实测在 Dock 重启的窗口里，这里会返回一个
+    /// **正在退出**的实例，它的 `processIdentifier` 是 **-1**。把 -1 当成有效 PID 的后果
+    /// 见 `signal(_:_:)` 里的安全闸门说明 —— 那是能毁掉用户整个图形会话的。
+    private static func launchServicesDockPID() -> pid_t? {
+        NSRunningApplication
+            .runningApplications(withBundleIdentifier: Self.dockBundleIdentifier)
+            .first(where: { !$0.isTerminated && $0.processIdentifier > 0 })?
+            .processIdentifier
+    }
+
+    /// 取证：**同时**问两条路径，不做任何短路。
+    ///
+    /// 与 `dockPID()` 的区别就是"不短路"—— `dockPID()` 只要首选路径有答案就不会去扫进程表，
+    /// 所以从它的返回值里**看不出**两条路径有没有分叉。慢重启要的正是这个分叉信息。
+    func pidProbe() -> DockPIDProbe {
+        DockPIDProbe(launchServices: Self.launchServicesDockPID(), procScan: Self.scanForDockPID())
     }
 
     /// 扫进程表找 Dock。
@@ -228,6 +271,14 @@ struct ReloadOutcome: Sendable, Equatable {
     /// 为了错开 launchd 的重启节流而主动等待的时间。这段等待里 **Dock 是可用的**，
     /// 所以不能算进"不可用时长"，否则日志会吓人。
     var spacingWait: TimeInterval = 0
+    /// 慢重启的**取证时间线**（`pidProbe()` 的采样）。正常路径为空。
+    ///
+    /// 只在等待超过 `DockReloader.slowProbeThreshold`（默认 1 秒）之后才开始采样，
+    /// 所以正常路径零开销。条目形如 `"1000ms LS=39129 scan=39143"`。
+    ///
+    /// 它存在的意义：把"Dock 不可用 26046 ms"从一个**结果**变成一条**过程记录**，
+    /// 从而区分「探测分叉（我们的 bug）」与「Dock 真的没回来（launchd 的事）」。
+    var probeTimeline: [String] = []
 
     var succeeded: Bool { newPID != nil }
 
@@ -235,12 +286,16 @@ struct ReloadOutcome: Sendable, Equatable {
         let wait = spacingWait > 0.01
             ? String(format: "（先等了 %.0f ms 错开节流，期间 Dock 可用）", spacingWait * 1000)
             : ""
+        let probe = probeTimeline.isEmpty
+            ? ""
+            : "；慢重启取证：" + probeTimeline.joined(separator: "｜")
         guard succeeded else {
-            return String(format: "%@ 失败（%.0f ms，旧 PID %@）%@", method.rawValue, elapsed * 1000,
-                          oldPID.map(String.init) ?? "无", wait)
+            return String(format: "%@ 失败（%.0f ms，旧 PID %@）%@%@", method.rawValue, elapsed * 1000,
+                          oldPID.map(String.init) ?? "无", wait, probe)
         }
-        return String(format: "%@ 成功：PID %@ → %@，Dock 不可用 %.0f ms%@",
-                      method.rawValue, oldPID.map(String.init) ?? "?", String(newPID!), elapsed * 1000, wait)
+        return String(format: "%@ 成功：PID %@ → %@，Dock 不可用 %.0f ms%@%@",
+                      method.rawValue, oldPID.map(String.init) ?? "?", String(newPID!), elapsed * 1000,
+                      wait, probe)
     }
 }
 
@@ -276,6 +331,12 @@ final class DockReloader {
     private let fallbackGrace: Duration
     /// 两次重启之间的最小间隔，用来错开 launchd 的重启节流（见类文档）。
     private let minimumSpacing: Duration
+    /// 等待超过这么久才开始取证采样。默认 1 秒 —— 正常路径只要几十毫秒，永不触发。
+    private let slowProbeThreshold: Duration
+    /// 取证采样间隔。
+    private let probeInterval: Duration
+    /// 取证最多留多少条。一次 30 秒的慢重启按 100 ms 采样会有 300 条，会把日志灌爆。
+    private let probeSampleCap: Int
     /// 上一次重启**归位**的时刻。节流窗口从这一刻算起。
     private var lastRestartAt: ContinuousClock.Instant?
 
@@ -284,13 +345,19 @@ final class DockReloader {
         timeout: Duration = .seconds(30),
         pollInterval: Duration = .milliseconds(15),
         fallbackGrace: Duration = .milliseconds(500),
-        minimumSpacing: Duration = .milliseconds(1000)
+        minimumSpacing: Duration = .milliseconds(1000),
+        slowProbeThreshold: Duration = .seconds(1),
+        probeInterval: Duration = .milliseconds(100),
+        probeSampleCap: Int = 24
     ) {
         self.process = process
         self.timeout = timeout
         self.pollInterval = pollInterval
         self.fallbackGrace = fallbackGrace
         self.minimumSpacing = minimumSpacing
+        self.slowProbeThreshold = slowProbeThreshold
+        self.probeInterval = probeInterval
+        self.probeSampleCap = max(1, probeSampleCap)
     }
 
     /// Dock 进程此刻在不在。
@@ -319,15 +386,19 @@ final class DockReloader {
 
         if strategy == .auto {
             process.signal(oldPID, SIGHUP)
-            if let newPID = await waitForRestart(after: oldPID) {
+            let wait = await waitForRestart(after: oldPID)
+            if let newPID = wait.pid {
                 return outcome(.sighup, oldPID: oldPID, newPID: newPID,
-                               started: started, spacingWait: spacingWait)
+                               started: started, spacingWait: spacingWait,
+                               probeTimeline: wait.probeTimeline)
             }
         } else {
             process.signal(oldPID, SIGTERM)
-            if let newPID = await waitForRestart(after: oldPID) {
+            let wait = await waitForRestart(after: oldPID)
+            if let newPID = wait.pid {
                 return outcome(.sigterm, oldPID: oldPID, newPID: newPID,
-                               started: started, spacingWait: spacingWait)
+                               started: started, spacingWait: spacingWait,
+                               probeTimeline: wait.probeTimeline)
             }
         }
 
@@ -335,19 +406,24 @@ final class DockReloader {
         let dyingPID = process.dockPID() ?? oldPID
         process.signal(dyingPID, SIGTERM)
         // 给它一点时间死透；这段时间内 launchd 可能自己就把它拉回来了。
-        if let newPID = await waitForRestart(after: dyingPID, timeout: fallbackGrace) {
+        let grace = await waitForRestart(after: dyingPID, timeout: fallbackGrace)
+        if let newPID = grace.pid {
             return outcome(.sigterm, oldPID: oldPID, newPID: newPID,
-                           started: started, spacingWait: spacingWait)
+                           started: started, spacingWait: spacingWait,
+                           probeTimeline: grace.probeTimeline)
         }
         process.kickstart()
-        if let newPID = await waitForRestart(after: dyingPID) {
+        let kicked = await waitForRestart(after: dyingPID)
+        if let newPID = kicked.pid {
             return outcome(.kickstart, oldPID: oldPID, newPID: newPID,
-                           started: started, spacingWait: spacingWait)
+                           started: started, spacingWait: spacingWait,
+                           probeTimeline: kicked.probeTimeline)
         }
 
         return ReloadOutcome(method: .failed, oldPID: oldPID, newPID: nil,
                              elapsed: Date().timeIntervalSince(started),
-                             spacingWait: spacingWait)
+                             spacingWait: spacingWait,
+                             probeTimeline: kicked.probeTimeline)
     }
 
     /// 退出流程专用的重启：**只发一发信号，最多看它一眼，绝不升级**。
@@ -373,7 +449,9 @@ final class DockReloader {
         guard process.signal(oldPID, strategy == .sigterm ? SIGTERM : SIGHUP) else {
             return .notDelivered(oldPID: oldPID)
         }
-        if let newPID = await waitForRestart(after: oldPID, timeout: deadline) {
+        // 退出路径刻意**不带取证**：`deadline` 只有 1.5 秒，而取证要等 1 秒才开始，
+        // 采到的样本没有诊断价值（这条路的耗时早已被实验 10 定案）。时间线丢弃即可。
+        if let newPID = await waitForRestart(after: oldPID, timeout: deadline).pid {
             return .revived(oldPID: oldPID, newPID: newPID, elapsed: Date().timeIntervalSince(started))
         }
         return .signaled(oldPID: oldPID)
@@ -418,22 +496,58 @@ final class DockReloader {
             + TimeInterval(duration.components.attoseconds) / 1e18
     }
 
+    /// 一次「等 Dock 归位」的产物。
+    private struct RestartWait {
+        /// 看到的新 Dock PID；超时未归位为 nil。
+        var pid: pid_t?
+        /// 慢重启的取证时间线。正常路径为空数组。见 `ReloadOutcome.probeTimeline`。
+        var probeTimeline: [String] = []
+    }
+
     /// 轮询等待一个**不同于** `oldPID` 的 Dock 进程出现。
     ///
     /// 只接受**正数** PID：`NSRunningApplication` 在 Dock 重启窗口里会返回 -1，
     /// 若把它当成"新 Dock 回来了"，`ReloadOutcome` 会谎报成功（Dock 其实还没回来）。
     /// `RealDockProcessControl` 里已有一道闸门，这里是第二道 —— 两层都便宜，都留着。
-    private func waitForRestart(after oldPID: pid_t, timeout: Duration? = nil) async -> pid_t? {
-        let deadline = ContinuousClock.now + (timeout ?? self.timeout)
+    ///
+    /// 等待超过 `slowProbeThreshold` 之后开始**取证**：每 `probeInterval` 问一次
+    /// `pidProbe()`，只在**答案变化**时记一条（外加首尾各一条）。这样一次 30 秒的慢重启
+    /// 通常只留 2–4 条，但足以定案「慢在探测还是慢在 launchd 拉起」。
+    private func waitForRestart(after oldPID: pid_t, timeout: Duration? = nil) async -> RestartWait {
+        let start = ContinuousClock.now
+        let deadline = start + (timeout ?? self.timeout)
+        let probeFrom = start + slowProbeThreshold
+        var timeline: [String] = []
+        var lastProbe: DockPIDProbe?
+        var nextProbeAt = probeFrom
+
+        /// 记一条。`force` 为真时无视"答案没变"也记（用于首尾两条）。
+        func sample(at instant: ContinuousClock.Instant, force: Bool) {
+            guard instant >= probeFrom, timeline.count < probeSampleCap else { return }
+            guard let probe = process.pidProbe() else { return }
+            guard force || probe != lastProbe else { return }
+            let ms = Int((Self.seconds(start.duration(to: instant)) * 1000).rounded())
+            timeline.append("\(ms)ms \(probe.summary)")
+            lastProbe = probe
+        }
+
         while ContinuousClock.now < deadline {
+            let now = ContinuousClock.now
             if let pid = process.dockPID(), pid > 0, pid != oldPID {
-                // 节流窗口从"新 Dock 归位"这一刻算起。
-                lastRestartAt = ContinuousClock.now
-                return pid
+                lastRestartAt = now
+                // 只在"已经慢过"的这次才补一条收尾记录，正常路径不产生任何开销。
+                if !timeline.isEmpty { sample(at: now, force: true) }
+                return RestartWait(pid: pid, probeTimeline: timeline)
+            }
+            if now >= nextProbeAt {
+                sample(at: now, force: false)
+                nextProbeAt = now + probeInterval
             }
             try? await Task.sleep(for: pollInterval)
         }
-        return nil
+        // 超时也要留一条收尾记录 —— "一直没归位"本身是最重要的结论。
+        if !timeline.isEmpty { sample(at: ContinuousClock.now, force: true) }
+        return RestartWait(pid: nil, probeTimeline: timeline)
     }
 
     private func outcome(
@@ -441,9 +555,11 @@ final class DockReloader {
         oldPID: pid_t,
         newPID: pid_t,
         started: Date,
-        spacingWait: TimeInterval
+        spacingWait: TimeInterval,
+        probeTimeline: [String] = []
     ) -> ReloadOutcome {
         ReloadOutcome(method: method, oldPID: oldPID, newPID: newPID,
-                      elapsed: Date().timeIntervalSince(started), spacingWait: spacingWait)
+                      elapsed: Date().timeIntervalSince(started), spacingWait: spacingWait,
+                      probeTimeline: probeTimeline)
     }
 }

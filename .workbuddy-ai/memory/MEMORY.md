@@ -3,7 +3,7 @@
 > **技术细节不写在这里。** 权威副本是仓库里的三份文档，改代码前先读，别靠这份记忆：
 > - `AGENTS.md` —— 交接说明（§3 进度 / §4 环境事实 / §5 工程约定 / §6 待确认与未解决 / §8 会话记录）
 > - `docs/PLAN.md` —— 设计与进度权威副本，实现变了必须同步
-> - `docs/spikes.md` —— **14 个实验**的实测结论，多处推翻 PLAN.md 的原始假设
+> - `docs/spikes.md` —— **15 个实验**的实测结论，多处推翻 PLAN.md 的原始假设
 >
 > 本文件只留"读文档时容易漏掉、且代价高"的东西。
 
@@ -66,7 +66,13 @@ SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.s
 - **`launchctl kickstart` 绝不能 `waitUntilExit()`** —— launchd 退避时它会阻塞几十秒，而这条在 `@MainActor` 上。
 - ⚠️ **别信"Dock 重启被罚是因为 uptime 太短"** —— 这个假说（连同另外三个）已被实验 12–14 **实测证伪**：
   uptime 6 s 的重启只要 37–68 ms，`com.apple.Dock.plist` 里本来就是 `ThrottleInterval = 1`。
-  **`minimumSpacing` 不要动。** 偶发的 26–31 s 根因未定，见 `docs/spikes.md` 实验 11.6。
+  **`minimumSpacing` 不要动。** 偶发的 26–31 s 根因未定 → **已装取证仪表**（实验 15：
+  `pidProbe()` 两条路径的答案写进 `慢重启取证：…` 日志段，正常路径零开销）。**等它自己出现，别去折腾用户的 Dock。**
+- ⚠️ **重载期间 `DockPresenceMonitor` 刻意静默**（`tick()` 第一行 `guard !isReloading()`）。
+  慢重启窗口里日志一片空白**是预期**，别当成"监视器没工作"的证据。
+- ⚠️ **`grep -a` 找不到 release 二进制里的短 ASCII 字面量**（Swift 小字符串优化：≤15 字节直接编进指令）。
+  实测 `"LS="` / `"scan="` / `"nil"` 计数都是 0，而长中文字面量找得到。
+  **判断"新代码有没有进包"要用字节级搜索**（`python3` 里 `open(p,'rb').read().count(b'…')`）或查长中文字面量。
 - **`withTaskGroup` 当"赛跑"用会让上限静默失效**（返回值对、墙钟错）→ 带上限的等待必须**轮询可观察标志**，
   回归守卫要断言墙钟。
 - **配置损坏会自我固化**：残缺 override 被 apply → 真实 Dock 真的变残缺 → `DockWatcher` 合法地把它当

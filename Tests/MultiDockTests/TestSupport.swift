@@ -85,6 +85,11 @@ final class FakeDockProcess: DockProcessControlling, @unchecked Sendable {
     /// 替身"报告"的 Dock 启动时刻。nil = 报告不出来（`DockReloader` 会退回用内存里的记忆）。
     private var reportedStartTime: TimeInterval?
 
+    /// 取证替身：`pidProbe()` 依次返回这里的答案，用完之后**重复最后一个**。
+    /// 空数组 = 这个替身不支持取证（走协议的默认实现，返回 nil）。
+    private var probeSequence: [DockPIDProbe] = []
+    private var probeCalls = 0
+
     init(
         pid: pid_t? = 100,
         restartsOn: Set<Int32> = [SIGHUP],
@@ -102,6 +107,27 @@ final class FakeDockProcess: DockProcessControlling, @unchecked Sendable {
     /// 改掉"报告"的启动时刻。用来构造「内存里记着刚重启过、但真实 Dock 已经跑了很久」这类场景。
     func reportStartTime(_ time: TimeInterval?) {
         lock.withLock { reportedStartTime = time }
+    }
+
+    /// 让 `pidProbe()` 依次给出这些答案（用来构造"两条路径分叉"的慢重启）。
+    func reportProbe(_ sequence: [DockPIDProbe]) {
+        lock.withLock {
+            probeSequence = sequence
+            probeCalls = 0
+        }
+    }
+
+    /// `pidProbe()` 被调用了几次。断言"正常路径零开销"用。
+    var probeCallCount: Int { lock.withLock { probeCalls } }
+
+    /// 覆盖协议默认实现（默认返回 nil = 这个替身不支持取证）。
+    func pidProbe() -> DockPIDProbe? {
+        lock.withLock {
+            guard !probeSequence.isEmpty else { return nil }
+            let index = min(probeCalls, probeSequence.count - 1)
+            probeCalls += 1
+            return probeSequence[index]
+        }
     }
 
     /// 覆盖协议默认实现（默认返回 nil = 拿不到启动时刻）。

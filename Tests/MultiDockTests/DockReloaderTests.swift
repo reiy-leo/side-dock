@@ -456,4 +456,107 @@ final class DockReloaderTests: XCTestCase {
         default: XCTFail("实得 \(result.description)")
         }
     }
+
+    // MARK: - 慢重启取证（A8：Dock 偶发 26–31 秒，见 `docs/spikes.md` 实验 11.6 与实验 15）
+    //
+    // 这一组钉死的不是"慢重启的成因"（成因还没定案），而是**下一次发生时能不能自证**：
+    // 真机日志里只有结果（`Dock 不可用 26046 ms`），没有过程，所以四个假说都能往上套。
+    // 取证要能区分两种病因 —— `procScan` 早看到新 PID 而 `launchServices` 没看到（我们的 bug），
+    // 还是两条路径都只看到 nil（Dock 真的没回来，launchd 的事）。
+
+    /// 带取证参数的 reloader。`slowProbeThreshold` 压到 20 ms，让"慢"在单测里可复现。
+    private func makeProbingReloader(
+        _ process: FakeDockProcess,
+        slowProbeThreshold: Duration = .milliseconds(20),
+        probeInterval: Duration = .milliseconds(5),
+        probeSampleCap: Int = 24
+    ) -> DockReloader {
+        DockReloader(
+            process: process,
+            timeout: .milliseconds(300),
+            pollInterval: .milliseconds(2),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .zero,
+            slowProbeThreshold: slowProbeThreshold,
+            probeInterval: probeInterval,
+            probeSampleCap: probeSampleCap
+        )
+    }
+
+    func testFastRestartDoesNotProbeAtAll() async {
+        // **零开销护栏**：正常路径只要几十毫秒，绝不能因此多花一次 LaunchServices 查询。
+        let process = FakeDockProcess(restartsOn: [SIGHUP])
+        process.reportProbe([DockPIDProbe(launchServices: 1, procScan: 1)])
+
+        let outcome = await makeProbingReloader(process).reload(strategy: .auto)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertTrue(outcome.probeTimeline.isEmpty, "快路径不该产生取证记录")
+        XCTAssertEqual(process.probeCallCount, 0, "快路径一次都不该调用 pidProbe()")
+    }
+
+    func testSlowRestartRecordsBothPathsInTheTimeline() async {
+        // 慢重启必须回答"慢在探测还是慢在 launchd" → 两条路径的答案都要进日志。
+        let process = FakeDockProcess(restartsOn: [SIGHUP], restartDelayPolls: 40)
+        process.reportProbe([
+            DockPIDProbe(launchServices: 100, procScan: nil),    // 分叉：LS 说旧的还活着，内核表里没有 Dock
+            DockPIDProbe(launchServices: 100, procScan: nil),
+            DockPIDProbe(launchServices: 1000, procScan: 1000),  // 归位，两条路径一致
+        ])
+
+        let outcome = await makeProbingReloader(process).reload(strategy: .auto)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertFalse(outcome.probeTimeline.isEmpty, "慢重启必须留下取证时间线")
+        XCTAssertTrue(outcome.probeTimeline.contains { $0.contains("LS=100 scan=nil") },
+                      "两条路径的答案都要记：\(outcome.probeTimeline)")
+        XCTAssertTrue(outcome.description.contains("慢重启取证："),
+                      "时间线要挂在日志那一句里：\(outcome.description)")
+        XCTAssertGreaterThan(process.probeCallCount, 0)
+    }
+
+    func testTimelineRecordsOnlyChangesPlusEndpoints() async {
+        // 10 Hz × 30 秒 = 300 条会把日志灌爆。答案没变就不记。
+        let process = FakeDockProcess(restartsOn: [SIGHUP], restartDelayPolls: 40)
+        process.reportProbe([DockPIDProbe(launchServices: nil, procScan: nil)])
+
+        let outcome = await makeProbingReloader(process).reload(strategy: .auto)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertLessThanOrEqual(outcome.probeTimeline.count, 2,
+                                 "答案没变就不该反复记：\(outcome.probeTimeline)")
+    }
+
+    func testTimelineIsCapped() async {
+        let process = FakeDockProcess(restartsOn: [SIGHUP], restartDelayPolls: 60)
+        process.reportProbe((0..<300).map { DockPIDProbe(launchServices: pid_t($0), procScan: nil) })
+
+        let outcome = await makeProbingReloader(process, probeSampleCap: 5).reload(strategy: .auto)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertLessThanOrEqual(outcome.probeTimeline.count, 5, "取证条数必须封顶")
+    }
+
+    func testSlowRestartWithoutProbeSupportStillWorks() async {
+        // 协议默认实现返回 nil（老替身、将来别的实现）→ 照常工作，只是不带时间线。
+        let process = FakeDockProcess(restartsOn: [SIGHUP], restartDelayPolls: 40)
+
+        let outcome = await makeProbingReloader(process).reload(strategy: .auto)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertTrue(outcome.probeTimeline.isEmpty)
+        XCTAssertEqual(process.probeCallCount, 0)
+    }
+
+    func testFailedSlowRestartStillCarriesTheTimeline() async {
+        // 最该有取证的就是"一直没归位"：它直接回答"Dock 到底在不在"。
+        let process = FakeDockProcess(restartsOn: [], kickstartRestarts: false)
+        process.reportProbe([DockPIDProbe(launchServices: 100, procScan: nil)])
+
+        let outcome = await makeProbingReloader(process).reload(strategy: .auto)
+
+        XCTAssertFalse(outcome.succeeded)
+        XCTAssertFalse(outcome.probeTimeline.isEmpty, "超时未归位也要留时间线：\(outcome.description)")
+        XCTAssertTrue(outcome.description.contains("慢重启取证："))
+    }
 }

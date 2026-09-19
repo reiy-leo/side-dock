@@ -289,7 +289,16 @@ struct AppSettings: Codable {
 >
 > **P0 的竞态风险实测未发生**：多轮 apply 都是第一次校验就过。重试路径由单测 `testRetriesOnceWhenDockDidNotTakeTheWrite` 用"第一次写入被吞掉"的替身覆盖。
 >
-> **Dock 进程查找有兜底**：非 `.app` 进程（如 `swift test` 的 xctest runner）里 `NSRunningApplication.runningApplications(withBundleIdentifier:)` 可能查不到 Dock，`dockPID()` 退回 `pgrep -x Dock`。
+> **Dock 进程查找有兜底**：非 `.app` 进程（如 `swift test` 的 xctest runner）里 `NSRunningApplication.runningApplications(withBundleIdentifier:)` 可能查不到 Dock，`dockPID()` 退回 `proc_listpids(PROC_ALL_PIDS)` + `proc_name` 扫进程表（**0.02 ms**）。
+> ⚠️ 早期版本用的是 `pgrep -x Dock`（单次 **110 ms**），**早已换掉** —— 别照旧文档改回去。
+>
+> **2026-09-20 加取证**（真机偶发慢重启 26–31 秒，见 `docs/spikes.md` 实验 11.6 与实验 15）：
+> 四个假说已被实验 12–14 逐个证伪，剩下的两种病因（**探测分叉** vs **Dock 真的没回来**）旧日志分不出来 ——
+> 因为重载期间 `DockPresenceMonitor` 刻意静默、`waitForRestart` 只记结果不记过程。
+> 所以给它加了 `DockPIDProbe` / `probeTimeline`：等待 **> 1 秒**才采样两条探测路径的答案，
+> **只在答案变化时记一条**（首尾强制各一条，封顶 24 条），写进**已有的那一行** `Dock 应用成功` 日志。
+> **正常路径一次都不调用 `pidProbe()`**（`testFastRestartDoesNotProbeAtAll` 守着），零开销。
+> 判定规则见实验 15。**这不是行为改动，只是观测。**
 
 ### 3.6 Dock 编辑条（设置页核心控件）
 
