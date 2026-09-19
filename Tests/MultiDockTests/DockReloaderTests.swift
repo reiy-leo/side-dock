@@ -467,14 +467,16 @@ final class DockReloaderTests: XCTestCase {
     /// 带取证参数的 reloader。`slowProbeThreshold` 压到 20 ms，让"慢"在单测里可复现。
     private func makeProbingReloader(
         _ process: FakeDockProcess,
+        timeout: Duration = .milliseconds(300),
+        pollInterval: Duration = .milliseconds(2),
         slowProbeThreshold: Duration = .milliseconds(20),
         probeInterval: Duration = .milliseconds(5),
         probeSampleCap: Int = 24
     ) -> DockReloader {
         DockReloader(
             process: process,
-            timeout: .milliseconds(300),
-            pollInterval: .milliseconds(2),
+            timeout: timeout,
+            pollInterval: pollInterval,
             fallbackGrace: .milliseconds(20),
             minimumSpacing: .zero,
             slowProbeThreshold: slowProbeThreshold,
@@ -558,5 +560,63 @@ final class DockReloaderTests: XCTestCase {
         XCTAssertFalse(outcome.succeeded)
         XCTAssertFalse(outcome.probeTimeline.isEmpty, "超时未归位也要留时间线：\(outcome.description)")
         XCTAssertTrue(outcome.description.contains("慢重启取证："))
+    }
+
+    // MARK: - 存活性（"Dock 真的不在" vs "我们没在看"）
+    //
+    // `elapsed` 是**墙钟**，而轮询循环跑在 `@MainActor` 上。主线程若被别的东西冻住，
+    // 我们会**根本没在看**，却照样把这段时间记成"Dock 不可用"—— 两者在旧日志里一模一样
+    // （都是 `Dock 不可用 26046 ms`）。所以 outcome 里必须带上**实际跑了几轮、最长间隔多少**。
+    //
+    // 这条洞是 2026-09-20 复盘真机日志时发现的：那次 26 秒慢重启里，
+    // 只有**前 10 秒**有 toast 准时开合可以证明主线程活着，后 16 秒毫无存活性证据。
+
+    func testFastRestartReportsNoLiveness() async {
+        // 快路径的日志行必须一个字节都不变 —— 存活性只在慢重启上记。
+        let process = FakeDockProcess(restartsOn: [SIGHUP])
+
+        let outcome = await makeProbingReloader(process).reload(strategy: .auto)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertFalse(outcome.description.contains("轮询"), "快路径不该多这一段：\(outcome.description)")
+    }
+
+    func testSlowRestartReportsPollCountAndLongestGap() async {
+        // 慢重启要能自证"我一直在看"：轮询次数应该接近 elapsed / pollInterval。
+        //
+        // ⚠️ 这里**故意让 elapsed 真的超过 1 秒**（600 轮 × 2 ms）——
+        // 存活性那一段是按 `elapsed > 1` 记的（保证快路径的日志行不变），
+        // 用假的短"慢"去测会把闸门绕过去、测不到真东西。
+        let process = FakeDockProcess(restartsOn: [SIGHUP], restartDelayPolls: 600)
+
+        let outcome = await makeProbingReloader(process, timeout: .seconds(5)).reload(strategy: .auto)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertGreaterThan(outcome.elapsed, 1, "这条用例的前提就是「真的慢过 1 秒」")
+        XCTAssertGreaterThan(outcome.waitPolls, 100, "1 秒多的等待应该跑了几百轮轮询")
+        XCTAssertTrue(outcome.description.contains("轮询 \(outcome.waitPolls) 次"),
+                      "存活性要挂在日志那一句里：\(outcome.description)")
+        XCTAssertGreaterThanOrEqual(outcome.waitLongestGapMS, 0)
+    }
+
+    func testStarvedPollLoopIsDistinguishableFromAbsentDock() async {
+        // **这条是本组的重点。** 让替身在第 3 次 `dockPID()` 上阻塞 80 ms ——
+        // 等价于"轮询循环所在的线程被冻住了"。此时：
+        //   - `elapsed` 照样是几十毫秒（墙钟）；
+        //   - 但**轮询次数极少**、**最长间隔是几十毫秒**。
+        // 真机上如果看到这个形状，就说明"26 秒"里大部分时间是**我们没在看**，不是 Dock 不在。
+        let process = FakeDockProcess(restartsOn: [SIGHUP], restartDelayPolls: 40)
+        process.stallDockPID(onCall: 3, for: 0.08)
+
+        let outcome = await makeProbingReloader(process).reload(strategy: .auto)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertGreaterThanOrEqual(outcome.waitLongestGapMS, 70,
+                                    "阻塞 80 ms 必须体现在最长间隔上：\(outcome.description)")
+        // 对照：没有阻塞时最长间隔是个位/十几毫秒（pollInterval 是 2 ms）。
+        let healthy = FakeDockProcess(restartsOn: [SIGHUP], restartDelayPolls: 40)
+        let healthyOutcome = await makeProbingReloader(healthy).reload(strategy: .auto)
+        XCTAssertLessThan(healthyOutcome.waitLongestGapMS, 70,
+                          "没被冻住时最长间隔不该接近 80 ms：\(healthyOutcome.description)")
     }
 }

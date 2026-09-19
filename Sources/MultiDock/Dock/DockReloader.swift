@@ -291,6 +291,19 @@ struct ReloadOutcome: Sendable, Equatable {
     /// 它存在的意义：把"Dock 不可用 26046 ms"从一个**结果**变成一条**过程记录**，
     /// 从而区分「探测分叉（我们的 bug）」与「Dock 真的没回来（launchd 的事）」。
     var probeTimeline: [String] = []
+    /// 等归位期间**实际跑了几轮轮询**，以及最长的一次轮询间隔（ms）。
+    ///
+    /// 存在的理由：`elapsed` 是**墙钟**，而轮询循环跑在 `@MainActor` 上 ——
+    /// 主线程若被别的东西冻住，我们会**根本没在看**，却照样把这段时间记成"Dock 不可用"。
+    /// 两者在旧日志里长得一模一样（都是 `Dock 不可用 26046 ms`）。
+    ///
+    /// 有了这两个数就能当场分开：
+    /// - 轮询次数 ≈ `elapsed / pollInterval`（默认 15 ms）、最长间隔十几毫秒
+    ///   → 我们一直在看，**Dock 是真的不在**（launchd 侧）；
+    /// - 次数远低于预期、最长间隔是**秒级**
+    ///   → **观察窗口断了**，是我们的 bug，与 Dock 无关。
+    var waitPolls: Int = 0
+    var waitLongestGapMS: Int = 0
 
     var succeeded: Bool { newPID != nil }
 
@@ -298,16 +311,20 @@ struct ReloadOutcome: Sendable, Equatable {
         let wait = spacingWait > 0.01
             ? String(format: "（先等了 %.0f ms 错开节流，期间 Dock 可用）", spacingWait * 1000)
             : ""
+        // 存活性只在**慢重启**上记（`elapsed > 1`），保证快路径的日志行一个字节都不变。
+        let liveness = (elapsed > 1 && waitPolls > 0)
+            ? String(format: "；轮询 %d 次，最长间隔 %d ms", waitPolls, waitLongestGapMS)
+            : ""
         let probe = probeTimeline.isEmpty
             ? ""
             : "；慢重启取证：" + probeTimeline.joined(separator: "｜")
         guard succeeded else {
-            return String(format: "%@ 失败（%.0f ms，旧 PID %@）%@%@", method.rawValue, elapsed * 1000,
-                          oldPID.map(String.init) ?? "无", wait, probe)
+            return String(format: "%@ 失败（%.0f ms，旧 PID %@）%@%@%@", method.rawValue, elapsed * 1000,
+                          oldPID.map(String.init) ?? "无", wait, liveness, probe)
         }
-        return String(format: "%@ 成功：PID %@ → %@，Dock 不可用 %.0f ms%@%@",
+        return String(format: "%@ 成功：PID %@ → %@，Dock 不可用 %.0f ms%@%@%@",
                       method.rawValue, oldPID.map(String.init) ?? "?", String(newPID!), elapsed * 1000,
-                      wait, probe)
+                      wait, liveness, probe)
     }
 }
 
@@ -402,7 +419,8 @@ final class DockReloader {
             if let newPID = wait.pid {
                 return outcome(.sighup, oldPID: oldPID, newPID: newPID,
                                started: started, spacingWait: spacingWait,
-                               probeTimeline: wait.probeTimeline)
+                               probeTimeline: wait.probeTimeline,
+                               polls: wait.polls, longestGapMS: wait.longestGapMS)
             }
         } else {
             process.signal(oldPID, SIGTERM)
@@ -410,7 +428,8 @@ final class DockReloader {
             if let newPID = wait.pid {
                 return outcome(.sigterm, oldPID: oldPID, newPID: newPID,
                                started: started, spacingWait: spacingWait,
-                               probeTimeline: wait.probeTimeline)
+                               probeTimeline: wait.probeTimeline,
+                               polls: wait.polls, longestGapMS: wait.longestGapMS)
             }
         }
 
@@ -422,20 +441,23 @@ final class DockReloader {
         if let newPID = grace.pid {
             return outcome(.sigterm, oldPID: oldPID, newPID: newPID,
                            started: started, spacingWait: spacingWait,
-                           probeTimeline: grace.probeTimeline)
+                           probeTimeline: grace.probeTimeline,
+                           polls: grace.polls, longestGapMS: grace.longestGapMS)
         }
         process.kickstart()
         let kicked = await waitForRestart(after: dyingPID)
         if let newPID = kicked.pid {
             return outcome(.kickstart, oldPID: oldPID, newPID: newPID,
                            started: started, spacingWait: spacingWait,
-                           probeTimeline: kicked.probeTimeline)
+                           probeTimeline: kicked.probeTimeline,
+                           polls: kicked.polls, longestGapMS: kicked.longestGapMS)
         }
 
         return ReloadOutcome(method: .failed, oldPID: oldPID, newPID: nil,
                              elapsed: Date().timeIntervalSince(started),
                              spacingWait: spacingWait,
-                             probeTimeline: kicked.probeTimeline)
+                             probeTimeline: kicked.probeTimeline,
+                             waitPolls: kicked.polls, waitLongestGapMS: kicked.longestGapMS)
     }
 
     /// 退出流程专用的重启：**只发一发信号，最多看它一眼，绝不升级**。
@@ -514,6 +536,10 @@ final class DockReloader {
         var pid: pid_t?
         /// 慢重启的取证时间线。正常路径为空数组。见 `ReloadOutcome.probeTimeline`。
         var probeTimeline: [String] = []
+        /// 实际跑了几轮轮询。见 `ReloadOutcome.waitPolls`。
+        var polls: Int = 0
+        /// 最长的一次轮询间隔（ms）。见 `ReloadOutcome.waitLongestGapMS`。
+        var longestGapMS: Int = 0
     }
 
     /// 轮询等待一个**不同于** `oldPID` 的 Dock 进程出现。
@@ -532,6 +558,11 @@ final class DockReloader {
         var timeline: [String] = []
         var lastProbe: DockPIDProbe?
         var nextProbeAt = probeFrom
+        // 存活性：轮询次数 + 最长一次间隔。用来区分「Dock 真的不在」与「我们没在看」。
+        // 两个计数器都只是整数运算，正常路径（几轮）的开销可忽略。
+        var polls = 0
+        var lastIteration = start
+        var longestGap = Duration.zero
 
         /// 记一条。`force` 为真时无视"答案没变"也记（用于首尾两条）。
         func sample(at instant: ContinuousClock.Instant, force: Bool) {
@@ -545,11 +576,16 @@ final class DockReloader {
 
         while ContinuousClock.now < deadline {
             let now = ContinuousClock.now
+            polls += 1
+            let gap = lastIteration.duration(to: now)
+            if gap > longestGap { longestGap = gap }
+            lastIteration = now
             if let pid = process.dockPID(), pid > 0, pid != oldPID {
                 lastRestartAt = now
                 // 只在"已经慢过"的这次才补一条收尾记录，正常路径不产生任何开销。
                 if !timeline.isEmpty { sample(at: now, force: true) }
-                return RestartWait(pid: pid, probeTimeline: timeline)
+                return RestartWait(pid: pid, probeTimeline: timeline,
+                                   polls: polls, longestGapMS: Self.milliseconds(longestGap))
             }
             if now >= nextProbeAt {
                 sample(at: now, force: false)
@@ -559,7 +595,13 @@ final class DockReloader {
         }
         // 超时也要留一条收尾记录 —— "一直没归位"本身是最重要的结论。
         if !timeline.isEmpty { sample(at: ContinuousClock.now, force: true) }
-        return RestartWait(pid: nil, probeTimeline: timeline)
+        return RestartWait(pid: nil, probeTimeline: timeline,
+                           polls: polls, longestGapMS: Self.milliseconds(longestGap))
+    }
+
+    /// `Duration` → 毫秒（四舍五入）。
+    private static func milliseconds(_ duration: Duration) -> Int {
+        Int((seconds(duration) * 1000).rounded())
     }
 
     private func outcome(
@@ -568,10 +610,13 @@ final class DockReloader {
         newPID: pid_t,
         started: Date,
         spacingWait: TimeInterval,
-        probeTimeline: [String] = []
+        probeTimeline: [String] = [],
+        polls: Int = 0,
+        longestGapMS: Int = 0
     ) -> ReloadOutcome {
         ReloadOutcome(method: method, oldPID: oldPID, newPID: newPID,
                       elapsed: Date().timeIntervalSince(started), spacingWait: spacingWait,
-                      probeTimeline: probeTimeline)
+                      probeTimeline: probeTimeline,
+                      waitPolls: polls, waitLongestGapMS: longestGapMS)
     }
 }

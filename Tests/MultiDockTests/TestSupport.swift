@@ -90,6 +90,11 @@ final class FakeDockProcess: DockProcessControlling, @unchecked Sendable {
     private var probeSequence: [DockPIDProbe] = []
     private var probeCalls = 0
 
+    /// 「主线程被冻住」模拟：在第 N 次 `dockPID()` 调用上阻塞 `stallDuration` 秒。
+    private var stallOnCall: Int?
+    private var stallDuration: TimeInterval = 0
+    private var dockPIDCalls = 0
+
     init(
         pid: pid_t? = 100,
         restartsOn: Set<Int32> = [SIGHUP],
@@ -136,7 +141,17 @@ final class FakeDockProcess: DockProcessControlling, @unchecked Sendable {
     }
 
     func dockPID() -> pid_t? {
-        lock.withLock {
+        // 「主线程被冻住」模拟：在第 N 次调用上阻塞一段时间。
+        // `DockReloader` 的轮询循环跑在 `@MainActor` 上，所以**阻塞替身 = 阻塞那个循环**。
+        // 用来验证「Dock 真的不在」与「我们没在看」在 outcome 里能分开。
+        let stall: TimeInterval? = lock.withLock {
+            dockPIDCalls += 1
+            guard let target = stallOnCall, dockPIDCalls == target else { return nil }
+            return stallDuration
+        }
+        if let stall, stall > 0 { Thread.sleep(forTimeInterval: stall) }
+
+        return lock.withLock {
             guard let current = pid else { return nil }
             guard restartPending else { return current }
             if countdown > 0 {
@@ -147,6 +162,16 @@ final class FakeDockProcess: DockProcessControlling, @unchecked Sendable {
             nextPID += 1
             pid = nextPID
             return nextPID
+        }
+    }
+
+    /// 让第 `call` 次 `dockPID()` 阻塞 `duration` 秒 —— 模拟"轮询循环所在的线程被冻住"。
+    /// 传 `nil` 关掉。用来测「观察窗口断了」能不能从 outcome 里看出来。
+    func stallDockPID(onCall call: Int?, for duration: TimeInterval) {
+        lock.withLock {
+            stallOnCall = call
+            stallDuration = duration
+            dockPIDCalls = 0
         }
     }
 
