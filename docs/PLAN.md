@@ -265,7 +265,7 @@ struct AppSettings: Codable {
 | --- | --- | --- |
 | A. 通知 | 写偏好后 post `com.apple.dock.prefchanged` | ❌ **彻底无效**。darwin 通知与真·分布式通知都试过，Dock 完全不响应（PID 不变、tile 的 `GUID` 未被补全） |
 | B. SIGHUP | `kill(dockPID, SIGHUP)` | ✅ **生效**，但**不是热重载而是进程重启**（PID 变化，launchd 立即拉回）。总不可用窗口仅 **约 101 ms** |
-| C. SIGTERM | `kill(dockPID, SIGTERM)`，未归位则 `launchctl kickstart -k gui/$(id -u)/com.apple.Dock.agent` | ✅ 生效（重启）。Dock 会先做约 255 ms 退出清理，总不可用窗口 **约 367–395 ms** |
+| C. SIGTERM | `kill(dockPID, SIGTERM)`，未归位则 `launchctl kickstart` ⚠️ **P0 实验当时带 `-k`；实现已去掉 `-k`**（实验 9：带上会把 launchd 正要拉起的 Dock 再杀一次） | ✅ 生效（重启）。Dock 会先做约 255 ms 退出清理，总不可用窗口 **约 367–395 ms** |
 
 > **不存在热重载**。写偏好后必须重启 Dock 进程，没有零闪烁方案。
 
@@ -299,6 +299,30 @@ struct AppSettings: Codable {
 > **只在答案变化时记一条**（首尾强制各一条，封顶 24 条），写进**已有的那一行** `Dock 应用成功` 日志。
 > **正常路径一次都不调用 `pidProbe()`**（`testFastRestartDoesNotProbeAtAll` 守着），零开销。
 > 判定规则见实验 15。**这不是行为改动，只是观测。**
+>
+> **2026-09-20 又补两处观测**（同一轮排查的收尾，见 `docs/spikes.md` 15.3 / 15.4）：
+> ① **`waitPolls` / `waitLongestGapMS`** —— `waitForRestart` 的 `elapsed` 是墙钟，而轮询跑在 `@MainActor` 上：
+> 主线程被冻住时我们**根本没在看**，却照样把整段时间记成"Dock 不可用 26046 ms"。
+> 现在慢重启那一行日志会带 `轮询 N 次，最长间隔 M ms`。**判据先看 M**：M 秒级 = 观察窗口断了（我们的 bug），
+> 不是 launchd 的事；次数 ≈ `elapsed / 15 ms` = 一直在看（Dock 真的不在）。只在 `elapsed > 1` 时记，快路径日志一个字节不变。
+> ② `dockPID()` 的 **LS 优先已被定向测量证明安全**（6/6 轮"危险窗口 = 0 ms"），**别改它的路径选择**。
+>
+> **2026-09-20 A8 修法落地：别等，催**（真机偶发慢重启 26–31 秒，见 `docs/spikes.md` 实验 16）。
+> 线索是真机日志里一直被忽略的半截：`05:33:16` 那次 **SIGHUP 等满 30 s 没等到，紧接着一发 `kickstart` 0.5 s 就拉回来了** ——
+> 也就是说**我们手里本来就有一条能立刻拿到 Dock 的通道，只是被排在了 30 秒之后**。改动：
+>
+> | 改动 | 值 | 为什么 |
+> | --- | --- | --- |
+> | 新增 `nudgeAfter` | **500 ms** | 等待超过它还没见到新 Dock 就催一发 `kickstart`。正常路径 35–126 ms，永不触发 |
+> | 新增 `nudgeInterval` | **1 s** | 重复催（⚠️ 尽力而为：`LaunchctlParking` 闸门会吞掉叠发的） |
+> | `timeout` | **30 s → 3 s** | ⚠️ **这条修正了上面 2026-09-19 那条"提到 30 s"** —— 实验 16.2 实测 launchd 的节流尺度是 **1 s 硬顶、不累积**，"退避是几十秒"的前提不成立；3 s ≈ 正常值的 24 倍，够宽容 |
+> | 新增 `kickstartTimeout` | **30 s** | 真正需要耐心的那一段挪到**催完之后** |
+> | **PID 守卫** | 新增 | 兜底原本对 `dyingPID` 发 SIGTERM，若 launchd 已把 Dock 拉回来，读到的是**新** PID → 会把刚恢复的 Dock **再杀一次** |
+> | 失败取证 | 修 | 三段拼接并标段名（原来把最有用的主路径那段丢了，催办记录就在里面） |
+>
+> 安全性前提是**实测**的：`kickstart` **不带 `-k`** 对运行中的 Dock 是无害 no-op（PID 未变、退出码 0），所以"催早了"不构成风险。
+> 代价：**26–31 s → ~1–3.5 s**。⚠️ **修好的是代价，不是成因** —— `KeepAlive = {AfterInitialDemand:1, SuccessfulExit:0}`
+> 下"launchd 偶尔根本不调度那次重新拉起"仍未直接观测，预测与下次复现的读法见实验 16.4 / 16.8。
 
 ### 3.6 Dock 编辑条（设置页核心控件）
 
@@ -457,7 +481,7 @@ struct AppSettings: Codable {
 
 - 登录项优先 `SMAppService.mainApp`；未签名构建下注册失败则退回 `~/Library/LaunchAgents/local.multidock.loginitem.plist`（`RunAtLoad`，**刻意不设 `KeepAlive`**：这是登录启动项不是守护进程，退出 App 后不该被反复拉起）。
 - 启动顺序固定为：**检测残留 session.state → 必要时还原基准 → 应用当前桌面配置 → 建立会话标记**。
-- Dock 重启后未归位 → 先**等**，等满了才 `launchctl kickstart -k` 兜底；仍异常则提示从备份恢复。
+- Dock 重启后未归位 → 先**等**，等满了才 `launchctl kickstart`（⚠️ **不带 `-k`** —— 带上会把 launchd 刚拉活的 Dock 再杀一次并加深退避）兜底；仍异常则提示从备份恢复。
   ✅ **已落地（2026-09-18），阈值 2026-09-19 重定过**：`DockPresenceMonitor` 连续缺失达到
   `missThreshold`（默认 8 轮 × 500 ms = **4 秒**）才动手，之后每 `kickstartEvery`（60 轮 = **30 秒**）
   才催一发；缺失满 `persistentFailureThreshold`（120 轮 = **60 秒**）→ 回调 `onPersistentlyDown` 一次 →
