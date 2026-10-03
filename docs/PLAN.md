@@ -272,6 +272,12 @@ struct AppSettings: Codable {
 
 **决定：主路径 = B（SIGHUP），兜底 = C（SIGTERM + kickstart）。** SIGHUP 比 SIGTERM 快约 4 倍（101 ms vs 395 ms），因为 SIGTERM 会被捕获并触发 Dock 的退出清理。UI 与 README 的措辞为「切换桌面时 Dock 会刷新约 0.1 秒」。
 
+> **2026-10-04 增补（实验 20）**：SIGHUP 重启现在默认包在**自动隐藏三明治**里——
+> `CoreDockSetAutoHideEnabled(true)`（typed setter，第三方实测可用且 Dock 自己持久化）
+> 把 Dock 实时滑走 → 隐形重启 → 滑回。用户看到两次平滑滑动，不再有「黑一下 + 图标重铺」。
+> 配置本就要求隐藏（autohide=true）时不启用（重启天然不可见）；typed setter 不可用/失败时
+> 优雅降级为老路径。实现见 `DockAutoHide.swift` 与 `DockReloader.reload(strategy:sandwichRevealAutoHideTo:)`。
+
 **关键坑（已验证 launchd 配置）**：绝不能用"优雅退出"（AppleEvent quit）——`SuccessfulExit = 0` 意味着 exit 0 时 launchd **不会**拉回 Dock，用户会当场失去 Dock。只走信号路径 + kickstart 兜底。
 
 **竞态风险（实现时必须处理）**：SIGTERM 前有约 255 ms 清理窗口，Dock 可能在退出前回写自己的状态从而覆盖我们的写入。实测未发生，但**不能假设永远安全**——应用后用指纹校验，不一致则重试一次。

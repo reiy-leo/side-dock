@@ -316,6 +316,11 @@ struct ReloadOutcome: Sendable, Equatable {
     ///   → **观察窗口断了**，是我们的 bug，与 Dock 无关。
     var waitPolls: Int = 0
     var waitLongestGapMS: Int = 0
+    /// **自动隐藏三明治**被使用（实验 20）：重启发生在 Dock 隐藏中，用户只看到滑入。
+    var hiddenRestart: Bool = false
+    /// 三明治用了，但**没能恢复可见性**——Dock 停在隐藏态（鼠标移到屏幕边缘仍可见），
+    /// 下一次 apply 会再尝试恢复。正常不应发生。
+    var revealFailed: Bool = false
 
     var succeeded: Bool { newPID != nil }
 
@@ -330,13 +335,16 @@ struct ReloadOutcome: Sendable, Equatable {
         let probe = probeTimeline.isEmpty
             ? ""
             : "；慢重启取证：" + probeTimeline.joined(separator: "｜")
+        let sandwich = revealFailed
+            ? "；⚠️ 三明治恢复可见性失败，Dock 暂时隐藏（下次 apply 自动恢复）"
+            : (hiddenRestart ? "；隐藏中重启（无闪烁）" : "")
         guard succeeded else {
-            return String(format: "%@ 失败（%.0f ms，旧 PID %@）%@%@%@", method.rawValue, elapsed * 1000,
-                          oldPID.map(String.init) ?? "无", wait, liveness, probe)
+            return String(format: "%@ 失败（%.0f ms，旧 PID %@）%@%@%@%@", method.rawValue, elapsed * 1000,
+                          oldPID.map(String.init) ?? "无", wait, liveness, probe, sandwich)
         }
-        return String(format: "%@ 成功：PID %@ → %@，Dock 不可用 %.0f ms%@%@%@",
+        return String(format: "%@ 成功：PID %@ → %@，Dock 不可用 %.0f ms%@%@%@%@",
                       method.rawValue, oldPID.map(String.init) ?? "?", String(newPID!), elapsed * 1000,
-                      wait, liveness, probe)
+                      wait, liveness, probe, sandwich)
     }
 }
 
@@ -414,6 +422,8 @@ final class DockReloader {
     private let probeInterval: Duration
     /// 取证最多留多少条。一次 30 秒的慢重启按 100 ms 采样会有 300 条，会把日志灌爆。
     private let probeSampleCap: Int
+    /// 自动隐藏的实时开关（实验 20 的三明治）。nil = 能力不可用，重载按老路径走。
+    private let autoHide: (any DockAutoHideControlling)?
     /// 上一次重启**归位**的时刻。节流窗口从这一刻算起。
     private var lastRestartAt: ContinuousClock.Instant?
 
@@ -428,7 +438,8 @@ final class DockReloader {
         kickstartTimeout: Duration = .seconds(30),
         slowProbeThreshold: Duration = .seconds(1),
         probeInterval: Duration = .milliseconds(100),
-        probeSampleCap: Int = 24
+        probeSampleCap: Int = 24,
+        autoHide: (any DockAutoHideControlling)? = nil
     ) {
         self.process = process
         self.timeout = timeout
@@ -441,6 +452,7 @@ final class DockReloader {
         self.slowProbeThreshold = slowProbeThreshold
         self.probeInterval = probeInterval
         self.probeSampleCap = max(1, probeSampleCap)
+        self.autoHide = autoHide
     }
 
     /// Dock 进程此刻在不在。
@@ -456,7 +468,7 @@ final class DockReloader {
     ///
     /// - Parameter strategy: `.auto` 先 SIGHUP；`.sigterm` 直接走 SIGTERM。
     ///   两条路失败都落到 `kickstart`。
-    func reload(strategy: ReloadStrategy = .auto) async -> ReloadOutcome {
+    func reload(strategy: ReloadStrategy = .auto, sandwichRevealAutoHideTo reveal: Bool? = nil) async -> ReloadOutcome {
         // 先错开节流窗口。这段时间 Dock 是**可用**的，所以不计入"不可用时长"。
         let spacingWait = await waitForSpacing()
 
@@ -467,6 +479,42 @@ final class DockReloader {
                                  spacingWait: spacingWait)
         }
 
+        // 三明治第一片：实时滑走（实验 20 的 typed setter，Dock 自己持久化）。
+        // 目标可见性是 false 才有意义——配置本就要求隐藏的话，重启后的 Dock 天然以
+        // 隐藏态出现，本来就不会闪。失败（符号缺失 / Dock 不认）就当没有这个能力，
+        // 按老路径闪一次。
+        var hidDock = false
+        if let reveal, !reveal, let autoHide {
+            if autoHide.setAutoHide(true) {
+                hidDock = true
+                // 等"滑出"动画走完再杀进程，避免滑到一半凭空消失的割裂感。
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+        }
+
+        let outcome = await reloadCore(strategy: strategy, oldPID: oldPID, started: started,
+                                       spacingWait: spacingWait)
+
+        // 三明治第二片：无论 core 走的是成功 / 兜底 / 失败哪条路，都要把可见性还原成
+        // 调用方要的值。失败重试一次；仍失败时 Dock 停在隐藏态（鼠标移到屏幕边缘仍可见），
+        // 下一次 apply 会再尝试恢复——reveal 值来自配置而非当时的域，所以能自愈。
+        var final = outcome
+        if hidDock {
+            final.hiddenRestart = true
+            if let reveal, let autoHide, !autoHide.setAutoHide(reveal) {
+                try? await Task.sleep(for: .milliseconds(400))
+                if !autoHide.setAutoHide(reveal) {
+                    final.revealFailed = true
+                }
+            }
+        }
+        return final
+    }
+
+    /// 三明治的中间段：发信号 → 等归位 → 逐级兜底。由上面的 `reload` 包裹调用，
+    /// 保证隐藏/恢复在任何返回路径上都成对出现。
+    private func reloadCore(strategy: ReloadStrategy, oldPID: pid_t, started: Date,
+                            spacingWait: TimeInterval) async -> ReloadOutcome {
         // 主路径：`.auto` 发 SIGHUP，`.sigterm` 直接发 SIGTERM。两条路都是"发信号 → 等归位"，
         // 只是标签不同，所以合成一段。
         //

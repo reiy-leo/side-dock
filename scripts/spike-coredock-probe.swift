@@ -32,6 +32,12 @@ func CoreDockSetPreferences(_ prefs: CFDictionary) -> OSStatus
 @_silgen_name("CoreDockSetTileSize")
 func CoreDockSetTileSize(_ size: Int32) -> OSStatus
 
+@_silgen_name("CoreDockSetAutoHideEnabled")
+func CoreDockSetAutoHideEnabled(_ on: Bool) -> OSStatus
+
+@_silgen_name("CoreDockGetAutoHideEnabled")
+func CoreDockGetAutoHideEnabled() -> Bool
+
 @_silgen_name("CoreDockAddFileToDock")
 func CoreDockAddFileToDock(_ file: CFTypeRef, _ flags: Int32) -> OSStatus
 
@@ -122,6 +128,26 @@ case "notify1":
     // SendNotification flags=1（此前只试过 0）
     let st = CoreDockSendNotification("com.apple.dock.prefchanged" as CFString, 1)
     print("SendNotification(flags=1) status=\(st) dockPID=\(dockPID())")
+case "getautohide":
+    // 实验 20：Get（typed，id=3）与域值对照
+    let domain = CFPreferencesCopyAppValue("autohide" as CFString, "com.apple.dock" as CFString)
+    print("GetAutoHideEnabled=\(CoreDockGetAutoHideEnabled()) 域 autohide=\(domain as? Bool ?? false) dockPID=\(dockPID())")
+case "setautohide":
+    // 实验 20：Set(true/false)。看三件事：PID 不变、Dock 窗口是否离屏、域是否被持久化
+    guard args.count >= 3, let v = Int32(args[2]) else { print("需要 0 或 1"); exit(2) }
+    let st = CoreDockSetAutoHideEnabled(v != 0)
+    let domain = CFPreferencesCopyAppValue("autohide" as CFString, "com.apple.dock" as CFString)
+    print("SetAutoHideEnabled(\(v)) status=\(st) Get=\(CoreDockGetAutoHideEnabled()) 域=\(domain as? Bool ?? false) dockPID=\(dockPID())")
+case "win":
+    // Dock 窗口的 onscreen/bounds（零权限）：autohide 生效时 Dock 容器窗口应离屏
+    let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    let onscreen = list.filter { ($0[kCGWindowOwnerName as String] as? String) == "Dock" }
+    let all = (CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []).filter { ($0[kCGWindowOwnerName as String] as? String) == "Dock" }
+    print("Dock 窗口：在屏 \(onscreen.count) 个 / 全部 \(all.count) 个")
+    for w in all.prefix(3) {
+        let b = w[kCGWindowBounds as String] as? [String: Any] ?? [:]
+        print("  layer=\(w[kCGWindowLayer as String] ?? "?") onscreen=\(w[kCGWindowIsOnscreen as String] ?? "?") bounds=\(b)")
+    }
 case "state":
     print("dockPID=\(dockPID()) \(tileState(label: "MultiDockLiveTest"))")
 default:

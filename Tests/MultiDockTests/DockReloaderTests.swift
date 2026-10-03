@@ -760,3 +760,128 @@ final class DockReloaderTests: XCTestCase {
         XCTAssertEqual(process.kickstartCount, 0, "Dock 已经回来了，不该再催")
     }
 }
+
+extension DockReloaderTests {
+    // MARK: - 自动隐藏三明治（实验 20，`docs/spikes.md`）
+
+    /// 三明治的时序契约：hide 在发信号之前、reveal 在新 PID 归位之后，
+    /// 结束态是调用方要的可见性（false），且 Outcome 记下 `hiddenRestart`。
+    func testSandwichHidesBeforeSignalAndRevealsAfterNewPID() async {
+        let events = Box<[String]>([])
+        let process = EventRecordingProcess(FakeDockProcess(pid: 100, restartsOn: [SIGHUP]), events: events)
+        let autoHide = FakeAutoHide(startingOn: false, events: events)
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(200),
+            pollInterval: .milliseconds(2),
+            nudgeAfter: .seconds(60),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .zero,
+            kickstartTimeout: .milliseconds(200),
+            autoHide: autoHide
+        )
+
+        let outcome = await reloader.reload(strategy: .auto, sandwichRevealAutoHideTo: false)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertTrue(outcome.hiddenRestart, "三明治用过就要记进 Outcome")
+        XCTAssertFalse(outcome.revealFailed)
+        XCTAssertEqual(events.value, ["hide", "signal", "reveal"], "时序必须是 滑走 → 重启 → 滑回")
+        XCTAssertFalse(autoHide.autoHideIsOn(), "结束态 = 调用方要的可见性（可见）")
+    }
+
+    /// 重载整体失败（Dock 一直没回来）时 reveal 也必须尝试——失败的兜底路径不能把
+    /// Dock 留在隐藏态不管。
+    func testSandwichRevealsEvenWhenReloadFails() async {
+        let events = Box<[String]>([])
+        let process = EventRecordingProcess(FakeDockProcess(restartsOn: [], kickstartRestarts: false), events: events)
+        let autoHide = FakeAutoHide(events: events)
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(50),
+            pollInterval: .milliseconds(2),
+            nudgeAfter: .seconds(60),
+            fallbackGrace: .milliseconds(10),
+            minimumSpacing: .zero,
+            kickstartTimeout: .milliseconds(50),
+            autoHide: autoHide
+        )
+
+        let outcome = await reloader.reload(strategy: .auto, sandwichRevealAutoHideTo: false)
+
+        XCTAssertFalse(outcome.succeeded)
+        XCTAssertEqual(events.value.last, "reveal", "失败路径也要尝试滑回")
+        XCTAssertTrue(events.value.contains("hide"))
+    }
+
+    /// 不传 reveal（= 退出路径 / 配置本就要隐藏 / 能力不可用）时，绝不碰 autohide。
+    func testNoSandwichWhenRevealParameterIsNil() async {
+        let events = Box<[String]>([])
+        let process = EventRecordingProcess(FakeDockProcess(pid: 100, restartsOn: [SIGHUP]), events: events)
+        let autoHide = FakeAutoHide(events: events)
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(200),
+            pollInterval: .milliseconds(2),
+            nudgeAfter: .seconds(60),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .zero,
+            kickstartTimeout: .milliseconds(200),
+            autoHide: autoHide
+        )
+
+        let outcome = await reloader.reload(strategy: .auto)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertTrue(events.value.allSatisfy { $0 == "signal" }, "只该有 signal，没有任何 autohide 调用")
+        XCTAssertFalse(outcome.hiddenRestart)
+    }
+
+    /// 配置本就要求 Dock 隐藏（reveal = true）时不启用三明治——重启后的 Dock 天然以
+    /// 隐藏态出现，不会闪；此时还去 Set(true)/Set(true) 纯属多余。
+    func testNoSandwichWhenConfigWantsHiddenDock() async {
+        let events = Box<[String]>([])
+        let process = EventRecordingProcess(FakeDockProcess(pid: 100, restartsOn: [SIGHUP]), events: events)
+        let autoHide = FakeAutoHide(startingOn: true, events: events)
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(200),
+            pollInterval: .milliseconds(2),
+            nudgeAfter: .seconds(60),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .zero,
+            kickstartTimeout: .milliseconds(200),
+            autoHide: autoHide
+        )
+
+        let outcome = await reloader.reload(strategy: .auto, sandwichRevealAutoHideTo: true)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertTrue(events.value.allSatisfy { $0 == "signal" })
+        XCTAssertTrue(autoHide.autoHideIsOn(), "结束态保持隐藏（用户配置如此）")
+    }
+
+    /// typed setter 失败（Dock 不认/符号缺失）→ 优雅退回老路径：照常重启，只是会闪。
+    func testSandwichFallsBackToPlainRestartWhenHideFails() async {
+        let events = Box<[String]>([])
+        let process = EventRecordingProcess(FakeDockProcess(pid: 100, restartsOn: [SIGHUP]), events: events)
+        let autoHide = FakeAutoHide(startingOn: false, setSucceeds: false, events: events)
+        let reloader = DockReloader(
+            process: process,
+            timeout: .milliseconds(200),
+            pollInterval: .milliseconds(2),
+            nudgeAfter: .seconds(60),
+            fallbackGrace: .milliseconds(20),
+            minimumSpacing: .zero,
+            kickstartTimeout: .milliseconds(200),
+            autoHide: autoHide
+        )
+
+        let outcome = await reloader.reload(strategy: .auto, sandwichRevealAutoHideTo: false)
+
+        XCTAssertTrue(outcome.succeeded)
+        XCTAssertEqual(events.value.filter { $0 == "signal" }.count, 1, "hide 失败也要照常重启（恰好一发信号）")
+        XCTAssertFalse(outcome.hiddenRestart)
+        XCTAssertTrue(events.value.allSatisfy { $0 == "signal" }, "hide 失败就不会有 reveal")
+    }
+}

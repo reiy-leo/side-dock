@@ -101,7 +101,7 @@ final class DockController {
 
     init(
         preferences: any DockPreferenceAccessing = RealDockPreferences(),
-        reloader: DockReloader = DockReloader(),
+        reloader: DockReloader = DockReloader(autoHide: HIServicesDockAutoHide.make()),
         backup: @escaping @MainActor () throws -> Void = { try BaselineStore().rotateBackup() },
         onOutcome: @escaping @MainActor (Outcome) -> Void = { _ in }
     ) {
@@ -320,7 +320,10 @@ final class DockController {
             for attempt in 1...2 {
                 verifyAttempts = attempt
                 preferences.writeWhitelisted(entries)
-                reload = await reloader.reload(strategy: strategy)
+                // reveal = 目标配置要的可见性。配置要求隐藏（true）时不启用三明治：
+                // 重启后的 Dock 本来就以隐藏态出现，不会闪。
+                reload = await reloader.reload(strategy: strategy,
+                                               sandwichRevealAutoHideTo: config.appearance.autohide ? nil : false)
                 verified = verify(config, comparableKeys: comparableKeys)
                 if verified { break }
             }

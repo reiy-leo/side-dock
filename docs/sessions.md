@@ -3,6 +3,19 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-04（第 32 次）— 用户原始诉求落地：自动隐藏三明治，切换无闪烁
+
+**用户说**：「切换桌面不用重启 dock（会先黑屏再出现 dock 栏），而是平滑地感觉不到，我记得 github 上有 repo 实现了，无感切换」。
+
+**做了什么**：
+
+1. **搜索（中英文两轮）**：没有现成仓库做到"免重启换 Dock 内容"——社区方案全是 `killall Dock`，共识的缓解手段恰是"开自动隐藏"（[Hammerspoon](https://www.hammerspoon.org/docs/hs.spaces.html)、[AeroSpace #3850](https://github.com/Hammerspoon/hammerspoon/issues/3850) 只做 Space 切换本身）。用户记忆中的 repo 未找到；但我们的**实验 20** 用自己的通道实现了等价效果。
+2. **GO/NO-GO 实验 20**：`CoreDockSetAutoHideEnabled`（typed setter，id=3，与实测可用的 `SetTileSize` 同族）对第三方**实时生效 + Dock 自己持久化 + PID 不变**；隐藏状态下 SIGHUP，新 Dock 以隐藏态回来——**重启不可见**。⚠️ 15.8.1 的 CGWindowList 看不到 Dock 容器窗口（owner=Dock 零条目），观测量改用 Get/域值。
+3. **实现**：`DockAutoHide.swift`（协议 + `dlsym(RTLD_DEFAULT)` 实现，无默认实现的协议要求）；`DockReloader.reload(strategy:sandwichRevealAutoHideTo:)` 包住 `reloadCore`——Set(true) 滑走 → 等 300 ms 动画 → SIGHUP 隐形重启 → 等归位 → Set(reveal) 滑回；**任何返回路径都恢复可见性**（失败重试一次，仍失败记 `revealFailed`，reveal 值来自配置而非当时的域 → 下次 apply 自愈）。`DockController.apply` 只在非退出路径、配置要求可见（autohide=false）时传参；配置要求隐藏时重启天然不可见，不启用。
+4. **测试**：+5 条（时序契约 hide→signal→reveal、失败路径仍 reveal、nil 不碰、配置要求隐藏不碰、hide 失败优雅降级）——**333 全绿**；release 构建零警告；`build/MultiDock.app` 已重打包。
+
+**当前进度**：真机行为等用户**退出并重启 App**（改动在 02:19 启动的实例之外——必须重新 `build-app` + 重开）后切桌面验证：日志应出现 `隐藏中重启（无闪烁）`，体感为两次平滑滑动、无黑屏。剩余待办不变（B8/B5/A1–A5/B9/B10/A8）。
+
 ### 2026-10-04（第 31 次）— 真机验收发现系统更新 15.8.1：GUID 判据失效并版本化
 
 **用户说**：「继续完成任务」。

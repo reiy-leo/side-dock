@@ -67,7 +67,8 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 - **实验 17 / B15 已结案**：CoreDock 外观 setter（`SetTileSize`）对第三方可用（语义未定）；**条目键无第三方通道**——Dock 按发送方放行 Apple 二进制（Finder 同参数可用而我们被拒）。主路径维持 SIGHUP。
 - 取证仪表（实验 15）已装：慢重启日志自带 `慢重启取证` 与 `轮询 N 次，最长间隔 M ms`。
 - **环境变更（2026-10-04）**：macOS 更新到 **15.8.1 (24H32)**（原 15.7.9）。真机 Dock 验收重跑 **9/9 绿**——GUID 回填判据在 15.8.1 失效，已按系统版本条件化（`docs/spikes.md` 实验 19）。B7 通知观测在更新后系统上完成，结论不受影响。
-- **用户日志停在 09-19**：实验 15/16 的取证仪表与之后的全部改动（含 UI 原生化）尚无真实使用数据——下次启动 App 后以 `multidock.log` 为准观察。
+- **用户日志停在 09-19**：实验 15/16 的取证仪表与之后的全部改动（含 UI 原生化）尚无真实使用数据——下次启动 App 后以 `multidock.log` 为准观察。（02:19 用户已启动新构建，日志恢复记录。）
+- ✅ **切换无闪烁已实现（实验 20，2026-10-04）**：SIGHUP 重启默认包在**自动隐藏三明治**里——`CoreDockSetAutoHideEnabled(true)` 滑走 → 隐形重启 → 滑回（typed setter 对第三方可用且 Dock 自己持久化，同 `SetTileSize` 族）。实现在 `DockAutoHide.swift` + `DockReloader.reload(strategy:sandwichRevealAutoHideTo:)`；配置本就要求隐藏/typed setter 失败时优雅降级。用户原始诉求「切换桌面平滑无感」。
 
 ### 已完成
 

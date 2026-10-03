@@ -1631,6 +1631,39 @@ SIGHUP 重启（PID 329→755、60 ms）、10 键写入、条目进 Dock、还�
 
 ---
 
+## 实验 20：自动隐藏三明治 —— 重启整个藏进「滑走 → 隐形 → 滑入」里（2026-10-04，**已实现**）
+
+**用户诉求**：「切换桌面不用重启 Dock（会先黑屏再出现 Dock 栏），而是平滑地感觉不到」。
+搜索过 GitHub（中英文两轮）：**没有**现成仓库做到免重启换 Dock 内容；社区对重启闪烁的
+共识缓解手段恰恰是"开自动隐藏"。而我们手里有被实验 20 证实可用的typed setter 通道。
+
+**GO/NO-GO 实测**（`CoreDockSetAutoHideEnabled` / `GetAutoHideEnabled`，lldb 反汇编签名：
+`sendSetBooleanValue(id=3)`，与实测可用的 `SetTileSize` 同族）：
+
+| 判据 | 结果 |
+| Set(true) | ✅ 实时生效（PID 不变）、**Dock 自己持久化到域**（autohide=true） |
+| 隐藏状态下 SIGHUP | ✅ 新 Dock 以隐藏态回来（PID 30611→30724）——重启不可见 |
+| Set(false) | ✅ 实时滑回 + 域还原 false |
+| CGWindowList 观测 | ⚠️ 15.8.1 的窗口列表**看不到 Dock 的容器窗口**（owner=Dock 零条目）——"窗口离屏"不可观测，改用 Get/域值做客观信号 |
+
+**实现**（`DockAutoHide.swift` + `DockReloader` 三明治）：
+
+1. `DockAutoHideControlling` 协议 + `HIServicesDockAutoHide`（`dlsym(RTLD_DEFAULT)`，无默认实现的协议要求——无见证位陷阱面；符号缺失时构造 nil，优雅降级为老路径）。
+2. `DockReloader.reload(strategy:sandwichRevealAutoHideTo:)`：非 nil 时包住 `reloadCore`——
+   **Set(true) 滑走 → 等 300 ms 动画 → SIGHUP（隐形重启）→ 等归位 → Set(reveal) 滑回**；
+   任何返回路径都恢复可见性（失败重试一次，仍失败记 `revealFailed`，下次 apply 自愈——
+   reveal 值来自**配置**而非当时的域，所以能自愈）。
+3. `DockController.apply` 只在非退出路径、且 `config.appearance.autohide == false` 时传参
+   （配置本就要求隐藏的话，重启后的 Dock 天然以隐藏态出现，不会闪）。
+4. 失败语义：Set(true) 失败 → 老路径闪一次；整体重载失败 + reveal 失败 → Dock 隐藏待下次
+   apply 恢复（Dock 本来就没回来，可见结果相同）。
+
+**验收**：单测 333 全绿（+5 条三明治时序/降级/失败路径用例）；真机行为等用户重建重启后
+切桌面看日志（`隐藏中重启（无闪烁）`）与体感。⚠️ 实验 19 教训：改代码必须重新
+`./scripts/build-app.sh` 才算装上。
+
+---
+
 ## 复现方法
 
 ```bash

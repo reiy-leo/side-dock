@@ -286,3 +286,65 @@ func makeTestFileLog() -> FileLogSink {
             .appendingPathComponent("multidock-testlog-\(UUID().uuidString).log")
     )
 }
+
+/// 「自动隐藏」替身（实验 20 的三明治用）。
+///
+/// 记录每次 set 的值与顺序（`events` 可与进程替身共用一个 Box，用来断言
+/// 「hide 在 signal 之前、reveal 在新 PID 之后」）。`setSucceeds: false` 模拟
+/// Dock 不认 typed setter（符号缺失 / 被拒）。
+final class FakeAutoHide: DockAutoHideControlling, @unchecked Sendable {
+    private let lock = NSLock()
+    private var on: Bool
+    private let setSucceeds: Bool
+    let events: Box<[String]>?
+
+    var values: [Bool] {
+        lock.lock(); defer { lock.unlock() }
+        return calls.reversed().compactMap { $0 }
+    }
+    private var calls: [Bool?] = []
+
+    init(startingOn: Bool = false, setSucceeds: Bool = true, events: Box<[String]>? = nil) {
+        self.on = startingOn
+        self.setSucceeds = setSucceeds
+        self.events = events
+    }
+
+    func setAutoHide(_ value: Bool) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        calls.append(value)
+        guard setSucceeds else { return false }
+        on = value
+        events?.value.append(value ? "hide" : "reveal")
+        return true
+    }
+
+    func autoHideIsOn() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return on
+    }
+}
+
+/// 给 `FakeDockProcess` 套一层事件记录，让「发信号」进入与 `FakeAutoHide` 共用的时序流。
+final class EventRecordingProcess: DockProcessControlling, @unchecked Sendable {
+    let base: FakeDockProcess
+    let events: Box<[String]>
+
+    init(_ base: FakeDockProcess, events: Box<[String]>) {
+        self.base = base
+        self.events = events
+    }
+
+    func dockPID() -> pid_t? { base.dockPID() }
+    func signal(_ pid: pid_t, _ sig: Int32) -> Bool {
+        events.value.append("signal")
+        return base.signal(pid, sig)
+    }
+    func kickstart() -> Bool {
+        events.value.append("kickstart")
+        return base.kickstart()
+    }
+    func startTime(of pid: pid_t) -> TimeInterval? { base.startTime(of: pid) }
+    func pidProbe() -> DockPIDProbe? { base.pidProbe() }
+}
