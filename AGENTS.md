@@ -258,8 +258,8 @@ MULTIDOCK_UI_SNAPSHOT=1 swift test --disable-sandbox --filter UISnapshotTests   
 | **B. 待做的功能（已排期）** | | | |
 | B5 | **多显示器仍未真机实测**（P5 唯一剩下的）：映射键、插拔后自动刷新、toast 的 `displayUUID → NSScreen` 定位都实现了，但本机只有一台显示器 | 插外接显示器后映射可能串 | **只能靠用户插一台外接屏实测**。调试面板已加「显示器数量」与每个桌面的 `displayUUID` 前 8 位，核对时用 |
 | B6 | ~~全屏 App 空间的过滤只有单测覆盖~~ | 每次进全屏可能误切 Dock | ✅ **已解决（2026-09-18）**：真机回归通过，见 §4 的「全屏过滤的真机回归」与 `scripts/check-fullscreen-filter.swift` |
-| B7 | **用户手动切桌面时 `activeSpaceDidChange` 通知是否触发**未知 | 只影响"能否把跟随延迟从 300 ms 降到接近 0" | P5 顺手测 |
-| B8 | **手动移除 Finder 是否落键**未验证 | 若有新键需纳入白名单 | 可选，30 秒。步骤见 `docs/spikes.md` 实验 3，风险低 |
+| B7 | **用户手动切桌面时 `activeSpaceDidChange` 通知是否触发**未知 | 只影响"能否把跟随延迟从 300 ms 降到接近 0" | 实测工具已备好：`scripts/spike-space-notify-watch.swift`（`swiftc -O` 编译后跑 N 秒；**真人**用 ⌃←/⌃→ 或触控板切桌面，脚本对照公开通知与 SkyLight 轮询）。全部伴随 NOTIFY → 观察器可加通知为强信号；均无 → B7 关闭 |
+| B8 | **手动移除 Finder 是否落键**未验证 | 若有新键需纳入白名单 | 可选，30 秒，风险低。脚本已备好：`scripts/check-finder-removal.sh`（**只读**观察：快照 → 真人取消勾选「在 Dock 中保留」→ diff 报告新键 → 提醒拖回 Finder） |
 | B9 | **注销/关机路径只能尽力还原**（系统不给等待时间） | 关机瞬间可能来不及写完基准 | 已按"先留债务标记、下次启动自愈"处理，见 §3 的 P4 第 9 条。真要验证得注销一次机器 |
 | B10 | **登录启动的 LaunchAgent 退回方案没在真机跑过**（本机 SMAppService 那条路没触发过退回） | 未签名场景下可能开了没用 | 需要真的重登录一次验证。逻辑侧只有 plist 内容有单测 |
 | B11 | ~~README 还停在 P1 状态~~ | 用户照 README 操作会得到错误信息 | ✅ **已解决（2026-09-18，P5）**：整篇重写，含完全卸载三步与整域还原命令 |
