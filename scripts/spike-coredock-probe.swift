@@ -94,7 +94,34 @@ case "addfile":
     let url = URL(fileURLWithPath: args[2]) as CFURL
     let flags: Int32 = args.count >= 4 ? Int32(args[3]) ?? 0 : 0
     let st = CoreDockAddFileToDock(url, flags)
-    print("AddFileToDock status=\(st) dockPID=\(dockPID())")
+    print("AddFileToDock(CFURL) status=\(st) dockPID=\(dockPID())")
+case "addstr":
+    // Finder 同款调用是 (NSURL, 0)；这个模式换成 CFString 路径 —— 判别"载荷类型"还是"发送方"被拒
+    guard args.count >= 3 else { print("需要路径"); exit(2) }
+    let st = CoreDockAddFileToDock(args[2] as CFString, 0)
+    print("AddFileToDock(CFString) status=\(st) dockPID=\(dockPID())")
+case "copyprefs":
+    // 读路径判别：CopyPreferences(CFString 请求, &out)。request 不能为 nil（SerializeCFType 不判空）。
+    var out: CFTypeRef?
+    let st = CoreDockCopyPreferences("com.apple.dock" as CFString, &out)
+    if let o = out {
+        let tid = CFGetTypeID(o)
+        let name: String
+        switch tid {
+        case CFStringGetTypeID(): name = "CFString「\(o as! String)」"
+        case CFArrayGetTypeID(): name = "CFArray(\(CFArrayGetCount(o as! CFArray)))"
+        case CFDictionaryGetTypeID(): name = "CFDict(\(CFDictionaryGetCount(o as! CFDictionary)))"
+        case CFDataGetTypeID(): name = "CFData(\(CFDataGetLength(o as! CFData))B)"
+        default: name = "typeID=\(tid)"
+        }
+        print("CopyPreferences status=\(st) -> \(name)")
+    } else {
+        print("CopyPreferences status=\(st) out=nil")
+    }
+case "notify1":
+    // SendNotification flags=1（此前只试过 0）
+    let st = CoreDockSendNotification("com.apple.dock.prefchanged" as CFString, 1)
+    print("SendNotification(flags=1) status=\(st) dockPID=\(dockPID())")
 case "state":
     print("dockPID=\(dockPID()) \(tileState(label: "MultiDockLiveTest"))")
 default:

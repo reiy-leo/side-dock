@@ -1560,6 +1560,30 @@ Dock 二进制符号被裁（`nm -U` 只剩 9 个 C++ typeinfo），但 HIServic
    - 看 Finder「在 Dock 中保留」时谁发什么（`dyld_info -fixups Finder` 或给 Finder 的 `cmdAddToDock:` 附近反汇编——lldb attach Finder 可能被 hardened runtime 拒）。
 5. 若条目路径最终打通：`DockController.apply` 可升级为「写域 + 实时推送」，SIGHUP 降级为兜底；A8 的暴露面（launchd 节流/退避）将从应用主路径上**整体消失**。若打不通：外观键 setter 也可以先把"仅外观变化"的 apply 从重启降为零重启（但要先解决 17.3 的数值语义）。
 
+### 17.6 Finder 是怎么用的（B15 收口的基准，2026-10-04）
+
+Finder 自己就有 `cmdAddToDock:` / `validateAddToDock:`（ObjC 元数据：IMP 分别为 `0x100677275` / `0x1000b7ad0`，符号已裁、从 otool -oV 拿）。
+lldb 反汇编 `cmdAddToDock:`：**对每个选中项调用 `CoreDockAddFileToDock(<NSURL>, 0)`** ——
+第一个参数是 item 转出的 NSURL（`NodeCopySFNodeRef` / `SFNodeCopyMountPoint` / `-fileURL` 一族），
+第二个参数实打实是 `xorl %esi, %esi` = **0**；调用后**不发任何通知**，失败才走错误提示。
+⇒ 我们的探针 `(CFURL, 0)` 与 Finder 的调用**逐参数相同**。
+
+### 17.7 判别电池（2026-10-04，带备份/看门狗/还原）
+
+| 尝试 | 结果 |
+| --- | --- |
+| `CoreDockRegisterClientWithRunLoop` | ❌ 未调用：反汇编证明它是**接收端**注册（建 `_DCXDockClientDefs_subsystem` 的 MIG server source，收 Dock→客户端消息，还要求先有 client message proc），与发送授权无关 ——「先注册再发」排除 |
+| `CopyPreferences("com.apple.dock", &out)` | **status = -4956**、out=nil —— 读请求被**明确拒绝**（不是无声忽略） |
+| `SendNotification(prefchanged, flags=1)` | status=0，无效果（与 flags=0 相同） |
+| `AddFileToDock(CFString 路径, 0)` | status=0，条目不变（与 CFURL 载荷相同） |
+
+**结论（B15 结案为「不做」）**：
+
+1. **外观 typed setter**（`SetTileSize` 一族）对第三方开放；**所有携带对象的 MIG 消息**（SendNotification / SetPreferences / AddFileToDock / CopyPreferences）对第三方要么报错、要么无声忽略。
+2. Finder **同样的调用**能工作 ⇒ Dock 按**发送方**放行（Apple 平台二进制），或要求已注册的客户端会话。我们**不伪造发送方身份**（违反零权限硬约束的精神）。
+3. 系统设置的实时滑杆**不走 CoreDock**（SystemSettings 主二进制与 Settings / PreferencePanesSupport 框架都不导入 CoreDock）；而 Dock 导入了 `_SLSCoordinatedLocalNotificationCenter` 一族 —— 它的实时通道大概率是 **SkyLight 协调通知中心**。未展开：收益低（SIGHUP 只有 100 ms）。
+4. ⇒ 「不重启换图标」在 macOS 15 上的最终答案：**外观键可行但 `SetTileSize` 语义未定；条目键无第三方通道**。若未来 Apple 官方开放，B15 可重开。
+
 ---
 
 ## 复现方法

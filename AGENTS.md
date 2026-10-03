@@ -677,7 +677,7 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | B12 | ~~编辑条竖排未实现~~ | 位置改成左/右后，编辑条与实际 Dock 长得不一样 | ✅ **已解决（2026-09-18，P5）**：`DockStripEditor.isVertical` + `SlotSizing` |
 | B13 | ~~孤儿绑定不清理也不提示~~ | 配置越积越多、看不出哪些还有效 | ✅ **已解决（2026-09-18，P5）**：桌面页横幅 + 「清理」按钮 + 二次确认。**绝不自动删**（拔外接屏会误伤） |
 | B14 | ~~`DockWatcher` 回存前不存历史版本~~ | 用户手改被误判时，旧配置找不回来 | ✅ **已解决（2026-09-18，P5）**：改成内存撤销栈 `DockEditHistory` + UI 上的「撤销自动回存」。**刻意不落盘** —— 落盘一堆没有恢复入口的文件是花架子 |
-| B15 | **Dock 图标热替换通道未打通**（2026-10-03，实验 17）：CoreDock MIG 通道存在且无权限闸门，外观 setter 实测可实时生效；但 `SetPreferences(整域)` / `AddFileToDock(CFURL)` / `SendNotification(prefchanged)` 三种载荷被 Dock **静默拒绝**，`SetTileSize` 的**数值语义未定**（36.0 位型无效、越界值被钳 16） | 打通前"不重启换图标"做不了；外观键零重启也不能上生产 | 下一步全只读：反汇编 Dock 端 msg 0x7D0/0xBB8 处理器（Dock 二进制在磁盘上，`otool -tV`）；或先 `CoreDockRegisterClientWithRunLoop` 再重试；或试 `AddFileToDock(CFString 路径)`。**别再拿写函数当"自检"** —— 17.4 记了一次误发把用户 tilesize 改成 16 的事故 |
+| B15 | ~~Dock 图标热替换通道未打通~~ | ~~"不重启换图标"做不了~~ | ✅ **已结案为「不做」（2026-10-04，实验 17.6/17.7）**：Finder 的 `cmdAddToDock:` 反汇编实锤用法 `(NSURL, 0)` 与我们逐参数相同却能用 ⇒ **Dock 按发送方放行 Apple 二进制**（第三方所有携带对象的 MIG 消息要么报错 -4956、要么无声忽略；RegisterClient 是接收端注册，排除）。不做发送方伪造。外观键 `SetTileSize` 对第三方可用但语义未定；系统设置实际走 SkyLight 协调通知（未展开）。**主路径维持 SIGHUP** |
 | **C. 参数与取舍（记录在案）** | | | |
 | C1 | **`DockWatcher` 轮询周期 2 s 是拍的**，没有实测依据 | 用户手动改 Dock 后最长 2 s 才被回存 | 按用户体感调 |
 | C2 | **一次切换的应用总耗时约 1 秒**（其中 Dock 只消失 45–90 ms，其余是主动错开节流的等待） | 切桌面后 Dock 配置生效有一秒延迟，但期间 Dock 可用 | 按"宁等不闪"处理，见 §6.1 第 6 条 |
