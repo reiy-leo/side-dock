@@ -260,7 +260,7 @@ private struct GeneralTab: View {
 
             Section("次级 Dock 条") {
                 Toggle("显示次级 Dock 条", isOn: secondaryDockBinding)
-                Text("贴在原生 Dock 内侧的自绘图标条：默认只露一半（藏在原生 Dock 身后），鼠标移上去滑出全条。内容跟随当前桌面的图标配置，切换桌面瞬间换内容、不重启 Dock。")
+                Text("贴在原生 Dock 内侧的自绘图标条：默认只露一半（藏在原生 Dock 身后），鼠标移上去滑出全条。内容跟随当前桌面、切换瞬间换；显隐与原生 Dock 同步（原生隐藏它就藏）。冻结模式下条固定尺寸钉在原生 Dock 旁，切桌面一毫米不挪。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

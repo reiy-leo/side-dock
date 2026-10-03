@@ -107,6 +107,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         withObservationTracking {
             _ = state.settings
             _ = state.bindings
+            // 桌面列表也进依赖：冻结模式下条的固定槽位数取所有桌面的最大值，
+            // 桌面增删（插拔外接屏、全屏进出）后要重算。
+            _ = state.desktops
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }

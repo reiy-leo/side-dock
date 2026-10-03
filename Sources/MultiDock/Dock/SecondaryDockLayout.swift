@@ -108,6 +108,23 @@ enum SecondaryDockLayout {
         }
     }
 
+    /// Dock 在屏上实际占用的条带（screen 与 visible 的差集）。
+    ///
+    /// 给次级条做「与原生 Dock 同步显隐」的显出带判定：自动隐藏生效中（face == nil）时，
+    /// 光标落在这个条带（略外扩）里 = Dock 在屏或即将显出，条跟着显示。
+    static func dockArea(of face: DockFaceGeometry) -> CGRect {
+        let screen = face.screen
+        let visible = face.visible
+        switch face.orientation {
+        case .bottom:
+            return CGRect(x: screen.minX, y: screen.minY, width: screen.width, height: visible.minY - screen.minY)
+        case .left:
+            return CGRect(x: screen.minX, y: screen.minY, width: visible.minX - screen.minX, height: screen.height)
+        case .right:
+            return CGRect(x: visible.maxX, y: screen.minY, width: screen.maxX - visible.maxX, height: screen.height)
+        }
+    }
+
     private static func clamp(_ value: CGFloat, low: CGFloat, high: CGFloat) -> CGFloat {
         min(max(value, low), max(low, high))
     }

@@ -78,6 +78,7 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 - ✅ **切换无闪烁已实现（实验 20，2026-10-04）**：SIGHUP 重启默认包在**自动隐藏三明治**里——`CoreDockSetAutoHideEnabled(true)` 滑走 → 隐形重启 → 滑回（typed setter 对第三方可用且 Dock 自己持久化，同 `SetTileSize` 族）。实现在 `DockAutoHide.swift` + `DockReloader.reload(strategy:sandwichRevealAutoHideTo:)`；配置本就要求隐藏/typed setter 失败时优雅降级。用户原始诉求「切换桌面平滑无感」。
 - ✅ **次级 Dock 条已实现（实验 21，2026-10-04）**：贴原生 Dock 内侧的自绘条，随桌面秒换内容（换视图零重启），默认半露（层级 19 < 20，藏进 Dock 身后）、hover 滑出、无放大。实现在 `SecondaryDock{Layout,Controller,Window,StripView}.swift` + `DockFaceProviding.swift`；几何源 = `visibleFrame` 排他内缩（**Dock 条不是独立 CG 窗口**）。设置里有「冻结原生 Dock 逐桌面切换」开关。⚠️ 注意：config.json 现在默认与全部绑定都是 `bottom` 方位（A9 时代的"默认 right"已被用户改掉）。真机 window-dump 核验半露位逐像素吻合；**hover/点击手感等用户手测**。
 - ✅ **冻结成为默认（2026-10-04 第 34 次会话）**：`freezeNativeDockSwitching` 默认 `true`（含解码兜底），用户 config.json 的持久化值已同步翻转。语义：**原生 Dock 固定为「默认 Dock」这套配置，切桌面零写入零重启**（真机日志已实证）；差异全在次级条。「原生 Dock = 默认 Dock」由三处保证：① 启动对齐 `reestablishFrozenDockIfNeeded`（**排在自愈之后**，内容一致时指纹短路）；② 开关打开立即对齐；③ 开关关闭立即应用当前桌面生效配置（`setFreezeNativeDockSwitching` 统一入口，设置页两个相关开关都走它）。
+- ✅ **次级条 sticky 固定几何 + 显隐同步（2026-10-04 第 35 次会话，实验 22）**：冻结模式下条窗口固定尺寸（槽位 = 各桌面生效配置最大条目数、图标尺寸 = 默认 Dock），**切桌面只换图标、窗口一毫米不挪**；显隐与原生 Dock 同步——Dock 隐藏（自动隐藏/重启瞬态）条跟着藏，光标碰边 Dock 显出时条同步出来（face 主信号 + 显出带光标启发式 + 400 ms 宽限，轮询 200 ms）。⚠️ 实验 22 推翻认知：`CoreDockSetAutoHideEnabled` **只翻旗标不改 work area**（sandwich 的隐藏来自重启后的 Dock 读旗标）；探针 occlusionState 不可用；别再试这三条直读信号。
 
 ### 已完成
 
@@ -124,7 +125,7 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 | 打包脚本 | `scripts/build-app.sh` | 编译 → 组装 `.app` → ad-hoc 签名 |
 | 显示器名解析 | `Spaces/ScreenNaming.swift` | `displayUUID → NSScreen.localizedName`；**纯解析可单测**，映射不到时如实说"未识别"而不回落成错的屏。桌面页据此按显示器分组 |
 | 其他项（文件夹/堆栈）编辑 | `Dock/DockStripRules.swift`、`UI/DockStripEditor.swift` | **只搬不造**：显示 / 排序 / 移除；拖入文件夹时明确拒绝并给替代做法（`DockItemRejection`）。**不能新建**的实测依据见 `docs/spikes.md` 实验 8 |
-| 测试 | `Tests/MultiDockTests/` | **358 个测试，全绿**（其中 9 个真实 Dock 验收 + 2 个 UI 快照默认跳过，需显式开启） |
+| 测试 | `Tests/MultiDockTests/` | **364 个测试，全绿**（其中 9 个真实 Dock 验收 + 2 个 UI 快照默认跳过，需显式开启） |
 | 设计文档 | `docs/PLAN.md` | 已按 P0 结论修订 |
 | 实验结论 | `docs/spikes.md` | **16 个实验**的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现；实验 8 是"其他项不能新建"；实验 9 是"切一次桌面黑屏几分钟"的根因；实验 10 是"每次退出都卡住"—— 同一条链，外加一个让所有"上限"静默失效的写法；实验 11 是用户真机日志复盘；实验 12–14 把"uptime 门槛"等四个假说逐个证伪；实验 15 给未解故障装取证仪表，15.2 是仪表自己的 bug（协议见证位协变陷阱），15.3 把第六个假说也证伪，15.4 补上"我没在看"这个洞；实验 16 落地 A8 修法 —— 不等、催，代价 26–31 s → ~1–3.5 s，并实测 launchd 那 ~1 s 是硬顶不累积**） |
 
@@ -210,7 +211,7 @@ A4 的**逻辑侧已自动化**（`DockAcceptanceTests.testExternalDockChangeIsC
 
 ```bash
 swift build -c release --disable-sandbox   # 编译（--disable-sandbox 必须加）
-swift test --disable-sandbox               # 358 个测试（9 个真实 Dock 验收 + 2 个 UI 快照默认跳过）
+swift test --disable-sandbox               # 364 个测试（9 个真实 Dock 验收 + 2 个 UI 快照默认跳过）
 ./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
 open build/MultiDock.app                   # 运行（必须在 .app 里跑，菜单栏图标才正常）
 MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests  # 真机 Dock 验收（先备份！）
@@ -300,7 +301,7 @@ MULTIDOCK_UI_SNAPSHOT=1 swift test --disable-sandbox --filter UISnapshotTests   
 ## 7. 给下一个 session 的建议顺序
 
 1. 读本入口 → 需要设计细节读 `docs/PLAN.md`（§3 机制、§3.10 命名与 toast、§3.11 无痕与自愈）；动实验读 `docs/spikes.md`（17 个实验，多数结论推翻过计划的原始假设）。
-2. 跑基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，应 **358 全绿、零警告**。
+2. 跑基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，应 **364 全绿、零警告**。
 3. **动 Dock 代码前把 §5 的 12 条致命陷阱过一遍**，并查 `docs/facts.md` 对应行。踩节流 → Dock 消失一秒多；踩 `-1` → 杀掉用户全部进程；踩同步 kickstart → 冻住两分钟；踩任务组坑 → 一堆"假上限"等待；踩见证位坑 → 功能静默不接线而单测全绿。**别把"等 30 秒"当耐心**——A8 的教训是"等"换不到东西、"催"才行（实验 16）。
 4. 动 Dock 的验收：`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`；**先 `defaults export com.apple.dock` 备份，中途别手动改 Dock**。退出码非 0 可能只是 SwiftPM 沙箱消息，判据看 `Executed N tests, with 0 failures`。UI 改动的验收：`MULTIDOCK_UI_SNAPSHOT=1 ... --filter UISnapshotTests` 出 PNG 人工核对。
 5. 剩余待办（按顺序）：**B5 多显示器**（等用户插外接屏）→ **A1–A3/A5 真人手测** → **B9/B10**（注销/重登录）→ **B7/B8** 小实测 → **A8** 只等复现（读日志，别折腾）。

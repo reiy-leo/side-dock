@@ -3,6 +3,19 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-04（第 35 次）— 次级条 sticky 固定几何 + 与原生 Dock 同步显隐（实验 22）
+
+**用户说**：「左右滑动桌面时，secondary dock 不跟着滑动，而是 sticky 到原生 dock 固定位置，位置不同；切换桌面后，如果原生 dock 隐藏了，则 secondary 也 hide，show 则同步 show。」
+
+**做了什么**：
+
+1. **实验 22（`scripts/spike-secondary-dock-sync.swift`）——推倒了两个认知**：① `CoreDockSetAutoHideEnabled(true)` **只翻旗标不改 work area**（inset 全程 47、Dock 没滑走；实验 20 的「实时生效」是旗标级的，sandwich 的隐藏来自重启后 Dock 读旗标；`Set(false)` 显出方向倒是实时生效）；② 贴 Dock 腹地的探针窗口 `occlusionState` 基线就抖动，**不可用**；CGWindowList 依旧完全看不见 Dock 窗口。结论：Dock 实际显隐**没有零权限直读信号**，可用信号只有 `visibleFrame` 内缩（跟随实际占位）+ 光标碰边（Dock 自己的触发机制，无 API）。
+2. **显隐同步（需求 2）**：`SecondaryDockController` 的 face==nil 分支从「保持现有位置只换内容」改为与原生 Dock 同步——光标在**显出带**（最近一次 Dock 占用条带 `SecondaryDockLayout.dockArea` 外扩 8pt）里 = Dock 在屏或即将显出 → 条同步显示；离开 → 400 ms 宽限后收回（`revealGrace`，防掠过边缘闪烁）。几何轮询 1 s → **200 ms**。附带修好了一个旧毛病：sandwich 重启瞬态里条不再单独浮着，跟着 Dock 一起藏（真机对齐日志已见「探测不到」瞬态）。
+3. **sticky 固定几何（需求 1）**：冻结模式下 `SecondaryDockContentSnapshot.sizingSlots` = 所有活着的桌面生效配置的最大条目数（与内容构建同口径：Finder 幻影 +1、缺启动台补一枚）、iconSize 取默认 Dock 的 tilesize——**切桌面只换图标、窗口一毫米不挪**；这也顺带消掉了「滑动途中内容换帧导致窗口跳位」（spaceDidChange 通知在手势中途就到，实验 18）。未冻结的 opt-out 老模式维持按本桌面撑开的原规格。程序化切桌面是 0–6 ms 硬切无动画，手势滑动本身无法脚本复现，条窗口的空间滑留待用户手测确认（canJoinAllSpaces + stationary 本就该钉住）。
+4. **测试**：+6 条（dockArea 三方位、带内保持/带外宽限收回/回归再显、sizingSlots 固定 frame、冻结固定几何 + 图标尺寸）→ **364 全绿**。真机重启 App 验证：对齐瞬态「探测不到」时条同步隐藏，切桌面 `已冻结：跳过` 零重启。
+
+**当前进度**：等用户手测——① 手势滑动时条是否钉在原地；② 开自动隐藏后碰屏幕底边：Dock 与条同步显出、离开同步收回；③ 固定尺寸的观感（条以最大桌面条目数撑开，小桌面的条目居中留白）。剩余待办不变（B5/A1–A5/B8/B9/B10/A8 只等复现）。
+
 ### 2026-10-04（第 34 次）— 冻结成为默认：原生 Dock 全桌面一致、切桌面零重启
 
 **用户说**：「原生的 dock 每个桌面都是一样的，相同的，不要每个桌面重启 dock；secondary dock 每个桌面不一样，但不要随桌面滚动，而是直接在原生 dock 显示」。

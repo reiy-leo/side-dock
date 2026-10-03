@@ -1705,6 +1705,40 @@ hover 防抖/安全网/全屏隐藏、冻结闸门、旧配置解码）——**3
 
 ---
 
+## 实验 22：Dock 实际显隐的零权限观测信号 —— typed setter 只翻旗标不改 work area（2026-10-04，**已实现**）
+
+**背景**：用户要求次级条与原生 Dock 的显隐同步（「原生 Dock 隐藏了次级条也 hide，show 则同步 show」）。
+需要回答：Dock 的**实际**在屏与否，有没有零权限信号可读？
+
+**实测（`scripts/spike-secondary-dock-sync.swift`）**：三路采样（`visibleFrame` 内缩 /
+探针窗口 `occlusionState` / CGWindowList），`CoreDockSetAutoHideEnabled` 翻旗标 +
+`CGWarpMouseCursorPosition` 甩光标到底边触发临时显出。
+
+| 观测量 | 结果 |
+| --- | --- |
+| `SetAutoHideEnabled(true)` 后 **inset** | **纹丝不动（47）** —— 旗标翻了（Get=true、域已持久化）但 Dock **没有真的滑走**，work area 不变。⚠️ 修正实验 20 的理解：「实时生效」只是**旗标级**；sandwich 的「隐藏」来自**重启后的 Dock 读旗标**，不是实时滑走 |
+| `Set(false)` 的**显出**方向 | 实时生效（对齐流程日志：重启后隐藏态 inset≈0「探测不到」→ Set(false) 后 0.7 s 内回到 47）—— 与 hide 方向不对称 |
+| 探针窗口 `occlusionState`（level 19、Dock 腹地、alpha 0.05） | **不可用**：基线（Dock 在屏）就在 是/否 之间抖动，无稳定判据 |
+| CGWindowList（dock 在屏时） | owner=Dock 在屏 0 个 / 全部 0 个 —— 15.8.1 依旧完全看不见 Dock 窗口（同实验 20） |
+| `CGWarpMouseCursorPosition` | err=0（光标真的动了），但本实验里 Dock 从未进入隐藏态（旗标不生效），无法据此判定显出 |
+
+**结论与决定**：
+
+1. **Dock 实际显隐没有零权限直读信号**。可用的事实只有两个：`visibleFrame` 内缩跟随 Dock
+   **实际**占位（真机对齐日志：隐藏态「探测不到」、恢复后内缩 47——与实验 21 一致）；
+   自动隐藏的**显出触发**= 光标碰屏幕边（Dock 自己的机制，无 API）。
+2. **同步显隐的实现** = face（inset）为主信号 + 「光标在显出带」启发式补自动隐藏态：
+   face != nil → 条显示；face == nil（自动隐藏生效中/重启瞬态）→ 光标在最近一次 Dock 占用
+   条带（略外扩 8 pt）里 = Dock 在屏或即将显出 → 条同步显示；离开显出带 → 400 ms 宽限后收回。
+   几何轮询 1 s → **200 ms**（跟得上 Dock 的滑入滑出）。
+3. **别再试的路**：探针 occlusionState、CGWindowList 找 Dock 窗口、指望 typed setter 的
+   旗标翻转反映视觉状态——三条都已实测不通。
+
+**测试**：+6 条（dockArea 三方位、显出带内保持/带外宽限收回/回归再显、sizingSlots 固定
+frame、冻结模式固定几何 + 图标尺寸取默认 Dock）——**364 全绿**。
+
+---
+
 ## 复现方法
 
 ```bash

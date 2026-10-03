@@ -18,8 +18,12 @@ final class SecondaryDockController {
         /// hover 离开后收回去的防抖时长（防止掠过时闪烁）。
         var tuckDebounce: Duration = .milliseconds(150)
         /// 几何轮询周期（Dock 方位/大小/自动隐藏变化只靠轮询发现）。
-        var geometryPollInterval: Duration = .seconds(1)
-        /// 鼠标位置。收回去之前核对一遍 —— 窗口自己动过时 `onHover(false)` 可能丢事件。
+        /// 200 ms：自动隐藏的显出/收回同步也靠这个节拍，太慢跟不上 Dock 的滑入滑出。
+        var geometryPollInterval: Duration = .milliseconds(200)
+        /// 光标离开显出带后收回的宽限时长（Dock 自己收回也有迟滞，防止掠过边缘闪烁）。
+        var revealGrace: Duration = .milliseconds(400)
+        /// 鼠标位置。收回去之前核对一遍 —— 窗口自己动过时 `onHover(false)` 可能丢事件；
+        /// 显出带判定也用它。
         var mouseLocation: () -> CGPoint = { NSEvent.mouseLocation }
     }
 
@@ -34,6 +38,11 @@ final class SecondaryDockController {
     private var isRevealed = false
     private var isShowing = false
     private var lastSpace: DesktopSpace?
+    /// 最近一次见到的 Dock 占用条带。face == nil（自动隐藏生效中）时用它判定
+    /// 光标是否在「显出带」里 ——Dock 的实际显隐没有零权限的直读信号（实验 22）。
+    private var lastDockArea: CGRect?
+    /// 光标离开显出带后的宽限收起任务。
+    private var hideGraceTask: Task<Void, Never>?
 
     init(deps: Dependencies) {
         self.deps = deps
@@ -77,8 +86,17 @@ final class SecondaryDockController {
             return
         }
         let fresh = deps.faceProvider.currentFace()
-        guard fresh != face else { return }
+        guard fresh != face else {
+            // 几何没变也要跟光标：自动隐藏生效中（face == nil），显出/收回完全由光标位置驱动。
+            if face == nil {
+                evaluateHiddenStateVisibility(with: deps.content(lastSpace))
+            }
+            return
+        }
         face = fresh
+        if let fresh {
+            lastDockArea = SecondaryDockLayout.dockArea(of: fresh)
+        }
         deps.log("次级 Dock 条：Dock 几何变化 → \(fresh.map { "\($0.orientation) 内缩 \($0.visible)" } ?? "探测不到")")
         applyCurrentState()
     }
@@ -119,14 +137,14 @@ final class SecondaryDockController {
             return
         }
         guard let face else {
-            // 探测不到 Dock（如自动隐藏滑走中）：保持现有位置，只换内容。
-            if isShowing {
-                deps.presenter.updateContent(content, isVertical: currentIsVertical)
-            }
+            // Dock 没占屏幕（自动隐藏生效中 / 重启瞬态）：可见性与原生 Dock 同步——
+            // 光标在显出带里 = Dock 在屏（正在显出）→ 显示并照常换内容；不在 → 宽限后收起。
+            // 换内容不挪窗：frame 沿用最近一次 face 的摆放（tucked/revealed 一直保留着）。
+            evaluateHiddenStateVisibility(with: content)
             return
         }
         let barSize = SecondaryDockLayout.barSize(
-            itemCount: content.items.count,
+            itemCount: content.sizingSlots ?? content.items.count,
             iconSize: content.iconSize,
             isVertical: face.orientation.isBarVertical
         )
@@ -152,9 +170,54 @@ final class SecondaryDockController {
     private func hide() {
         tuckTask?.cancel()
         tuckTask = nil
+        hideGraceTask?.cancel()
+        hideGraceTask = nil
         isRevealed = false
         guard isShowing else { return }
         isShowing = false
         deps.presenter.orderOut()
+    }
+
+    // MARK: - 与原生 Dock 的可见性同步（自动隐藏）
+
+    /// Dock 的实际显隐没有零权限的直读信号（实验 22：typed setter 只翻旗标不改 work area，
+    /// 探针窗口 occlusionState 不可靠，CGWindowList 在 15.8.1 看不到 Dock）。
+    /// 用「光标是否在最近一次 Dock 占用条带（略外扩）里」近似：光标碰边 = Dock 显出，条跟着出来；
+    /// 离开 = Dock 收回，条宽限后收回。
+    private func evaluateHiddenStateVisibility(with content: SecondaryDockContentSnapshot?) {
+        // 从没见过 Dock 几何就没有可用的 frame（零尺寸窗口），宁可继续藏着。
+        guard tuckedFrame != nil else { return }
+        if let content, cursorInRevealZone() {
+            hideGraceTask?.cancel()
+            hideGraceTask = nil
+            deps.presenter.updateContent(content, isVertical: currentIsVertical)
+            if !isShowing {
+                isShowing = true
+                deps.presenter.orderFront()
+            }
+        } else {
+            scheduleGraceHide()
+        }
+    }
+
+    private func cursorInRevealZone() -> Bool {
+        guard let area = lastDockArea else { return false }
+        return area.insetBy(dx: -8, dy: -8).contains(deps.mouseLocation())
+    }
+
+    /// 光标离开显出带后宽限收回 —— 与 Dock 自己收回的迟滞对齐，防止掠过屏幕边缘时闪烁。
+    private func scheduleGraceHide() {
+        guard isShowing, hideGraceTask == nil else { return }
+        hideGraceTask = Task { [grace = deps.revealGrace] in
+            try? await Task.sleep(for: grace)
+            guard !Task.isCancelled else { return }
+            self.hideIfCursorStillOutside()
+        }
+    }
+
+    private func hideIfCursorStillOutside() {
+        hideGraceTask = nil
+        guard isShowing, !cursorInRevealZone() else { return }
+        hide()
     }
 }

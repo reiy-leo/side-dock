@@ -105,6 +105,28 @@ final class SecondaryDockLayoutTests: XCTestCase {
         XCTAssertEqual(revealed.minX, SecondaryDockLayout.screenMargin)
         XCTAssertEqual(tucked.width, revealed.width, "收起只平移，不改尺寸")
     }
+
+    func testDockAreaTracksOrientation() {
+        // bottom：Dock 区 = 屏幕底部的内缩条带。
+        XCTAssertEqual(
+            SecondaryDockLayout.dockArea(of: bottomFace(inset: 53)),
+            CGRect(x: 0, y: 0, width: 1920, height: 53)
+        )
+        // right：Dock 区 = 屏幕右侧的内缩条带。
+        XCTAssertEqual(
+            SecondaryDockLayout.dockArea(
+                of: DockFaceGeometry(orientation: .right, screen: screen, visible: CGRect(x: 0, y: 0, width: 1844, height: 1200))
+            ),
+            CGRect(x: 1844, y: 0, width: 76, height: 1200)
+        )
+        // left：Dock 区 = 屏幕左侧的内缩条带。
+        XCTAssertEqual(
+            SecondaryDockLayout.dockArea(
+                of: DockFaceGeometry(orientation: .left, screen: screen, visible: CGRect(x: 76, y: 0, width: 1844, height: 1200))
+            ),
+            CGRect(x: 0, y: 0, width: 76, height: 1200)
+        )
+    }
 }
 
 // MARK: - 内容构建
@@ -201,6 +223,13 @@ private final class FakeDockFaceProvider: DockFaceProviding {
 @MainActor
 private final class ContentBox {
     var snapshot: SecondaryDockContentSnapshot?
+}
+
+/// 可变光标替身：显出带判定的用例要在「带里 / 带外」之间切换光标位置。
+@MainActor
+private final class MouseBox {
+    var point: CGPoint
+    init(point: CGPoint) { self.point = point }
 }
 
 @MainActor
@@ -407,6 +436,119 @@ final class SecondaryDockControllerTests: XCTestCase {
         let expected = SecondaryDockLayout.placement(barSize: barSize, face: rightFace())
         XCTAssertEqual(presenter.lastFrame, expected.tucked)
     }
+
+    // MARK: - 与原生 Dock 的可见性同步（自动隐藏）
+
+    private func makeSyncController(
+        presenter: FakeSecondaryDockPresenter,
+        provider: FakeDockFaceProvider,
+        content: ContentBox,
+        mouse: MouseBox,
+        grace: Duration = .milliseconds(20)
+    ) -> SecondaryDockController {
+        SecondaryDockController(deps: .init(
+            presenter: presenter,
+            faceProvider: provider,
+            content: { [weak content] _ in content?.snapshot },
+            isEnabled: { true },
+            log: { _ in },
+            tuckDebounce: .milliseconds(5),
+            geometryPollInterval: .milliseconds(5),
+            revealGrace: grace,
+            mouseLocation: { [weak mouse] in mouse?.point ?? .zero }
+        ))
+    }
+
+    func testAutoHideHidesBarAfterGraceWhenCursorOutsideRevealZone() async {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        // 光标在屏幕中央，不在 Dock 区。
+        let mouse = MouseBox(point: CGPoint(x: 960, y: 600))
+        let controller = makeSyncController(presenter: presenter, provider: provider, content: content, mouse: mouse)
+
+        provider.face = bottomFace()
+        controller.geometryTick()
+        content.snapshot = makeContent()
+        controller.spaceDidChange(makeSpace())
+        XCTAssertEqual(presenter.frontCount, 1, "前置：条已显示")
+
+        // Dock 滑走（face == nil）：光标不在显出带 → 宽限后与 Dock 一起收起。
+        provider.face = nil
+        controller.geometryTick()
+        XCTAssertEqual(presenter.outCount, 0, "宽限期内还没收")
+        try? await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(presenter.outCount, 1, "原生 Dock 隐藏，次级条同步隐藏")
+    }
+
+    func testAutoHideKeepsBarWhileCursorInRevealZone() {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        // 光标在 Dock 区里（bottom 内缩 53 → 区高 53）。
+        let mouse = MouseBox(point: CGPoint(x: 960, y: 30))
+        let controller = makeSyncController(presenter: presenter, provider: provider, content: content, mouse: mouse)
+
+        provider.face = bottomFace()
+        controller.geometryTick()
+        content.snapshot = makeContent()
+        controller.spaceDidChange(makeSpace())
+        XCTAssertEqual(presenter.frontCount, 1)
+
+        provider.face = nil
+        controller.geometryTick()
+        XCTAssertEqual(presenter.outCount, 0, "光标在显出带里：Dock 在屏或即将显出，条保持显示")
+        XCTAssertEqual(presenter.frontCount, 1, "已显示就不重复 orderFront")
+    }
+
+    func testAutoHideShowsBarAgainWhenCursorReturnsToRevealZone() async {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let mouse = MouseBox(point: CGPoint(x: 960, y: 600))
+        let controller = makeSyncController(presenter: presenter, provider: provider, content: content, mouse: mouse)
+
+        provider.face = bottomFace()
+        controller.geometryTick()
+        content.snapshot = makeContent()
+        controller.spaceDidChange(makeSpace())
+
+        mouse.point = CGPoint(x: 960, y: 600)
+        provider.face = nil
+        controller.geometryTick()
+        try? await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(presenter.outCount, 1, "前置：已随 Dock 隐藏")
+
+        // 光标回到 Dock 区（鼠标碰边触发自动隐藏显出）→ 条同步重新出现。
+        mouse.point = CGPoint(x: 960, y: 30)
+        controller.geometryTick()
+        XCTAssertEqual(presenter.frontCount, 2, "show 则同步 show")
+        XCTAssertEqual(presenter.outCount, 1, "重新显示不该多一次收起")
+    }
+
+    func testSizingSlotsFixFrameAcrossContentChanges() {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let mouse = MouseBox(point: CGPoint(x: -9999, y: -9999))
+        let controller = makeSyncController(presenter: presenter, provider: provider, content: content, mouse: mouse)
+
+        provider.face = bottomFace()
+        controller.geometryTick()
+        content.snapshot = makeContent(items: 3)
+        content.snapshot?.sizingSlots = 6
+        controller.spaceDidChange(makeSpace())
+
+        let fixedSize = SecondaryDockLayout.barSize(itemCount: 6, iconSize: 36, isVertical: false)
+        let expected = SecondaryDockLayout.placement(barSize: fixedSize, face: bottomFace())
+        XCTAssertEqual(presenter.lastFrame, expected.tucked, "窗口按 sizingSlots 固定尺寸，不按当前条目数")
+
+        // 换到只有 1 个条目的桌面：内容变、窗口尺寸与位置一毫米不挪。
+        content.snapshot = makeContent(items: 1)
+        content.snapshot?.sizingSlots = 6
+        controller.spaceDidChange(makeSpace())
+        XCTAssertEqual(presenter.lastFrame, expected.tucked, "固定几何下切桌面窗口不挪（sticky）")
+    }
 }
 
 // MARK: - 冻结闸门（AppState 路径）
@@ -471,16 +613,17 @@ final class SecondaryDockFreezeTests: XCTestCase {
         return state
     }
 
-    private func config(tilesize: Double = 52) -> DockConfig {
+    private func config(tilesize: Double = 52, apps: Int = 1) -> DockConfig {
         var config = DockConfig()
         config.appearance.tilesize = tilesize
-        config.pinnedApps = DockStripRules.normalizedApps([
+        // 各不相同的条目（真实键名不同），避免归一化去重把条数压掉。
+        config.pinnedApps = (0..<apps).map { index in
             DockTile.makeFileTile(
-                url: URL(fileURLWithPath: "/Applications/Safari.app", isDirectory: true),
-                label: "Safari",
-                bundleIdentifier: "com.apple.Safari"
-            ),
-        ])
+                url: URL(fileURLWithPath: "/Applications/App\(index).app", isDirectory: true),
+                label: "App\(index)",
+                bundleIdentifier: "com.example.app\(index)"
+            )
+        }
         return config
     }
 
@@ -650,5 +793,33 @@ final class SecondaryDockFreezeTests: XCTestCase {
 
         XCTAssertEqual(preferences.readDomain()["tilesize"]?.doubleValue, 52,
                        "启动对齐在自愈之后执行，最终停在冻结配置（默认 Dock）上")
+    }
+
+    // MARK: - 冻结模式的固定几何（sticky：切桌面窗口一毫米不挪）
+
+    func testFreezeModeGivesFixedSizingSlotsAndDefaultDockIconSize() {
+        let spaces = FakeSpaceProvider.desktops(count: 2)
+        let provider = FakeSpaceProvider(desktops: spaces, activeSpaceID: spaces[0].id64)
+        let preferences = FakePreferences(domain: baseDomain())
+        let state = makeState(preferences: preferences, stores: makeStores("freeze-sizing"), provider: provider)
+        state.start()
+        defer { state.stop() }
+
+        state.updateSettings { $0.freezeNativeDockSwitching = true }
+        state.updateSettings { $0.defaultDock = config(tilesize: 36, apps: 1) }
+        // 桌面 1：1 个 App；桌面 2：3 个 App（都没有启动台 → 内容构建各补一枚）。
+        state.updateSettings { $0.autoApplyOnEdit = false }
+        state.setOverride(config(tilesize: 44, apps: 1), for: spaces[0], reason: "桌面 1")
+        state.setOverride(config(tilesize: 48, apps: 3), for: spaces[1], reason: "桌面 2")
+
+        let desktop1 = state.secondaryDockContent(for: spaces[0])
+        XCTAssertEqual(desktop1?.sizingSlots, 5,
+                       "固定槽位 = 最大口径：1 Finder + (3 App + 1 启动台) = 5")
+        XCTAssertEqual(desktop1?.iconSize, 36, "冻结模式图标尺寸取默认 Dock，不跟桌面走")
+
+        state.updateSettings { $0.freezeNativeDockSwitching = false }
+        let unfrozen = state.secondaryDockContent(for: spaces[0])
+        XCTAssertNil(unfrozen?.sizingSlots, "未冻结维持实验 21 原规格：按本桌面条目数撑开窗口")
+        XCTAssertEqual(unfrozen?.iconSize, 44, "未冻结时图标尺寸跟随该桌面生效配置")
     }
 }

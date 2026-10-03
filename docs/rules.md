@@ -334,6 +334,17 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
    断言「不落盘」的（文件不该存在）与预置 config 再 `start()` 的（被默认值覆盖）。
    要解冻/改设置的用例在 `start()` 后按需调（`AppStateDockTests.unfreeze(_:)` 的样子），
    别摊回 makeState。
+10. **Dock 实际显隐没有零权限直读信号（实验 22，别再试这三条）**：`CoreDockSetAutoHideEnabled`
+    只翻旗标**不改 work area**（inset 不动、Dock 不滑走——sandwich 的隐藏来自重启后 Dock 读
+    旗标；`Set(false)` 的显出方向倒是实时生效）；探针窗口 `occlusionState` 在基线就抖动；
+    CGWindowList 在 15.8.1 完全看不见 Dock 窗口。同步显隐的唯一可行组合 =
+    face（inset）为主 + 自动隐藏态下「光标在显出带（`SecondaryDockLayout.dockArea` 外扩 8pt）」
+    启发式 + 400 ms 宽限，几何轮询 200 ms。
+11. **冻结模式下条是固定几何**：`SecondaryDockContentSnapshot.sizingSlots` = 所有活着的桌面
+    生效配置的最大条目数、iconSize 取默认 Dock——切桌面只换内容不挪窗。改条目口径时
+    `AppState.secondaryDockMaxSlots` 必须与 `SecondaryDockContentBuilder` 同口径
+    （Finder 幻影 +1、`normalizedApps` 缺启动台补一枚）。未冻结（opt-out 老模式）保持
+    按本桌面撑开的原规格，别顺手统一。
 
 ---
 
