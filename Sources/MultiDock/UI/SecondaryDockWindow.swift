@@ -14,9 +14,12 @@ protocol SecondaryDockPresenting: AnyObject {
 /// 贴在原生 Dock 内侧的次级条窗口。
 ///
 /// 窗口层配方沿用 `DesktopNameToastWindow`（那条配方每一条都是踩过坑的）：
-/// borderless、`canBecomeKey` / `canBecomeMain` = false（绝不抢焦点）、
-/// `canJoinAllSpaces` 跨空间、用 `orderFrontRegardless()` 显示。
+/// borderless、`canBecomeKey` / `canBecomeMain` = false（绝不抢焦点）、用 `orderFrontRegardless()` 显示。
 /// 与 toast 的三点不同：
+/// - **不设 `.canJoinAllSpaces`**：只靠 `.stationary` 跨空间。`.canJoinAllSpaces` 会让窗口
+///   成为每个空间的成员，轨道板滑动切桌面时参与过渡动画、跟着桌面一起滑；纯 `.stationary`
+///   让窗口浮在所有空间之上、不属任何空间，切换时钉在原地——与原生 Dock 一致
+///   （实测见 `scripts/spike-stationary-spaces.swift`：纯 stationary 仍在所有空间在屏）。
 /// - `ignoresMouseEvents = false` —— 条要接收点击与 hover；
 /// - `level = 19` —— **低于** Dock 的 20：半露时滑进 Dock 身后的部分被 Dock 像素挡住，
 ///   视觉上就是「从原生 Dock 底下探出来」；
@@ -50,7 +53,7 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         window.backgroundColor = .clear
         window.hasShadow = true
         window.level = Self.windowLevel
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        window.collectionBehavior = [.stationary, .fullScreenAuxiliary, .ignoresCycle]
         window.isReleasedWhenClosed = false
         window.isMovable = false
         window.animationBehavior = .none

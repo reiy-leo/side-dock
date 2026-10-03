@@ -3,6 +3,18 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-04（第 37 次）— 次级条随桌面滑动：去掉 `.canJoinAllSpaces` 改纯 `.stationary`（实验 23）
+
+**用户说**：「现在的secondary dock还是会随桌面滑动，更改为滑动桌面时secondary dock不滑动，保持sticky在原生dock原位置」
+
+**做了什么**：
+
+1. **定位根因（实验 23，`scripts/spike-stationary-spaces.swift`）**：次级条窗口配方是 `[.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]`，原以为 `.stationary` 能钉住（第 35 次会话也这么写了）。spike 实测两组：A=`.canJoinAllSpaces + .stationary`、B=仅 `.stationary`，用 SkyLight 硬切桌面、`CGWindowList(.optionOnScreenOnly)` 判在屏。结论：**B 组去掉 `.canJoinAllSpaces` 后仍在所有空间在屏**（CGWindowList 权威，`isOnActiveSpace` 对纯 stationary 窗语义不稳但不影响显示）。**`.canJoinAllSpaces` 才是滑动元凶**——它把窗口注册成每个空间的成员，过渡动画自然带上它；`.stationary` 只管 Mission Control，不覆盖空间过渡参与。
+2. **修法**：`Sources/MultiDock/UI/SecondaryDockWindow.swift` 一行——collectionBehavior 去掉 `.canJoinAllSpaces`，只留 `[.stationary, .fullScreenAuxiliary, .ignoresCycle]`，与原生 Dock 同款语义（浮在所有空间之上、切换时不动）。注释说明与 toast 分道扬镳的原因。
+3. **验证**：`swift build` 零警告、**364 测试全绿**、`./scripts/build-app.sh` 打包完成。手势滑动的过渡动画无法脚本复现（实验 7），等用户真机确认条是否真的钉住。
+
+**当前进度**：等用户手测——轨道板滑动切桌面时次级条是否钉在原生 Dock 原位置不滑。其余待办不变。
+
 ### 2026-10-04（第 36 次）— 交接：全量会话史归档 + 文档收敛到当前形态
 
 **用户说**：「交接项目，把当前项目的所有session总结后写入文档，更新旧的文档，删除旧的需求和实现，更新到最新。」

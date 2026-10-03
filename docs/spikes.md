@@ -16,7 +16,8 @@
 > **实验 17：CoreDock MIG 通道探路（条目键无第三方通道，B15 结案）**；**实验 18：真人手势切换 5/5
 > 触发通知（B7 结案）**；**实验 19：系统更新到 15.8.1，GUID 回填判据失效并版本化**；
 > **实验 20：自动隐藏三明治（重启不可见）**；**实验 21：次级条几何源（Dock 条不是独立 CG 窗口）**；
-> **实验 22：Dock 实际显隐没有零权限直读信号（同步显隐的启发式由此而来）**。共 **22 个实验**。
+> **实验 22：Dock 实际显隐没有零权限直读信号（同步显隐的启发式由此而来）**；
+> **实验 23：`.canJoinAllSpaces` 是次级条随桌面滑动的元凶——纯 `.stationary` 才钉住**。共 **23 个实验**。
 
 1. **不存在热重载**。写偏好后无论 post 什么通知，Dock 都不会重新读取——必须重启 Dock 进程。
 2. **重启很快**：SIGHUP 后 Dock 仅约 **101 ms** 不可用；SIGTERM 约 **395 ms**（Dock 收到 TERM 会先做约 255 ms 清理再退出）。→ **主路径定为 SIGHUP**，SIGTERM + kickstart 作兜底。
@@ -1746,6 +1747,46 @@ frame、冻结模式固定几何 + 图标尺寸取默认 Dock）——**364 全�
 
 ---
 
+## 实验 23：次级条随桌面滑动的根因 —— `.canJoinAllSpaces` 破坏 `.stationary`（2026-10-04，**已实现**）
+
+**背景**：用户报告次级 Dock 条在轨道板滑动切桌面时**跟着桌面一起滑**，而原生 Dock 钉在原地。
+次级条窗口配方是 `[.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]`，
+本以为 `.stationary` 已经够了（第 35 次会话里也这么写了），实测打脸。
+
+**问题**：`.canJoinAllSpaces` 与 `.stationary` 组合时，究竟谁在控制空间过渡动画？
+
+**实测（`scripts/spike-stationary-spaces.swift`，零权限、不改系统）**：建两个小窗，
+分别设 A=`canJoinAllSpaces + stationary`、B=`仅 stationary`，用 SkyLight 程序化切桌面
+（`CGSManagedDisplaySetCurrentSpace`，0–6 ms 硬切），逐空间读 `isOnActiveSpace` +
+`CGWindowList(.optionOnScreenOnly)` 看是否在屏。
+
+| 组合 | rawValue | 跨空间在屏 | `isOnActiveSpace` |
+| --- | --- | --- | --- |
+| A: `.canJoinAllSpaces` + `.stationary` | 337 | 全部 true | 全部 true |
+| B: 仅 `.stationary`（无 canJoinAllSpaces） | 336 | **全部 true** | 语义不一（部分 false，但**不影响实际显示**） |
+
+关键发现：**B 组去掉 `.canJoinAllSpaces` 后，窗口仍在所有空间在屏**（CGWindowList 是
+权威判据，`isOnActiveSpace` 对纯 stationary 窗的语义本来就不稳定）。跨空间可见性
+**不依赖** `.canJoinAllSpaces`——`.stationary` 本身就意味着「不属任何空间、浮在所有
+空间之上」。
+
+**结论与决定**：
+
+1. **`.canJoinAllSpaces` 是滑动的元凶**：它把窗口注册为每个空间的成员，空间过渡动画
+   自然要带上它一起滑。`.stationary` 管的是 Mission Control/Exposé，**不覆盖**
+   `.canJoinAllSpaces` 对空间过渡动画的参与。
+2. **修法**：次级条窗口去掉 `.canJoinAllSpaces`，只留 `[.stationary, .fullScreenAuxiliary,
+   .ignoresCycle]`——与原生 Dock 同款语义（浮在所有空间之上、切换时不动）。
+3. **与 toast 的差异**：toast 仍保留 `.canJoinAllSpaces`（它在切完桌面后才弹，过渡
+   动画里有没有它无所谓；且 toast 配方是历史踩坑结论，不动）。两者从此分道扬镳。
+4. **手势滑动的过渡动画无法脚本复现**（实验 7），需用户真机确认条是否真的钉住。
+
+**改动**：`Sources/MultiDock/UI/SecondaryDockWindow.swift` 一行（collectionBehavior 去掉
+`.canJoinAllSpaces`）+ 注释说明。**364 测试全绿**（无单测覆盖窗口 collectionBehavior，
+靠 spike 脚本实证）。
+
+---
+
 ## 复现方法
 
 ```bash
@@ -1792,4 +1833,7 @@ swiftc -O -o /tmp/md-space-notify scripts/spike-space-notify-watch.swift && /tmp
 
 # 次级条与原生 Dock 的显隐信号三路采样（实验 22；⚠️ 会临时翻转 autohide 旗标，脚本结束还原）
 swift scripts/spike-secondary-dock-sync.swift
+
+# 次级条跨空间可见性 / 滑动根因（实验 23；零权限、不改系统、结束自动切回原桌面）
+swift scripts/spike-stationary-spaces.swift
 ```
