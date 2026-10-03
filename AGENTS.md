@@ -35,11 +35,18 @@ SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.s
 
 ## 1. 这是什么
 
-macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** 配置，切换桌面时自动把 Dock 切换成对应配置。菜单栏常驻一个图标，单击切下一个桌面，`⇧`+单击切上一个。
+macOS 多桌面（Space）工具。**当前产品形态（2026-10-04 起，用户两次明确修订后的形态）**：
+
+- **原生 Dock 全桌面一致**（「冻结原生 Dock 逐桌面切换」**默认开**）：切桌面**零写入、零重启**，
+  原生 Dock 固定为「通用页那套默认 Dock」。
+- **每个桌面的差异由「次级 Dock 条」呈现**：贴在原生 Dock 内侧的自绘图标条，随桌面秒换图标，
+  默认半露、hover 全出，**不替换、不改写**原生 Dock。
+- 菜单栏常驻图标：单击切下一个桌面、`⇧`+单击切上一个、右键/⌥+左键打开菜单；
+  切换后中上部弹 1 秒 toast 显示桌面名。
+- 可选项：关掉冻结开关即回到「逐桌面原生 Dock」老模式（届时切桌面才重启原生 Dock，走无闪烁三明治）。
 
 - 用户：个人自用，本地运行，**不做公证、不上 Mac App Store、不签名**（ad-hoc 即可）。
-- 语言：界面中文，代码与标识符英文。不替换原生 Dock，不自己画 Dock 栏
-  （**例外：2026-10-04 用户修订硬约束 2，批准了贴原生 Dock 的次级条**，见下）。
+- 语言：界面中文，代码与标识符英文。
 
 ---
 
@@ -52,160 +59,90 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
    （纯 App UI，零权限、无痕）。**「冻结原生 Dock 逐桌面切换」自同日起默认开**（用户明确：
    原生 Dock 全桌面一致、切桌面不写不重启，差异全由次级条呈现；原生固定在「默认 Dock」这套
    配置上，由启动对齐 + 开关两方向共同保证）。规格见 `docs/PLAN.md` §3.12，实测见
-   `docs/spikes.md` 实验 21。
+   `docs/spikes.md` 实验 21/22。
 3. **菜单栏交互**：左键单击 = 切到下一个桌面（循环）；**⇧+左键 = 切到上一个桌面**；右键 / ⌥+左键 = 下拉菜单（桌面列表 + 上一个/下一个 + 设置 + 退出）。左键行为可在设置里改成"打开菜单"（此时 ⇧+左键也一并打开菜单，不留隐形的第二行为）。**切桌面过程本身没有动画，且做不到**（`docs/spikes.md` 实验 7，别再试）。
-4. **设置窗口两个 Tab**：通用（默认 Dock：可拖入拖出的图标条、Finder 与 Launchpad 固定、大小、位置）与桌面（列出所有桌面，每个桌面单独设置 Dock 位置/大小与图标，或沿用默认）。
+4. **设置窗口两个 Tab**（macOS 原生工具栏标签页风格）：通用（默认 Dock：图标条 + 外观 + 应用/还原/基准 + 次级条与冻结开关等）与桌面（列出所有桌面，每个桌面单独设置 Dock 与图标，或沿用默认）。
 5. **不需要任何系统权限**：不用辅助功能、屏幕录制、root。若某方案开始要求这些权限，先回来和用户确认。
 6. **桌面命名 + 切换提示**：设置 → 桌面里可以给每个桌面起名，**最长 10 个字符**（仅存本地，macOS 15 没有系统接口）；**切换桌面后在屏幕中上部弹一条 toast 显示该名字，1 秒后自动消失**。toast 不抢焦点、不挡点击、不需要权限。规格见 `docs/PLAN.md` §3.10。
 
 ### 决策演变（一句话版；细节在 `docs/PLAN.md` 与 `docs/spikes.md`）
 
-v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 notifyd 热重载 / 切桌面靠 300 ms 轮询 / Finder 无表示）→ **v3.2** 桌面命名 + toast（P2.5）→ **v3.3** 节流错开 + PID 身份闸门 + 预应用"同一拍" + `DockEditTarget` 统一入口 → **v3.4** 自愈债务继承 + 备份只恢复白名单键 + `mru-spaces` 唯一写例外 → **v3.5** 退出单开窄路 + 「带上限的等」必须轮询可观察标志 + 测试隔离用户日志 → **实验 17（2026-10-03/04）**：CoreDock 通道结案——外观 setter 可用但语义未定，条目键无第三方通道（B15），主路径维持 SIGHUP → **v3.6（2026-10-04）**：次级 Dock 条（硬约束 2 修订批准的自绘例外；随桌面换内容零重启 + 可选冻结原生切换；几何源 = `visibleFrame` 内缩，实验 21）→ **v3.6.1（2026-10-04 同日）**：冻结原生切换转正为**默认**（用户明确原生 Dock 全桌面一致、切桌面零重启）；「原生 Dock = 默认 Dock」由启动对齐（排在自愈后）+ 开关两方向共同保证。
+v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 notifyd 热重载 / 切桌面靠 300 ms 轮询 / Finder 无表示）→ **v3.2** 桌面命名 + toast（P2.5）→ **v3.3** 节流错开 + PID 身份闸门 + 预应用"同一拍" + `DockEditTarget` 统一入口 → **v3.4** 自愈债务继承 + 备份只恢复白名单键 + `mru-spaces` 唯一写例外 → **v3.5** 退出单开窄路 + 「带上限的等」必须轮询可观察标志 + 测试隔离用户日志 → **实验 17（2026-10-03/04）**：CoreDock 通道结案——外观 setter 可用但语义未定，条目键无第三方通道（B15），主路径维持 SIGHUP → **实验 20（2026-10-04）**：自动隐藏三明治——重启藏进「滑走 → 隐形重启 → 滑回」，切桌面无黑屏闪烁 → **v3.6（2026-10-04）**：次级 Dock 条（硬约束 2 修订批准的自绘例外；几何源 = `visibleFrame` 内缩，实验 21）→ **v3.6.1（2026-10-04 同日）**：冻结原生切换**转正为默认**（原生 Dock 全桌面一致、切桌面零重启）→ **v3.6.2（2026-10-04 同日）**：次级条 sticky 固定几何 + 与原生 Dock 同步显隐（实验 22）。
 
 ---
 
 ## 3. 当前状态（2026-10-04）
 
-**P0（实验）、P1、P2.5、P2、P3、P4、P5、P5+、P5++ 全部完成并实测通过。** 代码会真改用户 Dock；无痕原则由 `LifecycleController` 退出还原 + 会话标记兜底。UI 已对齐 Apple 原生设计（2026-10-04）。
+**计划里的功能全部落地并实测通过**（P0–P5++ + 实验 17–22 的后续演进）。代码会真改用户 Dock；
+无痕原则由 `LifecycleController` 退出还原 + 会话标记兜底。**364 个测试全绿**；真机 Dock 验收 **9/9 绿**。
 
-- **A6 / A7 已销账**（用户真机日志确认）：退出还原 53–54 s → **0.01 s**；切桌面正常路径稳定 **35–126 ms**。
-- **A8（偶发慢重启）**：修法「不等，催」已落地（26–31 s → ~1–3.5 s）；**成因未直接观测**，七个假说已证伪——**别再按它们改代码**，`minimumSpacing` 保持 1 s、`dockPID()` 的 LS 优先不要动。下次偶发按 `docs/spikes.md` 实验 15/16.4 的判定规则读 `multidock.log`（先看 `最长间隔 M ms`），**别主动复现**。
-- **A9 / A10 已结案**：默认 Dock 的 3 个图标是用户有意配的；两条 override **不能清成沿用默认**（orientation 不同 + 整体替换语义），`config.json` 原样保留。
-- **实验 17 / B15 已结案**：CoreDock 外观 setter（`SetTileSize`）对第三方可用（语义未定）；**条目键无第三方通道**——Dock 按发送方放行 Apple 二进制（Finder 同参数可用而我们被拒）。主路径维持 SIGHUP。
-- 取证仪表（实验 15）已装：慢重启日志自带 `慢重启取证` 与 `轮询 N 次，最长间隔 M ms`。
-- **环境变更（2026-10-04）**：macOS 更新到 **15.8.1 (24H32)**（原 15.7.9）。真机 Dock 验收重跑 **9/9 绿**——GUID 回填判据在 15.8.1 失效，已按系统版本条件化（`docs/spikes.md` 实验 19）。B7 通知观测在更新后系统上完成，结论不受影响。
-- **用户日志停在 09-19**：实验 15/16 的取证仪表与之后的全部改动（含 UI 原生化）尚无真实使用数据——下次启动 App 后以 `multidock.log` 为准观察。（02:19 用户已启动新构建，日志恢复记录。）
-- ✅ **切换无闪烁已实现（实验 20，2026-10-04）**：SIGHUP 重启默认包在**自动隐藏三明治**里——`CoreDockSetAutoHideEnabled(true)` 滑走 → 隐形重启 → 滑回（typed setter 对第三方可用且 Dock 自己持久化，同 `SetTileSize` 族）。实现在 `DockAutoHide.swift` + `DockReloader.reload(strategy:sandwichRevealAutoHideTo:)`；配置本就要求隐藏/typed setter 失败时优雅降级。用户原始诉求「切换桌面平滑无感」。
-- ✅ **次级 Dock 条已实现（实验 21，2026-10-04）**：贴原生 Dock 内侧的自绘条，随桌面秒换内容（换视图零重启），默认半露（层级 19 < 20，藏进 Dock 身后）、hover 滑出、无放大。实现在 `SecondaryDock{Layout,Controller,Window,StripView}.swift` + `DockFaceProviding.swift`；几何源 = `visibleFrame` 排他内缩（**Dock 条不是独立 CG 窗口**）。设置里有「冻结原生 Dock 逐桌面切换」开关。⚠️ 注意：config.json 现在默认与全部绑定都是 `bottom` 方位（A9 时代的"默认 right"已被用户改掉）。真机 window-dump 核验半露位逐像素吻合；**hover/点击手感等用户手测**。
-- ✅ **冻结成为默认（2026-10-04 第 34 次会话）**：`freezeNativeDockSwitching` 默认 `true`（含解码兜底），用户 config.json 的持久化值已同步翻转。语义：**原生 Dock 固定为「默认 Dock」这套配置，切桌面零写入零重启**（真机日志已实证）；差异全在次级条。「原生 Dock = 默认 Dock」由三处保证：① 启动对齐 `reestablishFrozenDockIfNeeded`（**排在自愈之后**，内容一致时指纹短路）；② 开关打开立即对齐；③ 开关关闭立即应用当前桌面生效配置（`setFreezeNativeDockSwitching` 统一入口，设置页两个相关开关都走它）。
-- ✅ **次级条 sticky 固定几何 + 显隐同步（2026-10-04 第 35 次会话，实验 22）**：冻结模式下条窗口固定尺寸（槽位 = 各桌面生效配置最大条目数、图标尺寸 = 默认 Dock），**切桌面只换图标、窗口一毫米不挪**；显隐与原生 Dock 同步——Dock 隐藏（自动隐藏/重启瞬态）条跟着藏，光标碰边 Dock 显出时条同步出来（face 主信号 + 显出带光标启发式 + 400 ms 宽限，轮询 200 ms）。⚠️ 实验 22 推翻认知：`CoreDockSetAutoHideEnabled` **只翻旗标不改 work area**（sandwich 的隐藏来自重启后的 Dock 读旗标）；探针 occlusionState 不可用；别再试这三条直读信号。
+**现行行为（均有真机日志/验收实证）**：
 
-### 已完成
+- **切桌面**：冻结模式下零写入零重启（日志 `原生 Dock 已冻结：跳过「切到 …」`）；次级条换图标、窗口不动。
+- **启动**：自愈（若有欠账）→ 冻结对齐（把原生 Dock 对齐到默认 Dock，内容一致时指纹短路不重启）。
+  退出时还原基准 → 下次启动再对齐（一次约 0.4 s 的隐形重启，若内容已一致则完全不动）。
+- **次级条**：贴在原生 Dock 内侧、层级 19 半露 / hover 全出；固定几何（槽位 = 各桌面生效配置
+  最大条目数、图标尺寸 = 默认 Dock）；与原生 Dock 同步显隐（原生挂起/隐藏时条也藏，碰边显出时条同步出来）。
+- **Dock 重启**（仅未冻结模式、手动应用、启动对齐会走到）：SIGHUP 主路径 + 自动隐藏三明治（无黑屏）；`kickstart` 催办兜底。
+- **A8（偶发慢重启）**：修法「不等，催」已落地（26–31 s → ~1–3.5 s）；**成因未直接观测**，七个假说已证伪——**别再按它们改代码**，`minimumSpacing` 保持 1 s、`dockPID()` 的 LS 优先不要动。下次偶发按 `docs/spikes.md` 实验 15/16.4 判定规则读 `multidock.log`（先看 `最长间隔 M ms`），**别主动复现**。冻结默认后此风险实际暴露面大幅缩小（切桌面不再重启）。
+- **A6 / A7 已销账**：退出还原 53–54 s → **0.01 s**；正常路径重启 35–126 ms（已被用户真机日志确认）。
+- **A9 / A10 已结案**：`config.json` 里默认与各 override 都是用户有意配置（现行：默认 15 图标、3 条绑定全独立、全 `bottom`）。
+- **实验 17 / B15 已结案**：条目键无第三方通道（Dock 按发送方放行 Apple 二进制），主路径维持 SIGHUP；`CoreDockSetTileSize` 可用但语义未定。
+- **环境（2026-10-04）**：macOS **15.8.1 (24H32)**；GUID 回填判据在该版本失效、验收已按系统版本条件化（实验 19）。
+- **日志**：`~/Library/Application Support/MultiDock/multidock.log` 是核对真机行为的唯一凭据（无屏幕录制、`log show` 沙箱里读不到）。测试必须传 `makeTestFileLog()`，别污染它。
 
-| 项 | 位置 | 状态 |
+### 模块地图（改动先看这里，再查 `docs/rules.md` 对应节）
+
+| 区域 | 文件 | 职责与现状 |
 | --- | --- | --- |
-| SwiftPM 包 | `Package.swift` | 执行目标 `MultiDock` + **测试目标 `MultiDockTests`**，`platforms: [.macOS(.v14)]` |
-| 程序入口 | `Sources/MultiDock/MultiDockApp.swift` | `@main` + `NSApplication`（**不是** SwiftUI `App`，原因见下） |
-| App 委托 | `App/AppDelegate.swift` | 组装状态、菜单栏、窗口；接线 toast、`onDockApplied`、`restoreHandler` |
-| 全局状态 | `App/AppState.swift` | `@MainActor @Observable`，空间值转发给 observer（不复制）；**依赖全部可注入**（`DockController` / 两个 Store），所以按钮路径能单测 |
-| 日志落盘 | `App/FileLogSink.swift` | 追加写 `multidock.log`，512 KB 上限 |
-| 生命周期 | `App/LifecycleController.swift` | 启动自检 + 会话标记 + **退出还原（已接线）**；**只在本次会话可能让 Dock 变脏时才还原**（`appliedFingerprint` 或继承来的 `needsSelfHeal`）；还原前先 `prepareForTermination()` 等待办清空；**还原失败保留标记**交给下次自愈 |
-| Dock 存活监视 | `Dock/DockPresenceMonitor.swift` | 轮询 `dockPID()`，连续缺失达阈值就 `kickstart` 拉回；归位后记恢复次数；**持续拉不回来（默认 12 轮 ≈ 6 秒）回调 `onPersistentlyDown` 一次 → UI 报警**，回来时 `onRevived`。**纯逻辑 + 注入式进程控制**，可脱离真实 Dock 单测 |
-| 登录启动 | `App/LoginItem.swift` | `SMAppService.mainApp` 为主，失败退回写 `~/Library/LaunchAgents/local.multidock.loginitem.plist`；**非 `.app` 环境明确报"不可用"**，不做假开关 |
-| SkyLight 桥 | `Spaces/SkyLightBridge.swift` | `dlopen` + `dlsym`，符号缺失即降级 |
-| 桌面枚举 | `Spaces/SpaceProvider.swift` | 协议 + 私有 API 实现 + 降级实现 |
-| 桌面观察 | `Spaces/SpaceObserver.swift` | **300 ms 轮询为主 + 通知为辅**，`type != 0` 过滤，按桌面身份去重 |
-| 桌面切换 | `Spaces/SpaceSwitcher.swift` | 同显示器内循环取下一个/上一个，两端循环 |
-| 配置模型 | `Dock/DockConfig.swift` | `PlistValue` / `DockTile` / `DockAppearance` / `DockConfig` / `DesktopBinding` / `AppSettings`（`AppSettings` 手写解码，见下） |
-| 图标条规则 | `Dock/DockStripRules.swift` | 启动台必须在首位（已有则原样保留，不覆盖 `GUID`/`book`）、Finder 只是幻影、从 `.app` 造条目、取图标 |
-| Dock 偏好 | `Dock/DockPreferences.swift` | 白名单 + 全量域读 + 原子写；**写路径已接线** |
-| Dock 重载 | `Dock/DockReloader.swift` | `DockProcessControlling` 协议 + 真实实现；SIGHUP 主路径 → SIGTERM → `launchctl kickstart` 三级降级；**重启节流错开**（`minimumSpacing`）；**发信号前的安全闸门**（见 §4 的 `-1` 陷阱） |
-| 应用流水线 | `Dock/DockController.swift` | **双重短路**（内容与上次写下去的一致 / **真实 Dock 已经就是这份内容**）→ 备份 → 读全量域 → 只覆盖白名单键 → 原子写 → 重启 → 读回校验（**不一致重试一次**）；`request()` 带防抖合并；`comparableFingerprint` / `adoptLiveDockAsApplied` / `isApplying` |
-| 手动改动回存 | `Dock/DockWatcher.swift` | 轮询真实域的可比指纹，识别用户手动改动 → 回存到当前桌面的绑定（受开关控制）；**纯逻辑 + 注入式读写**，可脱离真实 Dock 单测 |
-| 回存撤销栈 | `Dock/DockEditHistory.swift` | 回存前的旧配置暂存（**内存**，每目标 5 层），供电桌面页/通用页的「撤销自动回存」。刻意不落盘，理由见 §3 的 P5 第 6 条 |
-| 全屏过滤回归脚本 | `scripts/check-fullscreen-filter.swift` | 把本进程自己的窗口切成全屏 → SkyLight 多出 `type=4` 空间 → 真机验证过滤。**零权限** |
-| 配置持久化 | `Store/ConfigStore.swift` | 原子写 `config.json` |
-| 基准快照 | `Store/BaselineStore.swift` | 基准 + 会话标记 + 备份轮转（保留 20 份） |
-| 菜单栏 | `UI/MenuBarController.swift` | `NSStatusItem`，区分左右键，标题显示当前桌面序号；下拉含桌面列表 / 下一个桌面 / **用当前 Dock 重置本桌面配置** / 刷新 / **立即还原到原始 Dock** / 调试面板 / 设置 / **退出并还原 Dock** |
-| 图标条编辑器 | `UI/DockStripEditor.swift` | 拖入/拖出/排序、从访达拖 `.app` 进来、垃圾桶移除、从当前 Dock 抓取；**Finder 与启动台锁在最前** |
-| 外观编辑器 | `UI/DockAppearanceEditor.swift` | 位置/大小/放大/自动隐藏/最小化特效/最小化到应用图标/运行指示点；**本机不支持的键禁用并说明原因**；`onCommit` 只在**松手/值变化**时提交，不逐帧落盘 |
-| 桌面列表页 | `UI/DesktopListView.swift` | 左列表（改名输入框 + 独立/沿用徽标 + 当前桌面标记）+ 右详情（沿用开关 / 完整图标条 + 外观 / 立即应用 / 抓取 / 重置为默认） |
-| 调试面板 | `UI/DebugPanelView.swift` | 当前 spaceUUID/id64/type、桌面列表、实时日志、「测试 toast」按钮 |
-| 设置窗口 | `UI/SettingsView.swift` | **顶部报警横幅**（Dock 拉不回来 / 桌面切换不可用）+ 通用（默认 Dock 编辑条 + 外观 + 立即应用 / 立即还原 / 设为新基准 + 本机不支持）/ 桌面（`DesktopListView`）两个 Tab |
-| 桌面命名 | `Spaces/DesktopNaming.swift` | 归一化（≤10 字素簇）、显示名解析、改名/改 override 规则；**纯函数，全部有单测** |
-| toast 调度 / 窗口 | `UI/ToastPresenter.swift`、`UI/DesktopNameToast.swift` | 纯逻辑调度 + 无边框窗口；跨空间、不抢焦点、零权限 |
-| 次级 Dock 条 | `Dock/SecondaryDockLayout.swift`、`Dock/DockFaceProviding.swift`、`UI/SecondaryDock{StripView,Window,Controller}.swift` | 随桌面秒换内容的自绘条：几何源 `visibleFrame` 内缩（**Dock 条不是独立 CG 窗口**）、层级 19 半露 / hover 全出、1 s 几何轮询 + hover 防抖 + 鼠标安全网；调度依赖全注入可单测。规格 `docs/PLAN.md` §3.12、实测实验 21 |
-| 次级条冻结开关 | `App/AppState.swift`（`applyForDesktopSwitch` / `handleUserDockEdit` 冻结分支 + `setFreezeNativeDockSwitching` / `reestablishFrozenDockIfNeeded`） | **默认开**。只挡**切换路径**（被动回调 + 三条预应用）；手动「立即应用」不受影响；冻结时手动改 Dock 回存**默认 Dock**；「原生 Dock = 默认 Dock」靠启动对齐（自愈之后）+ 开关两方向保证 |
-| toast 验收工具 | `scripts/check-toast-window.sh` | 用 `CGWindowListCopyWindowInfo` 读窗口元数据（零权限），`--watch` 报告出现/消失时刻 |
-| UI 离屏快照验收 | `Tests/MultiDockTests/UISnapshotTests.swift` | `MULTIDOCK_UI_SNAPSHOT=1` 开启：用 `SettingsWindowFactory` 装配**真窗口**离屏渲染，出亮/暗 × 通用/桌面 四张 PNG（零权限），UI 视觉验收用。**快照与 App 共用一份窗口装配，不许另拼** |
-| toast 外观预览器 | `scripts/preview-toast.swift` | 在假壁纸上画亮/深色胶囊并输出 PNG（`cacheDisplay` 抓自己的视图，**零权限**）。⚠️ 它是 `DesktopNameToast.swift` 的**副本**，改了那边要同步这里，否则预览骗人 |
-| P0 实验脚本 | `scripts/spike-*.{sh,swift}` | 重载策略 / 切桌面 / 停机时长 / 探测（含显示器 UUID 映射） |
-| LS 滞后测量脚本 | `scripts/measure-launchservices-lag.swift` | 定向测量 `NSRunningApplication` 在 Dock 重启窗口里**抱着旧 PID 多久**（1 ms 采样、两路同问）。**只读 + 发 SIGHUP**，用来证伪 A8 的第六个假说，见 `docs/spikes.md` 实验 15.3 |
-| launchd 退避测量脚本 | `scripts/measure-launchd-backoff.swift` | 把 Dock 存活时间压到 1 s 以内、**轮间不等待**连打 N 轮，测 launchd 的归位延迟会不会累积；超 3 s 自动催一发 `kickstart`。**只读 + 发 SIGHUP + kickstart**，见 `docs/spikes.md` 实验 16.2 |
-| 打包脚本 | `scripts/build-app.sh` | 编译 → 组装 `.app` → ad-hoc 签名 |
-| 显示器名解析 | `Spaces/ScreenNaming.swift` | `displayUUID → NSScreen.localizedName`；**纯解析可单测**，映射不到时如实说"未识别"而不回落成错的屏。桌面页据此按显示器分组 |
-| 其他项（文件夹/堆栈）编辑 | `Dock/DockStripRules.swift`、`UI/DockStripEditor.swift` | **只搬不造**：显示 / 排序 / 移除；拖入文件夹时明确拒绝并给替代做法（`DockItemRejection`）。**不能新建**的实测依据见 `docs/spikes.md` 实验 8 |
+| 入口 / 委托 | `MultiDockApp.swift`、`App/AppDelegate.swift` | `@main` + `NSApplication`（不用 `MenuBarExtra`，要区分左右键）；组装状态、菜单栏、窗口、toast、次级条接线 |
+| 全局状态 | `App/AppState.swift` | `@MainActor @Observable`；空间值转发给 observer；依赖全部可注入；冻结闸门 + 启动对齐（`reestablishFrozenDockIfNeeded` / `setFreezeNativeDockSwitching`）+ 次级条内容（含固定几何槽位） |
+| 生命周期 | `App/LifecycleController.swift` | 启动自检 + 会话标记 + 退出还原（只在本次会话可能让 Dock 变脏时才还原；等不干净就留标记给下次自愈） |
+| 日志 | `App/FileLogSink.swift`、`App/LoginItem.swift` | 落盘日志（512 KB 上限、可注入）；登录启动（SMAppService 主 + LaunchAgent 退） |
+| Dock 应用流水线 | `Dock/DockController.swift`、`Dock/DockPreferences.swift`、`Dock/DockConfig.swift`、`Dock/DockStripRules.swift` | 双重指纹短路 → 备份 → 读全量域 → 只覆盖白名单键 → 原子写 → 重启 → 读回校验（重试一次）；白名单 + `mru-spaces` 唯一写例外；模型与手写解码；启动台/Finder/造条目规则 |
+| Dock 重载 | `Dock/DockReloader.swift`、`Dock/DockAutoHide.swift` | SIGHUP → SIGTERM → kickstart 三级降级；节流错开（`minimumSpacing` 1 s）；PID 身份闸门；「不等，催」（nudge 500 ms）；自动隐藏三明治（无闪烁重启） |
+| 手动改动回存 | `Dock/DockWatcher.swift`、`Dock/DockEditHistory.swift` | 可比指纹变化才回存（Dock 不在时不采样）；回存落点 = 当前桌面 override / 默认 Dock（冻结时一律默认 Dock）；内存撤销栈（每目标 5 层） |
+| Dock 存活监视 | `Dock/DockPresenceMonitor.swift` | 连续缺失 8 轮（4 s）才 kickstart，60 轮报警；纯逻辑 + 注入可单测 |
+| 次级 Dock 条 | `Dock/SecondaryDockLayout.swift`、`Dock/DockFaceProviding.swift`、`UI/SecondaryDock{StripView,Window,Controller}.swift` | 几何源 `visibleFrame` 内缩（**Dock 条不是独立 CG 窗口**）；层级 19 半露 / hover 全出；固定几何（`sizingSlots`）；同步显隐（face + 显出带 + 400 ms 宽限，200 ms 轮询）；依赖全注入可单测 |
+| 桌面（Space） | `Spaces/SkyLightBridge.swift`、`SpaceProvider.swift`、`SpaceObserver.swift`、`SpaceSwitcher.swift`、`DesktopNaming.swift`、`ScreenNaming.swift` | dlopen 私有 API + 降级；300 ms 轮询 + 通知快速通道；循环切换；命名（≤10 字素簇）；显示器名解析 |
+| 持久化 | `Store/ConfigStore.swift`、`Store/BaselineStore.swift` | 原子写 `config.json`；基准快照 + 会话标记 + 备份轮转（20 份） |
+| 菜单栏 / 设置 UI | `UI/MenuBarController.swift`、`UI/SettingsView.swift`、`UI/DesktopListView.swift`、`UI/DockStripEditor.swift`、`UI/DockAppearanceEditor.swift`、`UI/DebugPanelView.swift` | 原生风格工具栏标签页；顶部报警横幅；拖拽编辑条（Finder/启动台锁最前）；其他项只搬不造 |
+| toast | `UI/ToastPresenter.swift`、`UI/DesktopNameToast.swift` | 纯逻辑调度 + 无边框窗口；跨空间、不抢焦点、零权限 |
+| 脚本 | `scripts/build-app.sh`、`check-toast-window.sh`、`check-fullscreen-filter.swift`、`preview-toast.swift`、`spike-*.swift`、`measure-*.swift`、`spike-secondary-dock-sync.swift` | 打包；零权限验收工具；各实验复现脚本 |
 | 测试 | `Tests/MultiDockTests/` | **364 个测试，全绿**（其中 9 个真实 Dock 验收 + 2 个 UI 快照默认跳过，需显式开启） |
-| 设计文档 | `docs/PLAN.md` | 已按 P0 结论修订 |
-| 实验结论 | `docs/spikes.md` | **16 个实验**的原始数据与决定（**实验 5 是 P3 挖出的两个要命发现；实验 8 是"其他项不能新建"；实验 9 是"切一次桌面黑屏几分钟"的根因；实验 10 是"每次退出都卡住"—— 同一条链，外加一个让所有"上限"静默失效的写法；实验 11 是用户真机日志复盘；实验 12–14 把"uptime 门槛"等四个假说逐个证伪；实验 15 给未解故障装取证仪表，15.2 是仪表自己的 bug（协议见证位协变陷阱），15.3 把第六个假说也证伪，15.4 补上"我没在看"这个洞；实验 16 落地 A8 修法 —— 不等、催，代价 26–31 s → ~1–3.5 s，并实测 launchd 那 ~1 s 是硬顶不累积**） |
+| 文档 | `docs/PLAN.md`（设计）、`docs/spikes.md`（22 个实验）、`docs/facts.md`（环境事实）、`docs/rules.md`（约定与陷阱台账） | 本文件为入口 |
 
+### 未完成 / 待办（全部只剩"等人"或"等复现"）
 
-> 上表各阶段的「实现要点（改动时别踩）」已迁至 `docs/rules.md`。
-### 未完成
+**必须用户手测（脚本化不了，见 §6.3 A 组）**：
 
-**代码层面：计划里已定义的功能全部落地，但 2026-09-20 的真机日志复盘挖出一条必须再修的。** 剩下的分三类：
+- A1–A3：改名输入框、两个应用/还原按钮、图标条拖拽（逻辑侧均有单测/验收覆盖，只差真人点一次）。
+- A5：菜单栏连击（连切 5 次只显示最终名字）。
+- A11：**次级条手感四件套**——hover 滑出/收回、点击图标启动、半露观感（亮/暗）、
+  以及 2026-10-04 新增的两条：**手势滑动时条是否钉在原地**、**自动隐藏下碰边 Dock 与条是否同步显出/收回**。
 
-- ⚠️ **A8：Dock 重启偶发慢到 26–31 秒，根因未定**（`spikes.md` 实验 11.6 与 12–15）。
-  **五个假说已被实测逐个推翻**（uptime 门槛 / 探测路径分叉 / 连发退避 / 写偏好诱因 / **LS 滞后**），
-  **不要按任何一个去改代码**；`minimumSpacing` 保持 1 s，`dockPID()` 的 LS 优先也不要动。
-  ✅ **已装取证仪表**（2026-09-20，实验 15）：慢重启（> 1 s）时 `DockReloader` 会采样
-  `pidProbe()` 的两条路径答案并写进那一行 `Dock 应用成功` 日志（正常路径零开销）。
-  下次复现时读 `慢重启取证：…` 就能区分「探测分叉（我们的 bug）」与「Dock 真的没回来（launchd）」。
-  **判定规则见 `docs/spikes.md` 实验 15。别为了复现去反复折腾用户的 Dock。**
-  ⚠️ **已试过第五次复现并失败**（实验 15.1）：真机验收 20 轮连切（Dock 年龄正好 ~1 s，与故障同构）
-  **最坏 74 ms、慢重启 0 次**。→ 成因不在"连续重启"这个形状里，只在真实 App 的完整上下文里。
-  ⚠️ **仪表本身曾整个是死的**（实验 15.2，已修）：非可选返回类型撞上协议见证位协变陷阱 →
-  通过协议调用永远拿 nil。**已由真机验收测试 + 走 `any` 协议的守卫测试覆盖。**
-  ⚠️ **"我们没在看"这个洞已补**（实验 15.4）：`elapsed` 是墙钟、轮询跑在 `@MainActor` 上，
-  主线程被冻住时我们会把"没观察"记成"Dock 慢"。现在跟着慢重启日志一起记
-  **`轮询 N 次，最长间隔 M ms`** —— M 秒级就是观察窗口断了，不是 Dock 的事。
-  ⚠️ **最后一个"我们的 bug"候选（LS 滞后）已证伪**（实验 15.3）：危险窗口 6/6 = 0 ms。
-  剩下只有 launchd / Dock 归位本身。**别再顺着这条线改探测代码。**
-- ✅ **A9 已结案（2026-09-20）**：用户确认默认 Dock 的 3 个图标（启动台 / FlClash / WorkBuddy AI，
-  `orientation = right`）是**他有意配的**。`config.json` **原样保留、一个字节没动**。
-  ⚠️ 两条 override（`计划 任务` / `密码 邮件`）的 `appearance.orientation` 是 `"bottom"`，
-  与默认的 `"right"` **不同** —— 所以它们**不是**默认的精确副本，**不能"清成沿用默认"**
-  （`effectiveConfig(for:)` 是整体替换，不是逐字段合并，清掉会让那两个桌面的 Dock 跑到屏幕右侧）。
-  详见 §6.3 A9 与 `docs/spikes.md` 11.4。
-- **多显示器热插拔的真机实测**（§6.3 B5）：映射键、插拔后自动刷新、toast 定位、桌面页的显示器名分组都已实现，
-  但**本机只有一台显示器，必须用户插一台外接屏才能验**。
-- **真人手测 5 条**（§6.3 A 组）：改名输入框、两个按钮、图标条拖拽、菜单栏连击，外加
-  **真人把一个文件夹拖进 Dock**（新的「其他项」回存路径最贴切的检验）。
-- **注销/关机还原**（B9）、**LaunchAgent 退回**（B10）要真注销 / 重登录一次。
+**等条件**：
 
-**已完成、可以销账的**：
-
-- ✅ **A6（切桌面黑屏）** 与 **A7（退出卡住）** 的实验 9 / 10 修复**已被用户真机日志覆盖**：
-  退出还原 **53–54 s → 0.01 s**；切桌面的最坏值 **60–126 s → 26–31 s**（残余部分转为 A8）。
-
-**明确"不做"的（都有实测依据，别再试）**：
-
-- Dock 里**新建**文件夹 / 普通文件条目 —— Dock 不认领自拼的目录条目，坏形状会让它 SIGABRT（实验 8）。
-- 切桌面的左右滑动动画（实验 7）。
-
-**原先的两处"做了但没做全"已在 2026-09-18 补掉**（设置窗口顶部报警横幅，见 §3 的「已完成：P5+」）：
-Dock 拉不回来时会红字报警并给「再试一次拉回 / 立即还原到原始 Dock」；`spaceProviderWarning` 会在同一处显示橙色横幅。
-
-### 下一步：P5 已做完，只剩多显示器真机实测
-
-P5 的三条都已落地（README ✅、全屏过滤真机回归 ✅、多显示器加固 ✅），详见 §3 的「已完成：P5」。
-剩下的只有一条，而且**只能用户动手**：
-
-1. **多显示器 / 热插拔实测**（§6.3 B5）：`(displayUUID, spaceUUID)` 映射在插拔外接显示器后不能串。
-   本机是单显示器，**这条只能靠用户插一台外接屏实测**，别硬编造结论。
-   核对手段已备好：调试面板显示「显示器数量」和每个桌面的 `displayUUID` 前 8 位；
-   插拔后 App 会自动刷新桌面列表并记一条 `显示器配置变化：桌面列表已刷新（N → M 个）`。
-
-### 用户必须手测的 5 条（无法脚本化，见 §6.3 A 组）
-
-A4 的**逻辑侧已自动化**（`DockAcceptanceTests.testExternalDockChangeIsCapturedBackToActiveDesktop`），
-真人拖拽降级为"建议补一次"；剩下 A1–A3 / A5 仍只有单测覆盖，等用户手点。
-
----
+- **B5 多显示器 / 热插拔**：代码就绪（映射键、自动刷新、toast 定位、分组），**只能用户插一台外接屏实测**。
+  核对：调试面板「显示器数量」+ 各桌面 `displayUUID` 前 8 位；插拔后日志出现 `显示器配置变化：桌面列表已刷新（N → M 个）`。
+- **B8**：Finder 手动移除是否落新键（脚本已备好：`scripts/check-finder-removal.sh`，只读，30 秒）。
+- **B9 / B10**：注销/关机还原、LaunchAgent 退回 —— 要真注销 / 重登录一次。
+- **A8**：只等复现（读日志，别折腾）。冻结默认后正常使用已几乎不会走到这条路径。
 
 ---
 
 ## 4. 已验证的环境事实
 
-> **已整体迁至 `docs/facts.md`**（~70 条实测结论，逐条含判据与脚本指针）。
+> **已整体迁至 `docs/facts.md`**（~80 条实测结论，逐条含判据与脚本指针）。
 > 动 Dock 相关代码前必读：「launchd 重启节流」「节流窗口判据」「`-1` PID 陷阱」
-> 「查 Dock PID 的代价」「`launchctl kickstart` 会阻塞几十秒」「配置损坏会自我固化」。
+> 「查 Dock PID 的代价」「`launchctl kickstart` 会阻塞几十秒」「配置损坏会自我固化」
+> 「Dock 实际显隐没有零权限直读信号（实验 22）」「协议见证位陷阱」。
 
 ---
 
 ## 5. 工程约定与致命陷阱
 
-> **全文已迁至 `docs/rules.md`**（构建/测试命令详解、代码约定、各阶段"改动时别踩"、已解决问题台账）。
+> **全文已迁至 `docs/rules.md`**（构建/测试命令详解、代码约定、各模块"改动时别踩"、已解决问题台账 D1–D26）。
 
 ### 常用命令
 
@@ -232,79 +169,65 @@ MULTIDOCK_UI_SNAPSHOT=1 swift test --disable-sandbox --filter UISnapshotTests   
 10. **预应用 = "同一拍发起"，不是"切空间前完成重启"**（物理上做不到），别按字面"修正"。
 11. **BSD `grep` 无 `\|` 交替、模式含非 ASCII 一律返回 0**——搜代码用 `rg`，搜二进制用字节级搜索。
 12. **核对 `config.json` 先打印真实键名**（`pinnedApps`/`otherItems`）——一个字段名写错足以伪造"数据损坏"。
-### 6.1 等用户回答（会阻塞后续阶段）
+13. **Dock 实际显隐没有零权限直读信号**（实验 22）：`CoreDockSetAutoHideEnabled` 只翻旗标、**不改 work area**；探针 `occlusionState` 与 CGWindowList 都不可用。同步显隐只能用「face（`visibleFrame` 内缩）+ 光标显出带」启发式。
+14. **冻结模式的「原生 Dock = 默认 Dock」语义靠三处合力**：启动对齐（**必须排在自愈之后**）+ 开关两个方向（`setFreezeNativeDockSwitching`）。删任意一处，原生 Dock 与次级条会各显一套。
 
-| # | 问题 | 阻塞谁 | 现状 |
-| --- | --- | --- | --- |
-| 1 | ~~「桌面」页里每个桌面的"位置"指什么？~~ | ~~P3 桌面页~~ | ✅ **已解决（2026-09-18）**：用户确认 = **Dock 屏幕位置 + 大小**，与「通用」页同一套含义，未设置时继承默认 |
-| 2 | toast 在桌面**没有自定义名**时显示「桌面 N」还是不显示？ | 不阻塞 | ✅ P2.5 已按"显示「桌面 N」"实现，等用户点头 |
-| 3 | "屏幕中上部"的具体位置（定在距可见区顶部 80 pt、水平居中） | 不阻塞 | ✅ P2.5 已按 80 pt 实现（实测 `y=80`），等用户点头 |
-| 4 | 10 个字符按**字素簇**还是按**视觉宽度**（中文 2 / 英文 1）算？ | 不阻塞 | ✅ P2.5 已按字素簇实现，等用户点头 |
-| 5 | **默认 Dock 为空时要不要自动抓取？** 现在**不自动抓**（避免首启就写盘/意外清空 Dock），改为在设置页显示橙色警告并把「立即应用」禁用掉，让用户先点「从当前 Dock 抓取」 | 不阻塞 | ✅ **用户已确认「保持现在这样」**（2026-09-18） |
-| 6 | **重启节流导致的"切换延迟"要不要再优化？** 现在一次切换的**应用总耗时约 1 秒**（Dock 本身只消失 45–90 ms）。要缩短总耗时就得在 1 秒节流窗口内硬重启，代价是 Dock 消失一秒多 | 不阻塞 | ⏳ 按"宁等不闪"处理，等用户体感后反馈 |
-| 7 | **自愈还原要不要弹 toast 告知？** 现在启动时会弹一条「已自动还原上次未还原的 Dock」，**不受**「切换桌面时显示桌面名称」开关控制（`ToastPresenter.announce`） | 不阻塞 | ⏳ 等用户体感：如果不想要，可以改成只记日志 |
-| 8 | **登录启动要不要默认打开？** 现在是默认关闭、用户在设置里自己开 | 不阻塞 | ⏳ 等用户拍板 |
-| 9 | **其他项（文件夹 / 堆栈）不能在 App 里新建**（实测所限，见 `docs/spikes.md` 实验 8）：编辑器里只能**排序 / 移除**已有的，要加文件夹必须先去访达自己拖一次。这个折中接受吗？ | 不阻塞 | ⏳ 2026-09-18 已按"**只搬不造 + UI 里写明替代做法**"实现，等用户点头 |
+## 6. 未决问题
+
+### 6.1 等用户回答（不阻塞）
+
+| # | 问题 | 现状 |
+| --- | --- | --- |
+| 1 | **自愈还原要不要弹 toast 告知？** 现在启动时会弹一条「已自动还原上次未还原的 Dock」，不受「切换桌面显示名字」开关控制 | ⏳ 等用户体感：不想要可改成只记日志 |
+| 2 | **登录启动要不要默认打开？** 现在是默认关、用户在设置里自己开 | ⏳ 等用户拍板 |
+| 3 | **其他项（文件夹 / 堆栈）不能在 App 里新建**（实测所限，实验 8）：编辑器里只能排序 / 移除 | ⏳ 折中已按"只搬不造 + UI 写替代做法"实现，等用户点头 |
+
+> 历史遗留的确认项（「位置」含义、toast 回落「桌面 N」、80 pt、字素簇、默认 Dock 空时不自动抓取、切换延迟要不要再优化）**均已按现行实现长期使用，视为已确认**。
 
 ### 6.2 已解决（留档，别重复问）
 
-- ~~是否 `git init` 并提交首个 commit~~ → **已解决**：用户 2026-09-18 明确要求每次对话后 commit，仓库已初始化。
-- ~~P0 三个实验的结果未知~~ → 已解决，见 `docs/spikes.md`。
-- ~~Dock 是否有热重载 / 能否主动切桌面 / Finder 怎么钉住~~ → 已解决，见 `docs/spikes.md`。
-- ~~「桌面」页里"位置"指什么~~ → 已解决，见 §6.1 第 1 条。
-- ~~次级 Dock 条里放什么内容~~ → **已解决（2026-10-04）**：用户从「随桌面 + 冻结开关（选定）/ 独立附加条 / 只做镜像演示」三个方案里选定 **随桌面 + 冻结开关**。约束修订（批准自绘例外）同日生效，见硬约束 2。
+- ~~是否 `git init` 并提交首个 commit~~ → 已解决：每次对话后 commit，仓库已初始化。
+- ~~P0 三个实验的结果未知~~、~~Dock 热重载 / 主动切桌面 / Finder 钉住~~ → 见 `docs/spikes.md` 实验 1–3。
+- ~~次级 Dock 条里放什么内容~~ → 已解决：用户选定「随桌面 + 冻结开关」，且 2026-10-04 冻结转正为默认。
+- ~~「位置」/toast 细节 / 默认 Dock 空交互~~ → 均按现行实现长期使用。
 
 ### 6.3 未解决的技术项（不阻塞，但要知道）
 
 | # | 事项 | 影响 | 何时处理 |
 | --- | --- | --- | --- |
-| **A. 待用户手测（脚本化不了，只能人点）** | | | |
-| A1 | **改名输入框没被点过**（本机无屏幕录制、菜单栏自动隐藏，无法脚本点击 UI） | 万一 SwiftUI 绑定写错，改完名字没生效 | 请手动：设置 → 桌面 → 改个名字 → 回车 → 切桌面看 toast。逻辑侧已由 `config.json` 注入 + 单测覆盖 |
-| A2 | **「立即应用」「立即还原到原始 Dock」按钮没被点过** | 按钮到 `AppState` 之间只有一行 SwiftUI action | 请手动点一次。逻辑侧由 `AppStateDockTests`（43 个用例）+ `DockAcceptanceTests` 覆盖 |
-| A3 | **图标条的拖拽（排序 / 拖出移除 / 从访达拖 `.app` 进来）没被真人拖过** | `onDrag` / `dropDestination` 的真机手感与边界未验证 | 请手动拖一次。排序逻辑由 `DockStripRulesTests` + `AppStateDockTests` 覆盖 |
-| A4 | **P3 验收里"在真实 Dock 手动拖入一个图标，切走再切回仍在"**（真人拖拽是纯 UI 操作，脚本化要辅助功能权限，与硬约束冲突） | 这条是 `DockWatcher` **回存路径的唯一真实检验** | ✅ **逻辑侧已自动化（2026-09-18）**：`DockAcceptanceTests.testExternalDockChangeIsCapturedBackToActiveDesktop` 用 `defaults write` + 真实 `DockReloader().reload()` 复现"外部改动"，走**真实 2 秒轮询**（不手动 `tick()`），两种落点（默认 Dock / 逐桌面 override）都覆盖，并断言回存期间 **Dock PID 不变**。真人拖一次仍建议做（验证拖拽 UI 本身），但已不再是唯一检验 |
-| A5 | **「连切 5 次只显示最终名字」只做了单测**，没做真机连击 | 真机是否闪烁未实测 | 单测 `testRapidSwitchKeepsOnlyLatestTextAndHidesOnce` 覆盖调度逻辑；真机需手动快速点菜单栏 |
-| A11 | **次级 Dock 条的手感四件套没被真人碰过**（2026-10-04 新功能）：① hover 滑出/收回（含防抖）；② 点击图标启动/激活；③ 半露观感（亮/暗）；④ Dock 全屏容器窗口对条的事件穿透（点击能不能到达条——推断可达，未实测） | 若点击不通，备选方案是升层级（会牺牲"藏身后"遮挡，见 `docs/rules.md` 次级条节） | 请手动：鼠标移到 Dock 上沿探出的半条上 → 应滑出全条；点一个图标应启动。满意后在设置里开「冻结原生 Dock 的逐桌面切换」再切几次桌面 |
-| A6 | **「切桌面不再黑屏几分钟」还没真机复验**（实验 9 的修复只过了单测） | 这是用户报的最严重故障之一，没复验等于没确认修好 | ⚠️ **2026-09-20 复盘用户真机日志：大部分通过。** 05:02 打包的二进制（**晚于**实验 9 / 10 两个 commit）跑出 6 次真实 apply：**正常路径全是 50–126 ms**（57 / 126 / 84 / 50 ms）。但另两次是 **26 046 ms 与 31 039 ms**。⚠️ **那两次的"原因"一度被归到 `minimumSpacing` 上，已被实验 12–14 证伪**（见 A8）。结论：**60–126 s 那一档没了，26–31 s 这一档偶发、根因未定。** 复核口径：连切十次桌面后，`Dock 不可用` 应稳定在 100 ms 量级 |
-| A7 | **「退出不再卡住几分钟」没做真机复验**（实验 10 的修复只过了单测） | 用户报的最严重故障，且是**每次**退出都中招 | ✅ **2026-09-20 复盘用户真机日志：通过。** `05:58:46.001 退出还原流程结束，用时 0.01s`（旧版 **53.12 s / 54.05 s**），整条退出约 2 s，其中 2 s 是 `prepareForTermination` 的等待窗口、**不是 Dock 缺失**。唯一尾巴：这次走了 `!settled` 分支（`还原未完成（退出时还有一次应用没落地），已留下标记`）→ `session.state` 留 `needsSelfHeal = true, pid = 0`，属预期兜底；但**副作用见 A8 第 2 条** |
-| A8 | **Dock 重启偶发慢到 26–31 秒**（2026-09-20 真机日志挖出） | 偶发；正常路径稳定 35–126 ms | ⚠️ **七个假说/检查已被逐个推翻，别按它们改代码**（`spikes.md` 实验 11.6 / 12–14 / 15.3 / **16.2**）：① ~~launchd 有 10 s uptime 门槛~~ → 实验 12：uptime 6/12/20/60 s **全 37–68 ms**；② ~~`NSRunningApplication` 返回陈旧实例~~ → 实验 13：两条路径 41–116 ms 同量级、无分叉；③ ~~连续快速重启累积退避~~ → 实验 13 是用「间隔 2 s」测的，**根本没构成违规**（`ThrottleInterval` = 1 s）；**实验 16.2 用零间隔重打 10 轮才算真证伪**：延迟恒 ~1016 ms、**不累积**；④ ~~写偏好是诱因~~ → 实验 14：幂等写 + SIGHUP 5 轮 35–46 ms；⑤ ~~LS 抱着旧 PID 不放~~ → 实验 15.3：危险窗口 **6/6 = 0 ms**；⑥ ~~Dock 崩溃循环~~ → 实验 16.5：`DiagnosticReports` 里**没有** Dock 的崩溃报告；⑦ ~~系统日志能给出 launchd 的原话~~ → 实验 16.5：沙箱里 `log show` 一律拒绝，**脱离沙箱也一样**。**→ `minimumSpacing` 保持 1 s、`dockPID()` 的 LS 优先都不要动。**
-| **✅ A8 修法已落地**（2026-09-20，`spikes.md` 实验 16）：**不等、催** | — | 关键线索是真机日志里一直没被当回事的半截 —— `05:33:16` 那次 **SIGHUP 等满 30 s 没等到，紧接着一发 `kickstart` 只用 0.5 s 就把它拉回来了**。于是：新增 `nudgeAfter`（**500 ms** 到点就催一发 `kickstart`；`nudgeInterval` 1 s 重复，但受 `LaunchctlParking` 闸门限制、**尽力而为**）、`timeout` **30 s → 3 s**、新增 `kickstartTimeout` 30 s、**加了 PID 守卫**（原来会对「刚归位的新 Dock」补 SIGTERM，把它再杀一次）、失败路径的取证改成三段拼接（原来把主路径那段丢了）。**代价从 26–31 s 压到 ~1–3.5 s**（安全性前提实测过：`kickstart` 不带 `-k` 时对活着的 Dock 是无害 no-op）。
-| A8 的**机制推断**（未直接观测） | — | `KeepAlive = {AfterInitialDemand: 1, SuccessfulExit: 0}` → 只有**异常退出**（被信号杀死）才自动拉起；Dock 若**干净退出**（exit 0），launchd 就**不再调度**它，直到有东西**显式要求** —— `kickstart` 正是那个要求。**下一次复现的读法（顺序重要）**：① 先看 `轮询 N 次，最长间隔 M ms`，**M 秒级 = 我们没在看**（实验 15.4），后面都不用看；② 看时间线里有没有 `催 kickstart #n`；③ `launchctl print gui/501/com.apple.Dock.agent \| grep -E "state\|last terminating"` —— **`last terminating signal` 缺失 = 干净退出 = 推断成立**；仍是 `Hangup: 1` 就说明还有第三个成因。⚠️ **别为了复现反复折腾用户的 Dock** —— 那天 6 次中 2 次，等它自己出现。 |
-| A9 | ~~两条桌面 override 与默认 Dock 的图标相同 = 坏数据~~ | ~~切过去会得到 3 图标的 Dock~~ | ✅ **已结案（2026-09-20）**：**用户确认默认 Dock 那 3 个图标（启动台 / FlClash / WorkBuddy AI）+ `orientation = right` 是他有意配的** → "图标相同"不再构成损坏证据，他完全可能给那两条也配了同一组。⚠️ **而且它们不能清成「沿用默认」**：override 的 `orientation = "bottom"`，默认是 `"right"`，而 `effectiveConfig(for:)` 是**整体替换**（`binding(for:)?.override ?? settings.defaultDock`）→ 清掉会让那两个桌面的 Dock **跑到屏幕右侧**，是可见的行为改变。**结论：`config.json` 原样保留，要改由用户在 UI 里自己改。** ⚠️ 本节数字在 2026-09-20 被更正过两次，第一次是我读取脚本用错 JSON 键名（`apps`/`others` ≠ 真实键 `pinnedApps`/`otherItems`）读出的假象 —— 见 §5 那条约定 |
-| A10 | ~~`session.state` 的假欠账会在下次启动抹掉用户自己加的 Qoder CN~~ | ~~用户的 Dock 改动被无声回退~~ | ✅ **已解决（2026-09-20）**：那笔债是假的 —— 日志里 `05:58:45.991 开始还原到原始 Dock：15 个图标` 之后 Dock 确实回到了基准态，`needsSelfHeal` 只是 `prepareForTermination` 发现"有排队中的 apply 没落地"留下的兜底标记。已备份后移除 `session.state`（`session.state.bak-20260920-044624`）。**注意 `impliesDirtyDock` 是 `appliedFingerprint != nil \|\| needsSelfHeal == true`，只清 `needsSelfHeal` 不够** |
-| **B. 待做的功能（已排期）** | | | |
-| B5 | **多显示器仍未真机实测**（P5 唯一剩下的）：映射键、插拔后自动刷新、toast 的 `displayUUID → NSScreen` 定位都实现了，但本机只有一台显示器 | 插外接显示器后映射可能串 | **只能靠用户插一台外接屏实测**。调试面板已加「显示器数量」与每个桌面的 `displayUUID` 前 8 位，核对时用 |
-| B6 | ~~全屏 App 空间的过滤只有单测覆盖~~ | 每次进全屏可能误切 Dock | ✅ **已解决（2026-09-18）**：真机回归通过，见 §4 的「全屏过滤的真机回归」与 `scripts/check-fullscreen-filter.swift` |
-| B7 | ~~用户手动切桌面时 `activeSpaceDidChange` 通知是否触发~~ | ~~跟随延迟~~ | ✅ **已结案（2026-10-04，实验 18）**：**5/5 次手势切换全部触发**，通知比 50 ms 轮询早 2–30 ms——`SpaceObserver` 的通知快速通道实测有效，**手势切换跟随延迟 ≈0，零代码改动**；程序化切换仍靠轮询。工具：`scripts/spike-space-notify-watch.swift` |
-| B8 | **手动移除 Finder 是否落键**未验证 | 若有新键需纳入白名单 | 可选，30 秒，风险低。脚本已备好：`scripts/check-finder-removal.sh`（**只读**观察：快照 → 真人取消勾选「在 Dock 中保留」→ diff 报告新键 → 提醒拖回 Finder） |
-| B9 | **注销/关机路径只能尽力还原**（系统不给等待时间） | 关机瞬间可能来不及写完基准 | 已按"先留债务标记、下次启动自愈"处理，见 §3 的 P4 第 9 条。真要验证得注销一次机器 |
-| B10 | **登录启动的 LaunchAgent 退回方案没在真机跑过**（本机 SMAppService 那条路没触发过退回） | 未签名场景下可能开了没用 | 需要真的重登录一次验证。逻辑侧只有 plist 内容有单测 |
-| B11 | ~~README 还停在 P1 状态~~ | 用户照 README 操作会得到错误信息 | ✅ **已解决（2026-09-18，P5）**：整篇重写，含完全卸载三步与整域还原命令 |
-| B12 | ~~编辑条竖排未实现~~ | 位置改成左/右后，编辑条与实际 Dock 长得不一样 | ✅ **已解决（2026-09-18，P5）**：`DockStripEditor.isVertical` + `SlotSizing` |
-| B13 | ~~孤儿绑定不清理也不提示~~ | 配置越积越多、看不出哪些还有效 | ✅ **已解决（2026-09-18，P5）**：桌面页横幅 + 「清理」按钮 + 二次确认。**绝不自动删**（拔外接屏会误伤） |
-| B14 | ~~`DockWatcher` 回存前不存历史版本~~ | 用户手改被误判时，旧配置找不回来 | ✅ **已解决（2026-09-18，P5）**：改成内存撤销栈 `DockEditHistory` + UI 上的「撤销自动回存」。**刻意不落盘** —— 落盘一堆没有恢复入口的文件是花架子 |
-| B15 | ~~Dock 图标热替换通道未打通~~ | ~~"不重启换图标"做不了~~ | ✅ **已结案为「不做」（2026-10-04，实验 17.6/17.7）**：Finder 的 `cmdAddToDock:` 反汇编实锤用法 `(NSURL, 0)` 与我们逐参数相同却能用 ⇒ **Dock 按发送方放行 Apple 二进制**（第三方所有携带对象的 MIG 消息要么报错 -4956、要么无声忽略；RegisterClient 是接收端注册，排除）。不做发送方伪造。外观键 `SetTileSize` 对第三方可用但语义未定；系统设置实际走 SkyLight 协调通知（未展开）。**主路径维持 SIGHUP** |
+| **A. 待用户手测（只能人点）** | | | |
+| A1 | 改名输入框没被真人点过 | 万一绑定写错，改完名字不生效 | 请手动：设置 → 桌面 → 改名 → 切桌面看 toast。逻辑侧已覆盖 |
+| A2 | 「立即应用」「立即还原到原始 Dock」按钮没被真人点过 | 按钮到 AppState 只有一行 SwiftUI action | 请手动点一次。逻辑侧 43 用例 + 真机验收覆盖 |
+| A3 | 图标条拖拽没被真人拖过 | `onDrag`/`dropDestination` 手感与边界未验证 | 请手动拖一次。逻辑侧覆盖 |
+| A5 | 「连切 5 次只显示最终名字」没做真机连击 | 真机是否闪烁未实测 | 单测已覆盖调度；真机需手动快速点菜单栏 |
+| A11 | **次级条手感四件套 + 两条新行为**（2026-10-04）：① hover 滑出/收回（含防抖）；② 点击图标启动/激活；③ 半露观感（亮/暗）；④ 点击能否到达条（推断可达）；⑤ 手势滑动时条钉在原地；⑥ 自动隐藏下碰边同步显出/收回 | 若点击不通，备选是升层级（牺牲半露遮挡） | 请手动逐条试。满意后冻结模式已是默认 |
+| A8 | **Dock 重启偶发慢到 26–31 秒**（成因未定，七个假说已证伪） | 偶发；正常 35–126 ms | **只等复现**。判定规则见 `docs/spikes.md` 实验 15/16.4：先看 `轮询 N 次，最长间隔 M ms`（M 秒级 = 我们没在看），再看 `催 kickstart #n`，最后 `launchctl print … \| grep last terminating`。**别再按旧假说改代码；别主动复现。** 冻结默认后切桌面不再走这条路 |
+| **B. 待做（等条件）** | | | |
+| B5 | 多显示器热插拔未真机实测 | 插屏后映射可能串 | **只能用户插外接屏**。调试面板已备好核对项 |
+| B8 | 手动移除 Finder 是否落键未验证 | 有新键需纳入白名单 | 可选，30 秒。脚本 `scripts/check-finder-removal.sh`（只读） |
+| B9 | 注销/关机路径只能尽力还原 | 关机瞬间可能来不及写完基准 | 已按"留债务标记、下次启动自愈"处理；验证要真注销一次 |
+| B10 | 登录启动 LaunchAgent 退回未真机跑过 | 未签名场景可能开了没用 | 需要重登录一次验证。逻辑侧仅 plist 内容有单测 |
 | **C. 参数与取舍（记录在案）** | | | |
-| C1 | **`DockWatcher` 轮询周期 2 s 是拍的**，没有实测依据 | 用户手动改 Dock 后最长 2 s 才被回存 | 按用户体感调 |
-| C2 | **一次切换的应用总耗时约 1 秒**（其中 Dock 只消失 45–90 ms，其余是主动错开节流的等待） | 切桌面后 Dock 配置生效有一秒延迟，但期间 Dock 可用 | 按"宁等不闪"处理，见 §6.1 第 6 条 |
-| C3 | **「立即还原」与退出还原都只比白名单键**，`mod-count` / `recent-apps` 不会被还原 | 这两个是 Dock 自己的计数器，还原它们没意义 | 有意为之 |
-| C4 | **`DockWatcher` 只在"本次运行写过 Dock"后才回存**（`appliedFingerprint != nil`） | 启动后没应用过任何配置时，用户手动改 Dock 不会被回存 | 有意为之：否则会把用户原来的 Dock 当成"该回存的改动" |
-| C5 | **节流窗口按 Dock 进程年龄算**（`proc_pidinfo`），不再只依赖内存里的 `lastRestartAt` | 拿不到进程年龄时会退回内存记忆，那种情况下"别人刚重启过 Dock"仍可能让我们吃一次 1 秒节流 | 有意为之：进程年龄是事实，内存是猜测。见 §4 的"节流窗口判据" |
-| C6 | **自愈在启动后异步执行**，不阻塞启动 | 启动瞬间 Dock 可能还是脏的，约 1 秒后恢复 | 有意为之：阻塞启动比晚一秒更糟 |
-| C7 | **其他项（文件夹 / 堆栈）只能排序 / 移除，不能新建**（`spikes.md` 实验 8） | 用户没法在 App 里给 Dock 加文件夹，只能先去访达拖一次 | 有意为之：Dock 不认领自拼的目录条目，做了就是假开关；字段不全的形状还会让它 SIGABRT。替代做法已写进 UI 文案 |
-| C8 | **显示器名解析不到时不回落成主屏名** | 极端情况下列表标题显示"未识别显示器（UUID 前 8 位…）" | 有意为之：显示一个错的屏比显示"未识别"更糟（toast 那边仍按"回落主屏"处理，因为提示必须弹出来） |
+| C1 | `DockWatcher` 轮询周期 2 s 是拍的 | 手改 Dock 后最长 2 s 回存 | 按用户体感调 |
+| C2 | 一次应用总耗时约 1 秒（Dock 只消失 45–90 ms，其余是错开节流的等待） | 配置生效有一秒延迟 | **冻结默认下切桌面不再触发**；仅未冻结模式/手动应用/启动对齐会遇到。按"宁等不闪"处理 |
+| C3 | 「立即还原」与退出还原只比白名单键 | `mod-count`/`recent-apps` 不还原 | 有意为之 |
+| C4 | `DockWatcher` 只在"本次运行写过 Dock"后才回存 | 启动后没应用过时，手改 Dock 不回存 | 有意为之：否则会把用户原 Dock 当成该回存的改动 |
+| C5 | 节流窗口按 Dock 进程年龄算（`proc_pidinfo`） | 拿不到年龄时退回内存记忆 | 有意为之：进程年龄是事实，内存是猜测 |
+| C6 | 自愈在启动后异步执行 | 启动瞬间 Dock 可能还是脏的 | 有意为之：阻塞启动比晚一秒更糟 |
+| C7 | 其他项只能排序/移除，不能新建（实验 8） | 加文件夹须去访达拖 | 有意为之：自拼条目是假开关，坏形状会崩 Dock |
+| C8 | 显示器名解析不到时不回落主屏名 | 显示"未识别显示器" | 有意为之：显示错的屏比"未识别"更糟 |
 
-> **D 组（已解决台账 D1–D26）已迁至 `docs/rules.md` 末尾**；旧引用"§6.3 Dx"指向那里。
+> **已结案的历史问题**（A6/A7/A9/A10/B6/B7/B11–B15 等）见 `docs/rules.md` 末尾的 D 台账（D1–D26，留档别重复查）与 `docs/sessions.md`。
 
 ---
 
 ## 7. 给下一个 session 的建议顺序
 
-1. 读本入口 → 需要设计细节读 `docs/PLAN.md`（§3 机制、§3.10 命名与 toast、§3.11 无痕与自愈）；动实验读 `docs/spikes.md`（17 个实验，多数结论推翻过计划的原始假设）。
+1. 读本入口 → 需要设计细节读 `docs/PLAN.md`（§3 机制、§3.10 命名与 toast、§3.12 次级条）；动实验读 `docs/spikes.md`（**22 个实验**，多数结论推翻过计划的原始假设）。
 2. 跑基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，应 **364 全绿、零警告**。
-3. **动 Dock 代码前把 §5 的 12 条致命陷阱过一遍**，并查 `docs/facts.md` 对应行。踩节流 → Dock 消失一秒多；踩 `-1` → 杀掉用户全部进程；踩同步 kickstart → 冻住两分钟；踩任务组坑 → 一堆"假上限"等待；踩见证位坑 → 功能静默不接线而单测全绿。**别把"等 30 秒"当耐心**——A8 的教训是"等"换不到东西、"催"才行（实验 16）。
+3. **动 Dock 代码前把 §5 的 14 条致命陷阱过一遍**，并查 `docs/facts.md` 对应行。踩节流 → Dock 消失一秒多；踩 `-1` → 杀掉用户全部进程；踩同步 kickstart → 冻住两分钟；踩任务组坑 → 一堆"假上限"等待；踩见证位坑 → 功能静默不接线而单测全绿。**别把"等 30 秒"当耐心**——A8 的教训是"等"换不到东西、"催"才行（实验 16）。
 4. 动 Dock 的验收：`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`；**先 `defaults export com.apple.dock` 备份，中途别手动改 Dock**。退出码非 0 可能只是 SwiftPM 沙箱消息，判据看 `Executed N tests, with 0 failures`。UI 改动的验收：`MULTIDOCK_UI_SNAPSHOT=1 ... --filter UISnapshotTests` 出 PNG 人工核对。
-5. 剩余待办（按顺序）：**B5 多显示器**（等用户插外接屏）→ **A1–A3/A5 真人手测** → **B9/B10**（注销/重登录）→ **B7/B8** 小实测 → **A8** 只等复现（读日志，别折腾）。
+5. 剩余待办（按顺序）：**A11 次级条手感手测**（当前最紧的新功能）→ **A1–A3/A5** 回归手测 → **B5 多显示器**（等用户插外接屏）→ **B9/B10**（注销/重登录）→ **B8** 小实测 → **A8** 只等复现（读日志，别折腾）。
 6. 改了代码必须重新 `./scripts/build-app.sh` 才算装上去（A6 被"修复前二进制"骗过一次）；复验前先转走旧日志。
 7. **工程提醒：同一个文件不要在同一条消息里发两个编辑**——实测会静默丢掉其中一个。一个文件一次改一处。
 
@@ -312,4 +235,4 @@ MULTIDOCK_UI_SNAPSHOT=1 swift test --disable-sandbox --filter UISnapshotTests   
 
 ## 8. 会话记录
 
-> **已整体迁至 `docs/sessions.md`**（29 条完整记录，append-only，最新在最上面）。本文件不再存会话史。
+> **已整体迁至 `docs/sessions.md`**（36 条完整记录，append-only，最新在最上面）。本文件不再存会话史。

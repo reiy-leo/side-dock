@@ -1,7 +1,7 @@
 # P0 实验结论
 
-> 执行日期：2026-09-18　机器：macOS 15.7.9 (24G830) / x86_64 / 单显示器 / Swift 6.2.4
-> 本文是 `docs/PLAN.md` §4「P0 实验」的产出，结论直接决定 §3.5 的主路径与 §3.1 的事件源设计。
+> 执行日期：2026-09-18（实验 1–16 于 macOS 15.7.9 完成；实验 17–22 于 2026-10-03/04、macOS 15.8.1 完成）
+> 机器：x86_64 / 单显示器 / Swift 6.2.4。本文结论直接决定 `docs/PLAN.md` 的主路径与事件源设计。
 > 原始数据留在 `/tmp/multidock-spike/`（临时目录，不随项目走）；可复现脚本见 `scripts/spike-*.{sh,swift}`。
 
 ---
@@ -12,7 +12,11 @@
 > `docs/PLAN.md` 的一处假设，实验 7 是一条**明确的不做项**（别再去试）；实验 8 是一条**明确的不做项**（其他项不能新建）；
 > 实验 9、10 是同一条自我放大链的两个触发点（切桌面 / 退出）；实验 11 是**用户真机日志**复盘，修正了实验 5 的节流阈值；
 > **实验 12–14 是三个控制实验，把实验 11 提出的四个假说全部证伪**；**实验 15 是给这个未解故障
-> 装取证仪表**；**实验 16 落地修法（不等，催）并把代价从 26–31 s 压到 ~1–3.5 s**。共 **16 个实验**。
+> 装取证仪表**；**实验 16 落地修法（不等，催）并把代价从 26–31 s 压到 ~1–3.5 s**；
+> **实验 17：CoreDock MIG 通道探路（条目键无第三方通道，B15 结案）**；**实验 18：真人手势切换 5/5
+> 触发通知（B7 结案）**；**实验 19：系统更新到 15.8.1，GUID 回填判据失效并版本化**；
+> **实验 20：自动隐藏三明治（重启不可见）**；**实验 21：次级条几何源（Dock 条不是独立 CG 窗口）**；
+> **实验 22：Dock 实际显隐没有零权限直读信号（同步显隐的启发式由此而来）**。共 **22 个实验**。
 
 1. **不存在热重载**。写偏好后无论 post 什么通知，Dock 都不会重新读取——必须重启 Dock 进程。
 2. **重启很快**：SIGHUP 后 Dock 仅约 **101 ms** 不可用；SIGTERM 约 **395 ms**（Dock 收到 TERM 会先做约 255 ms 清理再退出）。→ **主路径定为 SIGHUP**，SIGTERM + kickstart 作兜底。
@@ -56,6 +60,9 @@
    → **"我们的 bug"这一侧已经没有候选了**，剩下只有 launchd / Dock 归位本身。
 7. **实验 9 与实验 10 的修复已被真机覆盖**：退出还原 **53–54 s → 0.01 s**（整条退出约 2 s）；
    切桌面的最坏值 **60–126 s → 26–31 s**。**正常路径稳定在 35–126 ms**，且连续 6 次快速重启也不慢。
+8. **切桌面不再需要重启 Dock**（2026-10-04 起的默认形态，实验 20–22）：**冻结模式**（原生 Dock = 默认 Dock，
+   切桌面零写入零重启）+ **次级 Dock 条**（随桌面换图标、固定几何、与原生 Dock 同步显隐）。
+   仍需重启时（未冻结模式 / 手动应用 / 启动对齐）走 SIGHUP + **自动隐藏三明治**，**重启不可见**（无黑屏闪烁）。
 
 ---
 
@@ -1775,4 +1782,14 @@ swiftc -O -o /tmp/md-ls-lag scripts/measure-launchservices-lag.swift && /tmp/md-
 # CoreDock 通道探针（实验 17）
 #   read / notify / state / domain 是只读；settilesize / setprefs / addfile 会真的动 Dock —— 必须先备份再跑
 swiftc -O -o /tmp/coredock-probe scripts/spike-coredock-probe.swift && /tmp/coredock-probe read
+
+# 自动隐藏 typed setter（实验 20：三明治的安全性前提；会真的改 autohide 旗标并持久化）
+/tmp/coredock-probe getautohide
+/tmp/coredock-probe setautohide 1      # 记得 setautohide 0 还原
+
+# 真人手势切桌面会不会触发通知（实验 18，只读；跑 240 s 等你自己切几次）
+swiftc -O -o /tmp/md-space-notify scripts/spike-space-notify-watch.swift && /tmp/md-space-notify 240
+
+# 次级条与原生 Dock 的显隐信号三路采样（实验 22；⚠️ 会临时翻转 autohide 旗标，脚本结束还原）
+swift scripts/spike-secondary-dock-sync.swift
 ```

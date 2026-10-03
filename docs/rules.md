@@ -8,13 +8,15 @@
 
 ```bash
 swift build -c release --disable-sandbox   # 编译
-swift test --disable-sandbox               # 327 个测试（含 9 个默认跳过的真实 Dock 验收）
+swift test --disable-sandbox               # 364 个测试（9 个真实 Dock 验收 + 2 个 UI 快照默认跳过）
 ./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
 open build/MultiDock.app                   # 运行（必须在 .app 里跑，菜单栏图标才正常）
 ./scripts/check-toast-window.sh --watch 12 # 客观验收 toast（零权限，读窗口元数据）
 
 # 真实 Dock 验收：会真的改 com.apple.dock 并重启 Dock，跑完自动还原
 MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests
+# UI 离屏快照（零权限，出亮/暗 × 通用/桌面四张 PNG，人工核对）
+MULTIDOCK_UI_SNAPSHOT=1 swift test --disable-sandbox --filter UISnapshotTests
 ```
 
 - ⚠️ **必须加 `--disable-sandbox`**（2026-09-18 起）。SwiftPM 自己的 `sandbox-exec` 在本机环境里会 `sandbox_apply: Operation not permitted`，manifest 编译直接失败，报 `error: 'multi-dock': Invalid manifest`。这不是代码问题，加了这个参数就好。
@@ -63,6 +65,11 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ---
 
 # 各阶段「实现要点（改动时别踩）」
+
+> 以下大体按时间顺序排列，最后一节是最新的次级条/冻结护栏。
+> 各阶段**本身已完成**（需求与验收过程史在 `docs/sessions.md`、设计结论在 `docs/PLAN.md`）；
+> 保留这些节是因为它们是现行代码里**仍然生效的护栏**——改对应模块前必读。
+
 ### 已完成：P2（编辑条 + 应用）✅ 2026-09-18
 
 **这是本项目第一次真的写 `com.apple.dock`。** 规格见 `docs/PLAN.md` §3.4–§3.7，验收证据见 §8 第 5 次记录。
@@ -96,7 +103,7 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 
 ### 已完成：P4（无痕与自愈）✅ 2026-09-18
 
-规格见 `docs/PLAN.md` §3.11 / §5，验收证据见 §8 第 7 次记录。
+规格见 `docs/PLAN.md` §3.3 / §5，验收证据见 §8 第 7 次记录。
 
 **实现要点（改动时别踩）**：
 
@@ -216,19 +223,17 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
    → `reloader` 的进程控制，所以测试里同样是替身）。实测缺失期间偏好域读回来是残缺内容
    （3 个图标 vs 真实 15 个），照抄进配置就把那个桌面的 override 写坏了。
    **回来之后第一次读只用来对齐基线**（`needsRebaseline`），不补回存 —— 中间态分不清是不是用户改的。
-6. ⚠️ **已发生的数据损坏，而且比当时记的更严重**（2026-09-20 复查 `config.json`）：
-   现在**默认 Dock `pinnedApps` 只剩 3 项**（启动台 / FlClash / WorkBuddy AI），
-   **三个桌面（`计划 任务` / `密码 邮件` / `LLM`）的 override 全部为空**。
-   而**真实 Dock 是健康的**：`persistent-apps` 16 项 + `persistent-others` 1 项（基准 15 + 1，
-   用户后来自己加了 Qoder CN）。→ **用户下次点「立即应用」或切桌面就会把好 Dock 写坏。**
-   **修代码不会自动修数据**，要用户在设置里「从当前 Dock 抓取」重抓一次（通用页 + 每个桌面）。
-   损坏的**固化机制**见 `spikes.md` 实验 11.4 —— 注意它不是"读到了 Dock 死掉时的残缺域"那么简单，
+6. ⚠️ **曾经发生过一次由本链路写坏的数据，已修复（2026-09-20 复核）**：当时默认 Dock 剩 3 项、
+   三个桌面 override 全空，而真实 Dock 是 15+1；用户手动「从当前 Dock 抓取」后配置已恢复健康
+   （**现行**：默认 15 图标、3 条绑定全独立 override = 4/15/15，全 `bottom`；2026-10-04 再次核对）。
+   损坏的**固化机制**见 `spikes.md` 实验 11.4 —— 注意它不是"读到 Dock 死掉时的残缺域"那么简单，
    而是"Dock 活着，但被我们自己写成了残缺的，然后 Watcher 合法地把它当用户改动回存"。
+   **回归防线**：`DockWatcher` 的 `isDockPresent` 闸门 + `appliedFingerprint` 判据 + 回存前停 watcher。
 
 **验收**：`swift build` 零警告；`swift test` **295 个测试全绿**（+5：默认阈值 2 条、Watcher 闸门 2 条、
-`isDockAlive` 1 条）。⚠️ **真机复验还没做**（本会话没有再动用户的 Dock），核对口径：日志里
-`Dock 不可用` 应稳定回到 100 ms 量级，且不再出现「检测到 Dock 不在…已用 launchctl 拉回」。
-⚠️ **而且第一次复验（2026-09-19 用户做的）跑的是修复前的二进制** —— 见下面那一节。
+`isDockAlive` 1 条）。✅ **真机复验已覆盖（2026-09-20 用户日志复盘）**：`Dock 不可用` 稳定回到
+50–126 ms 量级，不再出现「检测到 Dock 不在…已用 launchctl 拉回」。
+⚠️ **但第一次复验（2026-09-19 用户做的）跑的是修复前的二进制** —— 见下面那一节。
 
 ### 已完成：修掉「每次右键退出都卡住几分钟」✅ 2026-09-19
 
@@ -281,7 +286,8 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 
 **验收**：`swift build -c release --disable-sandbox` 零警告；`swift test --disable-sandbox`
 **308 个测试全绿**（+13：`reloadForQuit` 4 条、退出路径 apply 4 条、监视器闸门 2 条、自愈与退出还原 3 条）。
-真机复验**仍未做**（见 §6.3 A6 / A7）。
+✅ **真机复验已覆盖（2026-09-20 用户日志复盘，A7 销账）**：`退出还原流程结束，用时 0.01s`
+（旧版 53–54 s），整条退出约 2 s。
 
 
 ### 已完成：P2.5（桌面命名 + 切换 toast，不写 Dock）✅ 2026-09-18

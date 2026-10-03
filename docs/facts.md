@@ -75,5 +75,8 @@
 | `log show` 不可用 | 在沙箱环境下 `/usr/bin/log show` 报 `Cannot run while sandboxed` → 所以日志**同时落盘**到 `multidock.log` |
 | 菜单栏图标 | 本机 `_HIHideMenuBar = 1`（自动隐藏菜单栏），所以状态栏窗口在 `y=-24`、`onscreen=false` 是正常的，不是 bug。可用 `CGWindowListCopyWindowInfo` 查 layer 25 的窗口来确认图标已创建 |
 | Dock 窗口几何 | Dock 的窗口是**全屏容器**（1920×1200，layer 20），**不能**用来判断图标数量或 tilesize |
+| ✅ **Dock 条不是独立 CG 窗口 → 次级条几何源用 `visibleFrame` 内缩**（实验 21，2026-10-04） | 15.8.1 实测：Dock 进程只有**全屏 layer-20 容器窗口**（`.optionAll`），条画在里面；CGWindowList 在 Dock 重启的 45–90 ms 里完全为空。→ 几何源 = `NSScreen.visibleFrame` 的排他内缩（bottom/left/right 三向；top 是菜单栏的），本机 bottom 内缩 53。**别再改回 CGWindowList 找「Dock 条窗口」——那个窗口不存在** |
+| ⚠️ **Dock 实际显隐没有零权限直读信号**（实验 22，2026-10-04） | ① `CoreDockSetAutoHideEnabled(true)` **只翻旗标、不改 work area**（inset 不变、Dock 不滑走；sandwich 的"隐藏"来自**重启后的 Dock 读旗标**；`Set(false)` 显出方向却实时生效）；② 贴 Dock 腹地的探针窗口 `occlusionState` 基线就抖动，不可用；③ CGWindowList 在 15.8.1 看不见 Dock 窗口。→ 同步显隐唯一可行组合 = face（inset）为主 + 自动隐藏态下「光标在显出带（`SecondaryDockLayout.dockArea` 外扩 8 pt）」启发式 + 400 ms 宽限，几何轮询 **200 ms**（`scripts/spike-secondary-dock-sync.swift`） |
+| **冻结模式的语义：原生 Dock = 默认 Dock**（2026-10-04 起默认开） | 切桌面**零写入零重启**（`AppState.applyForDesktopSwitch` 整条跳过）；冻结期间手动改动回存到**默认 Dock**；「原生 Dock = 默认 Dock」靠三处合力：① 启动对齐 `reestablishFrozenDockIfNeeded`（**必须排在自愈之后**，内容一致时指纹短路不重启）；② 开关打开立即对齐默认 Dock；③ 开关关闭立即应用当前桌面生效配置（`setFreezeNativeDockSwitching` 统一入口）。该模式下次级条**固定几何**（槽位 = 各桌面生效配置最大条目数、图标尺寸 = 默认 Dock），切桌面只换图标、窗口不挪。未冻结（opt-out）保持逐桌面切换原语义 |
 
 **复现私有 API 探测的方法**：见 `scripts/spike-probe.swift`（Swift 版，比 ctypes 干净）。
