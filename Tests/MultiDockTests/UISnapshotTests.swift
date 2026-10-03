@@ -116,7 +116,7 @@ final class UISnapshotTests: XCTestCase {
                 id64: 7, type: 0, ordinal: 2
             ),
         ]
-        return AppState(
+        let state = AppState(
             dockController: DockController(
                 preferences: FakePreferences(domain: baseDomain()),
                 reloader: DockReloader(
@@ -137,6 +137,9 @@ final class UISnapshotTests: XCTestCase {
             provider: FakeSpaceProvider(desktops: spaces, activeSpaceID: 6),
             fileLog: makeTestFileLog()
         )
+        // 冻结是产品默认值；快照按「未冻结」的设置页文案出图，别让横幅文案跟着默认值漂移。
+        state.updateSettings { $0.freezeNativeDockSwitching = false }
+        return state
     }
 
     private func baseDomain() -> [String: PlistValue] {

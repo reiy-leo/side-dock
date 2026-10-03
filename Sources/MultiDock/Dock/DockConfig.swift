@@ -358,9 +358,10 @@ struct AppSettings: Codable, Hashable, Sendable {
     /// 次级 Dock 条：贴着原生 Dock 内侧半露、hover 滑出、随桌面秒换内容的自绘图标条。
     var showSecondaryDock = true
     /// 冻结原生 Dock 的逐桌面切换：开启后切桌面不再写偏好/重启 Dock，
-    /// 逐桌面的差异全部由次级 Dock 条呈现（原生 Dock 保持一套固定配置）。
+    /// 逐桌面的差异全部由次级 Dock 条呈现（原生 Dock 保持一套固定配置 = 默认 Dock）。
     /// 手动路径（「立即应用」「编辑后立即应用」）不受影响。
-    var freezeNativeDockSwitching = false
+    /// 默认开（2026-10-04 用户决定：原生 Dock 全桌面一致，不逐桌面重启）。
+    var freezeNativeDockSwitching = true
     /// 默认 Dock（通用 Tab 编辑的那一套）。没有单独绑定的桌面就用它。
     var defaultDock = DockConfig()
 
@@ -387,7 +388,7 @@ struct AppSettings: Codable, Hashable, Sendable {
             try container.decodeIfPresent(Bool.self, forKey: .showToastOnDesktopSwitch) ?? true
         showSecondaryDock = try container.decodeIfPresent(Bool.self, forKey: .showSecondaryDock) ?? true
         freezeNativeDockSwitching =
-            try container.decodeIfPresent(Bool.self, forKey: .freezeNativeDockSwitching) ?? false
+            try container.decodeIfPresent(Bool.self, forKey: .freezeNativeDockSwitching) ?? true
         defaultDock = try container.decodeIfPresent(DockConfig.self, forKey: .defaultDock) ?? DockConfig()
     }
 }

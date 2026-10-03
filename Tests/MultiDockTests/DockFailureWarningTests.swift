@@ -116,6 +116,8 @@ final class DockFailureWarningTests: XCTestCase {
             presenceMonitor: monitor,
             fileLog: makeTestFileLog()
         )
+        // 冻结是产品默认值；这里只关心存活监视，按「未冻结」跑。
+        state.updateSettings { $0.freezeNativeDockSwitching = false }
         return Fixture(state: state, monitor: monitor, dock: dock)
     }
 

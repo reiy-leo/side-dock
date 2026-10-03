@@ -51,6 +51,8 @@ final class BindingHistoryTests: XCTestCase {
             provider: provider,
             fileLog: makeTestFileLog()
         )
+        // 冻结是产品默认值；回存落点用例测的是「override 优先」的未冻结语义。
+        state.updateSettings { $0.freezeNativeDockSwitching = false }
         return (state, stores.0, provider)
     }
 

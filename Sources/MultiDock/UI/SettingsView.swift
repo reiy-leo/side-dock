@@ -489,9 +489,10 @@ private struct GeneralTab: View {
             get: { state.settings.showSecondaryDock },
             set: { value in
                 state.updateSettings { $0.showSecondaryDock = value }
-                // 关掉时立即收窗口；打开时由观察回调刷新。冻结开关跟着失能/恢复。
+                // 关掉时立即收窗口；打开时由观察回调刷新。冻结开关跟着失能/恢复
+                // （走同一个入口，解冻的「恢复逐桌面应用」也一并发生）。
                 if !value {
-                    state.updateSettings { $0.freezeNativeDockSwitching = false }
+                    state.setFreezeNativeDockSwitching(false)
                 }
                 state.secondaryDock?.refresh()
             }
@@ -502,8 +503,9 @@ private struct GeneralTab: View {
         Binding(
             get: { state.settings.freezeNativeDockSwitching },
             set: { value in
-                state.updateSettings { $0.freezeNativeDockSwitching = value }
-                state.secondaryDock?.refresh()
+                // 开/关都要让原生 Dock 立刻与新模式一致（对齐默认 Dock / 恢复逐桌面），
+                // 语义在 `AppState.setFreezeNativeDockSwitching` 里，别在这里另写一份。
+                state.setFreezeNativeDockSwitching(value)
             }
         )
     }

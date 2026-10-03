@@ -292,6 +292,8 @@ final class DockAcceptanceTests: XCTestCase {
                 ),
                 fileLog: makeTestFileLog()
             )
+            // 冻结是产品默认值；自愈验收测的是还原链路本身，按「未冻结」跑。
+            state.updateSettings { $0.freezeNativeDockSwitching = false }
             state.start()
             await state.waitForSelfHeal()
             summaries.append(state.selfHealSummary ?? "（没有自愈）")
@@ -658,6 +660,8 @@ final class DockAcceptanceTests: XCTestCase {
             provider: provider,
             fileLog: makeTestFileLog()
         )
+        // 冻结是产品默认值；回存验收测的是「override 优先」的未冻结语义，必须显式关掉。
+        state.updateSettings { $0.freezeNativeDockSwitching = false }
         state.start()
         defer { state.stop() }
 

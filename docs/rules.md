@@ -325,6 +325,15 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 7. 几何变化走 1 s 轮询 + 屏幕变化事件；回收 hover 用 150 ms 防抖 + `NSEvent.mouseLocation`
    安全网（窗口自己动过时 exit 事件可能丢）。测试里别调 `start()`（会起真轮询任务），
    手动调 `geometryTick()`。
+8. **冻结自 2026-10-04 起默认开**。冻结的「原生 Dock = 默认 Dock」语义要三处合力保证：
+   启动对齐（`reestablishFrozenDockIfNeeded`，**必须排在自愈之后**——自愈先还原基准，
+   对齐再冻结，删了任何一处原生 Dock 与次级条就各显一套）+ `setFreezeNativeDockSwitching`
+   的两个方向（开 → 立即对齐默认 Dock；关 → 立即应用当前桌面生效配置）。
+   对齐是**启动期唯一**的自动应用，内容一致时指纹短路，不产生逐桌面重启。
+9. **测试 harness 里别用 `updateSettings` 预置状态**——它立刻落盘，会污染两类用例：
+   断言「不落盘」的（文件不该存在）与预置 config 再 `start()` 的（被默认值覆盖）。
+   要解冻/改设置的用例在 `start()` 后按需调（`AppStateDockTests.unfreeze(_:)` 的样子），
+   别摊回 makeState。
 
 ---
 

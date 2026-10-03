@@ -47,6 +47,9 @@ final class AppStateDockTests: XCTestCase {
         stores: (ConfigStore, BaselineStore),
         provider: FakeSpaceProvider? = nil
     ) -> AppState {
+        // 注意：这里**不能**顺手 updateSettings（那会立刻落盘），否则
+        // 「不落盘」断言与预置 config 的用例会被污染。要走逐桌面应用路径的用例，
+        // 在 start() 后自行调 `unfreeze(_:)`。
         AppState(
             dockController: DockController(
                 preferences: preferences,
@@ -66,6 +69,12 @@ final class AppStateDockTests: XCTestCase {
             provider: provider ?? FakeSpaceProvider(isAvailable: false, reason: "测试替身"),
             fileLog: makeTestFileLog()
         )
+    }
+
+    /// 冻结自 2026-10-04 起是产品默认值；要走逐桌面应用路径的用例在 start() 后调它。
+    /// 只在确实要测「切换会应用 Dock」的用例里用 —— 别摊回 makeState。
+    private func unfreeze(_ state: AppState) {
+        state.updateSettings { $0.freezeNativeDockSwitching = false }
     }
 
     private func config(tilesize: Double = 52) -> DockConfig {
@@ -585,6 +594,7 @@ final class AppStateDockTests: XCTestCase {
             provider: provider
         )
         state.start()
+        unfreeze(state)
         defer { state.stop() }
 
         // 桌面 2 有自己的 Dock；先把它应用一遍，再把默认 Dock（桌面 1 用的）应用上去，
@@ -626,6 +636,7 @@ final class AppStateDockTests: XCTestCase {
             provider: provider
         )
         state.start()
+        unfreeze(state)
         defer { state.stop() }
 
         // 桌面 3 有自己的 Dock，当前在桌面 1（用默认 40）→ 往前切一定真的要写。
@@ -658,6 +669,7 @@ final class AppStateDockTests: XCTestCase {
             provider: provider
         )
         state.start()
+        unfreeze(state)
         defer { state.stop() }
 
         // 两个桌面都沿用默认 Dock，内容完全相同。
@@ -719,6 +731,7 @@ final class AppStateDockTests: XCTestCase {
             provider: fixture.provider
         )
         state.start()
+        unfreeze(state)
         defer { state.stop() }
 
         state.setOverride(config(tilesize: 40), for: fixture.spaces[0], reason: "桌面 1 独立")
@@ -742,6 +755,7 @@ final class AppStateDockTests: XCTestCase {
             provider: fixture.provider
         )
         state.start()
+        unfreeze(state)
         defer { state.stop() }
 
         state.handleUserDockEdit(config(tilesize: 64))
@@ -761,6 +775,7 @@ final class AppStateDockTests: XCTestCase {
             provider: provider
         )
         state.start()
+        unfreeze(state)
         defer { state.stop() }
 
         state.handleUserDockEdit(config(tilesize: 64))

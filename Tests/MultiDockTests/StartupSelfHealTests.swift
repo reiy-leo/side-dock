@@ -79,6 +79,8 @@ final class StartupSelfHealTests: XCTestCase {
             ),
             fileLog: makeTestFileLog()
         )
+        // 冻结是产品默认值；自愈用例测的是还原链路本身，按「未冻结」跑。
+        state.updateSettings { $0.freezeNativeDockSwitching = false }
         return Fixture(
             state: state,
             preferences: preferences,

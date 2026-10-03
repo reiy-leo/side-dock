@@ -130,6 +130,9 @@ final class AppState {
     /// 自愈任务是否已经跑完。**退出前的等待靠轮询这个标志**，
     /// 而不是 `await selfHealTask.value` —— 见 `settleSelfHeal(within:)`。
     private var selfHealFinished = false
+    /// 冻结模式的启动对齐任务：自愈结束后把原生 Dock 对齐到默认 Dock。
+    /// 留句柄是为了测试能等它跑完（`waitForFrozenDockAlignment`）。
+    private var frozenDockAlignmentTask: Task<Void, Never>?
 
     /// 依赖全部可注入：`DockController`、两个 Store、以及空间提供者都能换成测试替身，
     /// 这样「立即应用 / 还原 / 切桌面预应用」这几条路径不必真的动用户的 Dock 也能测。
@@ -266,6 +269,44 @@ final class AppState {
             return
         }
         applyConfigForDesktop(space, reason: reason)
+    }
+
+    /// 「冻结原生 Dock 逐桌面切换」开关（设置页调用）。
+    ///
+    /// 除了翻转设置，两个方向都要让原生 Dock **立刻**与新模式一致，别等下一次切换：
+    /// - 开：冻结的那套固定配置就是**默认 Dock** —— 立即对齐一次（内容一致会被指纹短路，
+    ///   不写不重启）。不补这一下，原生 Dock 可能停在某个桌面的 override 上，
+    ///   而次级条显示的却是默认 Dock / override，两套内容并排各说各话。
+    /// - 关：恢复逐桌面切换 —— 当前桌面的生效配置立即应用（有 override 就上 override）。
+    func setFreezeNativeDockSwitching(_ enabled: Bool) {
+        guard settings.freezeNativeDockSwitching != enabled else { return }
+        updateSettings { $0.freezeNativeDockSwitching = enabled }
+        secondaryDock?.refresh()
+        if enabled {
+            applyDock(settings.defaultDock, reason: "冻结模式：原生 Dock 对齐默认 Dock")
+        } else if let space = activeSpace {
+            applyForDesktopSwitch(space, reason: "解冻：恢复逐桌面切换")
+        }
+    }
+
+    /// 冻结模式：启动时把原生 Dock 对齐到「默认 Dock」。
+    ///
+    /// 为什么启动要补一次：退出时无痕还原把基准写回去，下次启动原生 Dock 就停在基准上；
+    /// 不补这一下，原生 Dock 与次级条（默认 Dock / 桌面 override）各显一套。
+    /// 内容已经一致时 `apply` 指纹短路，不会重启 Dock。
+    /// **必须排在自愈之后**：自愈先还原基准（清上次欠账），这里再冻结 ——
+    /// 自愈的还原不走 `request` 队列，所以用 `await waitForSelfHeal()` 串行，不能只靠排队。
+    func waitForFrozenDockAlignment() async {
+        await frozenDockAlignmentTask?.value
+    }
+
+    private func reestablishFrozenDockIfNeeded() {
+        guard settings.freezeNativeDockSwitching else { return }
+        frozenDockAlignmentTask = Task { [weak self] in
+            await self?.waitForSelfHeal()
+            guard let self, !Task.isCancelled, self.settings.freezeNativeDockSwitching else { return }
+            self.applyDock(self.settings.defaultDock, reason: "冻结模式：启动对齐默认 Dock")
+        }
     }
 
     /// 用户手动改了真实 Dock → 回存到当前桌面的配置（计划 §3.8）。
@@ -474,6 +515,8 @@ final class AppState {
         // 自愈必须放在最后：它要走还原链路（写偏好 + 重启 Dock），
         // 得等观察器、watcher、监视器都就位，否则还原完它们才启动，状态会错。
         scheduleSelfHealIfNeeded()
+        // 冻结模式的启动对齐排在自愈之后（它自己会等自愈跑完）。
+        reestablishFrozenDockIfNeeded()
     }
 
     func stop() {
@@ -481,6 +524,7 @@ final class AppState {
         dockWatcher?.stop()
         dockPresenceMonitor?.stop()
         secondaryDock?.stop()
+        frozenDockAlignmentTask?.cancel()
         append(.info, "桌面观察已停止")
     }
 

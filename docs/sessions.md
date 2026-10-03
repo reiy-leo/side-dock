@@ -3,6 +3,20 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-04（第 34 次）— 冻结成为默认：原生 Dock 全桌面一致、切桌面零重启
+
+**用户说**：「原生的 dock 每个桌面都是一样的，相同的，不要每个桌面重启 dock；secondary dock 每个桌面不一样，但不要随桌面滚动，而是直接在原生 dock 显示」。
+
+**做了什么**：
+
+1. **需求确认**：两句话 = 把「冻结原生 Dock 逐桌面切换」转正为产品默认行为（原生 Dock 固定一套、切桌面不写不重启），逐桌面差异全部由次级条呈现。「不随桌面滚动」核对过代码：次级条窗口本就是 `canJoinAllSpaces + stationary + 切桌面无动画`，与原生 Dock 一样钉在原地，只有内容秒换——无需改动。
+2. **发现语义缺口并补上**：冻结模式下没有任何路径保证原生 Dock 停在「默认 Dock」这套配置上（退出还原后下次启动会停在基准上，与次级条各显一套）。补了三处：① `reestablishFrozenDockIfNeeded` 启动对齐（**排在自愈之后**，`await waitForSelfHeal()` 串行；内容一致时指纹短路不重启）；② `setFreezeNativeDockSwitching(true)` 立即对齐默认 Dock；③ `(false)` 立即应用当前桌面生效配置。设置页冻结开关改走这个统一入口（次级条开关关掉时连带解冻也走它）。
+3. **默认值翻转**：`AppSettings.freezeNativeDockSwitching` 默认 `false → true`（属性 + `decodeIfPresent` 兜底两处）；用户 config.json 里的持久化 `false` 同步翻成 `true`（App 未运行时改，无 clobber）。
+4. **测试**：+3 条（开冻结对齐默认 Dock / 解冻应用当前桌面配置 / 启动对齐排在自愈之后——用脏标记断言最终 tilesize 落在 52 而非基准 36）→ **358 全绿**。⚠️ 新坑（已记 rules #9）：harness 里 `updateSettings` 会立刻落盘，污染「不落盘」断言与预置 config 的用例——改法是各用例在 `start()` 后按需 `unfreeze(_:)`，别摊回 makeState。受默认值影响的 harness 全部显式处理（AppStateDock 3+3 处、DockAcceptance 2 处、StartupSelfHeal/BindingHistory/DockFailureWarning/UISnapshot/SecondaryDockFreeze 各 1 处）。
+5. **真机验收**：重打包并启动。日志实证：启动对齐一次（`Dock 不可用 374 ms，隐藏中重启（无闪烁），写入 9 个键`），随后真实桌面切换（→ 密码 邮件）日志 `原生 Dock 已冻结：跳过「切到 …」，由次级 Dock 条呈现`——零写入零重启；次级条照常出图（bottom 内缩 53）。启动对齐后 watcher 报了一次「手动改动」回存到默认 Dock，核对 config.json：defaultDock 内容逐项无漂移（Dock 重启规范化后的收敛回写）。
+
+**当前进度**：冻结模式真机运行中（3 条绑定全为独立 Dock，差异全在次级条）。**等用户手测**：次级条 hover/点击/半露观感（A11 四件套不变）+ 现在重点体验「切桌面 Dock 完全不动」。代价说明：无痕原则下每次退出还原基准、下次启动对齐回默认 Dock（一次重启，~0.4 s，内容一致时自动短路）。剩余待办不变（B5/A1–A5/B8/B9/B10/A8 只等复现）。
+
 ### 2026-10-04（第 33 次）— 次级 Dock 条：随桌面秒换内容 + 冻结开关（实验 21）
 
 **用户说**：三连问——「切换桌面后为什么非要重启 Dock」「可以完全替换原生 Dock 么」「能不能紧贴原生 Dock 加一条 secondary dock 栏，默认显示一半、hover 显示全、不用放大效果，按照这个实现」。

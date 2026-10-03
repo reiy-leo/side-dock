@@ -449,7 +449,7 @@ final class SecondaryDockFreezeTests: XCTestCase {
         stores: (ConfigStore, BaselineStore),
         provider: FakeSpaceProvider? = nil
     ) -> AppState {
-        AppState(
+        let state = AppState(
             dockController: DockController(
                 preferences: preferences,
                 reloader: DockReloader(
@@ -466,6 +466,9 @@ final class SecondaryDockFreezeTests: XCTestCase {
             provider: provider ?? FakeSpaceProvider(isAvailable: false, reason: "测试替身"),
             fileLog: makeTestFileLog()
         )
+        // 冻结现在是产品默认值；这里的用例各自显式决定冻结状态，默认按「未冻结」测。
+        state.updateSettings { $0.freezeNativeDockSwitching = false }
+        return state
     }
 
     private func config(tilesize: Double = 52) -> DockConfig {
@@ -558,14 +561,94 @@ final class SecondaryDockFreezeTests: XCTestCase {
         // 旧配置文件没有这两个键 → 走 decodeIfPresent 的默认值，不能解码失败。
         let legacy = try JSONDecoder().decode(AppSettings.self, from: Data("{\"restoreOnQuit\": true}".utf8))
         XCTAssertTrue(legacy.showSecondaryDock, "次级条默认开")
-        XCTAssertFalse(legacy.freezeNativeDockSwitching, "冻结默认关")
+        XCTAssertTrue(legacy.freezeNativeDockSwitching, "冻结默认开（2026-10-04：原生 Dock 不逐桌面重启）")
 
-        // 往返保持。
+        // 往返保持（冻结翻到 false 这一侧，与默认值相反的方向才算验过）。
         var settings = AppSettings()
         settings.showSecondaryDock = false
-        settings.freezeNativeDockSwitching = true
+        settings.freezeNativeDockSwitching = false
         let data = try JSONEncoder().encode(settings)
         let restored = try JSONDecoder().decode(AppSettings.self, from: data)
         XCTAssertEqual(restored, settings)
+    }
+
+    // MARK: - 冻结模式的「原生 Dock = 默认 Dock」语义
+
+    func testEnablingFreezeAlignsNativeDockToDefaultDock() async {
+        let spaces = FakeSpaceProvider.desktops(count: 2)
+        let provider = FakeSpaceProvider(desktops: spaces, activeSpaceID: spaces[0].id64)
+        let preferences = FakePreferences(domain: baseDomain())
+        let state = makeState(preferences: preferences, stores: makeStores("freeze-enable"), provider: provider)
+        state.start()
+        defer { state.stop() }
+
+        // 先制造「原生 Dock 停在某个桌面的 override 上」的局面：冻结开启后必须对齐回默认 Dock。
+        state.updateSettings { $0.defaultDock = config(tilesize: 52) }
+        state.setOverride(config(tilesize: 88), for: spaces[0], reason: "预置独立 Dock")
+        await state.dockController.waitForIdle()
+        XCTAssertEqual(preferences.readDomain()["tilesize"]?.doubleValue, 88, "预置条件：原生 Dock 已是 override")
+
+        let writesBefore = preferences.writeCount
+        state.setFreezeNativeDockSwitching(true)
+        await state.dockController.waitForIdle()
+
+        XCTAssertEqual(preferences.readDomain()["tilesize"]?.doubleValue, 52,
+                       "开启冻结后原生 Dock 立刻对齐默认 Dock，不等下一次切换")
+        XCTAssertGreaterThan(preferences.writeCount, writesBefore, "对齐是一次真实写入（而不是只翻开关）")
+    }
+
+    func testDisablingFreezeAppliesActiveDesktopConfig() async {
+        let spaces = FakeSpaceProvider.desktops(count: 2)
+        let provider = FakeSpaceProvider(desktops: spaces, activeSpaceID: spaces[0].id64)
+        let preferences = FakePreferences(domain: baseDomain())
+        let state = makeState(preferences: preferences, stores: makeStores("freeze-disable"), provider: provider)
+        state.start()
+        defer { state.stop() }
+
+        state.updateSettings { $0.defaultDock = config(tilesize: 52) }
+        // 活动桌面的 override 先建好但不应用（关 autoApply），由「解冻」这一步来应用它。
+        state.updateSettings { $0.autoApplyOnEdit = false }
+        state.setOverride(config(tilesize: 88), for: spaces[0], reason: "活动桌面的独立 Dock")
+        state.setFreezeNativeDockSwitching(true)
+        await state.dockController.waitForIdle()
+        XCTAssertEqual(preferences.readDomain()["tilesize"]?.doubleValue, 52, "预置条件：冻结在默认 Dock 上")
+
+        let writesBefore = preferences.writeCount
+        state.setFreezeNativeDockSwitching(false)
+        await state.dockController.waitForIdle()
+
+        XCTAssertEqual(preferences.readDomain()["tilesize"]?.doubleValue, 88,
+                       "解冻后当前桌面的生效配置立刻应用，别等下一次切换")
+        XCTAssertGreaterThan(preferences.writeCount, writesBefore)
+    }
+
+    func testLaunchInFreezeModeAlignsDefaultDockAfterSelfHeal() async throws {
+        let spaces = FakeSpaceProvider.desktops(count: 2)
+        let provider = FakeSpaceProvider(desktops: spaces, activeSpaceID: spaces[0].id64)
+        let preferences = FakePreferences(domain: baseDomain())
+        let stores = makeStores("freeze-launch")
+        let state = makeState(preferences: preferences, stores: stores, provider: provider)
+
+        // 造一笔「上次没还原完」的欠账：自愈先写回基准（tilesize 36），冻结对齐再覆盖成默认 Dock（52）。
+        // 最终落在 52 就证明对齐排在自愈之后 —— 反了的话最终会是 36。
+        try stores.1.writeSessionMarker(
+            BaselineStore.SessionMarker(
+                pid: 999_999,
+                startedAt: Date(),
+                appliedFingerprint: "dirty-launch",
+                appliedAt: Date()
+            )
+        )
+        state.updateSettings { $0.freezeNativeDockSwitching = true }
+        state.updateSettings { $0.defaultDock = config(tilesize: 52) }
+        state.start()
+        defer { state.stop() }
+
+        await state.waitForSelfHeal()
+        await state.waitForFrozenDockAlignment()
+        await state.dockController.waitForIdle()
+
+        XCTAssertEqual(preferences.readDomain()["tilesize"]?.doubleValue, 52,
+                       "启动对齐在自愈之后执行，最终停在冻结配置（默认 Dock）上")
     }
 }

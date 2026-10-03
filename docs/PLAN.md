@@ -628,10 +628,15 @@ struct AppSettings: Codable {
 
 - 内容 = 当前桌面的 `effectiveConfig(for:).pinnedApps`（Finder 幻影置首 + 启动台首位复用
   `DockStripRules`），**切桌面瞬间换内容**（换视图，零重启、零写入）。
-- 设置新增「冻结原生 Dock 的逐桌面切换」（默认关）：开启后 `applyForDesktopSwitch` 整条跳过
-  ——原生 Dock 保持一套固定配置，不再随桌面写偏好/重启；手动路径（「立即应用」、编辑器的
+- 设置「冻结原生 Dock 的逐桌面切换」——**默认开（2026-10-04 用户修订：原生 Dock 全桌面
+  一致、不逐桌面重启）**：开启后 `applyForDesktopSwitch` 整条跳过——原生 Dock 保持一套
+  固定配置（= **默认 Dock**），不再随桌面写偏好/重启；手动路径（「立即应用」、编辑器的
   「编辑后立即应用」）不受影响。冻结期间用户手动改真实 Dock → 回存到**默认 Dock**
   （"当前桌面绑定"的语义在冻结下不成立）。
+- **冻结语义要主动保证「原生 Dock = 默认 Dock」**，三处缺一不可：① 启动对齐
+  （`reestablishFrozenDockIfNeeded`，排在自愈之后——自愈先还原基准，这里再冻结；内容一致时
+  指纹短路不重启）；② 开关打开时立即对齐默认 Dock；③ 开关关闭时立即应用当前桌面生效配置。
+  缺了①，退出还原后的下次启动里原生 Dock 停在基准上、与次级条各显一套。
 
 **机制**（实测依据见 `docs/spikes.md` 实验 21——Dock 条不是独立 CG 窗口，几何源用
 `visibleFrame` 排他内缩）：
