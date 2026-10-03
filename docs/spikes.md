@@ -1586,6 +1586,28 @@ lldb 反汇编 `cmdAddToDock:`：**对每个选中项调用 `CoreDockAddFileToDo
 
 ---
 
+## 实验 18：真人手势切桌面会触发 activeSpaceDidChange（B7 结案，2026-10-04）
+
+**问题（B7）**：用户手动切桌面时 `NSWorkspaceActiveSpaceDidChangeNotification` 是否触发？
+只影响"能否把跟随延迟从 300 ms 降到接近 0"。
+
+**工具**：`scripts/spike-space-notify-watch.swift`——同时观察公开通知与 SkyLight 活动空间
+**50 ms 高频轮询**（只读），每次轮询发现切换就回看 ±0.5 s 有没有通知伴随。
+零权限、零写入、不切桌面；后台跑 240 s 窗口，用户以 ⌃←/⌃→ 手势切换。
+
+**结果**：轮询观察到 **5 次切换**（id64 6↔7），**5/5 伴随通知**，且**通知比轮询早 2–30 ms**
+（例：`01:37:49.994 NOTIFY` vs `01:37:49.996 POLL`）。
+
+**结论（B7 结案）**：
+
+1. P0 的表述要精确化：**程序化**切桌面（`CGSManagedDisplaySetCurrentSpace`）不触发通知；
+   **真人手势**切桌面**触发**（5/5，且通知先于 50 ms 轮询到达）。
+2. `SpaceObserver` 的通知快速通道（通知到达即 `refresh()`，读码确认已接线）**实测有效**——
+   手势切换的跟随延迟本来就是 ≈0，**不需要任何代码改动**；轮询继续作为程序化切换的兜底。
+3. 附带精确化 `docs/facts.md` 的「桌面切换通知」行。
+
+---
+
 ## 复现方法
 
 ```bash

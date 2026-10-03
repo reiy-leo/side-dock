@@ -7,7 +7,7 @@
 
 | 项 | 结论 |
 | --- | --- |
-| 桌面切换通知 | `NSWorkspaceActiveSpaceDidChangeNotification` 是公开 API，但**程序化切桌面时根本不触发**（对照实验已排除环境因素：同进程能正常收到 `didActivateApplication`）→ 事件源必须是轮询 |
+| 桌面切换通知 | `NSWorkspaceActiveSpaceDidChangeNotification` 是公开 API，但**程序化切桌面时根本不触发**（对照实验已排除环境因素：同进程能正常收到 `didActivateApplication`）→ 事件源必须是轮询。⚠️ **实验 18（2026-10-04）精确化**：**真人手势**切换实测**触发**（5/5 次，且通知比 50 ms 轮询早 2–30 ms）→ `SpaceObserver` 的通知快速通道实测有效，手势切换跟随延迟 ≈0；程序化切换仍靠轮询 |
 | 枚举桌面 | `dlopen` SkyLight 成功，`CGSCopyManagedDisplaySpaces` / `CGSGetActiveSpace` / `CGSMainConnectionID` 可用 |
 | 空间字典字段 | 键是 **`uuid`** / `ManagedSpaceID` / `id64` / `type` / `WindowManagerInfo`（**不是** `ManagedSpaceUUID`）；display 字典另有 `Current Space` 可直取当前空间。**无名称字段** → App 内命名只能存本地 |
 | **displayUUID → `NSScreen` 映射** | ✅ **实测一致**（2026-09-18）：`CGDisplayCreateUUIDFromDisplayID(NSScreen.deviceDescription["NSScreenNumber"])` = `AB24BB32-C5EC-D10A-6F9D-F01F35552F60`，与 SkyLight 的 `Display Identifier` 逐字符相同 → 能把 toast 放到正确的显示器上。探测脚本 `scripts/spike-probe.swift`（已加 `screens` 段，文本与 `--json` 两种输出都有） |
