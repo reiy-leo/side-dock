@@ -182,6 +182,7 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 | 桌面命名 | `Spaces/DesktopNaming.swift` | 归一化（≤10 字素簇）、显示名解析、改名/改 override 规则；**纯函数，全部有单测** |
 | toast 调度 / 窗口 | `UI/ToastPresenter.swift`、`UI/DesktopNameToast.swift` | 纯逻辑调度 + 无边框窗口；跨空间、不抢焦点、零权限 |
 | toast 验收工具 | `scripts/check-toast-window.sh` | 用 `CGWindowListCopyWindowInfo` 读窗口元数据（零权限），`--watch` 报告出现/消失时刻 |
+| UI 离屏快照验收 | `Tests/MultiDockTests/UISnapshotTests.swift` | `MULTIDOCK_UI_SNAPSHOT=1` 开启：用 `SettingsWindowFactory` 装配**真窗口**离屏渲染，出亮/暗 × 通用/桌面 四张 PNG（零权限），UI 视觉验收用。**快照与 App 共用一份窗口装配，不许另拼** |
 | toast 外观预览器 | `scripts/preview-toast.swift` | 在假壁纸上画亮/深色胶囊并输出 PNG（`cacheDisplay` 抓自己的视图，**零权限**）。⚠️ 它是 `DesktopNameToast.swift` 的**副本**，改了那边要同步这里，否则预览骗人 |
 | P0 实验脚本 | `scripts/spike-*.{sh,swift}` | 重载策略 / 切桌面 / 停机时长 / 探测（含显示器 UUID 映射） |
 | LS 滞后测量脚本 | `scripts/measure-launchservices-lag.swift` | 定向测量 `NSRunningApplication` 在 Dock 重启窗口里**抱着旧 PID 多久**（1 ms 采样、两路同问）。**只读 + 发 SIGHUP**，用来证伪 A8 的第六个假说，见 `docs/spikes.md` 实验 15.3 |
@@ -502,7 +503,7 @@ A4 的**逻辑侧已自动化**（`DockAcceptanceTests.testExternalDockChangeIsC
 | 屏幕几何 | 主屏 `frame` = (0,0,1920,1200)，`visibleFrame` = (0,53,1920,1147)（Dock 在底部未自动隐藏）。toast 定位用 `visibleFrame`，天然避开菜单栏与 Dock |
 | **toast 窗口几何** | 水平居中、顶边距可见区顶部 80 pt（不变）。**2026-09-19 起改为定高胶囊**：高 32、宽 = 文字宽 + 2×14、下限 76。⚠️ 旧实测值 `w=87 h=39` / `w=193 h=39` 是**改版前**（字号 15、内边距 20/10）的数，**新几何待真机重测**（`scripts/check-toast-window.sh --watch`；它的判别式是 `height >= 30`，32 仍命中）。`layer=25`、`alpha=1.00` 不变 |
 | **toast 外观（2026-09-19 改版）** | 从"固定黑底 0.78 + 白字"换成**跟随系统外观的原生 HUD 胶囊**：`NSVisualEffectView`（`material = .popover`、`blendingMode = .behindWindow`、`state = .active`）+ `maskImage` 裁圆角（**`NSVisualEffectView` 没有 `cornerRadius`**，那是 UIKit 的）+ 1 px 动态描边（亮色黑 0.12 / 深色白 0.16）+ 文字 `labelColor`、14 pt semibold。零权限不变 |
-| **无屏幕录制权限也能看到自己的视图长什么样** | `NSView.bitmapImageRepForCachingDisplay` + `cacheDisplay(in:to:)` 抓**自己窗口**的内容不需要任何权限（`screencapture` 拍整屏才需要）。`scripts/preview-toast.swift` 就是这么出亮/深两张预览图的。代价：预览用 `.withinWindow` 模糊窗口内的假壁纸，真机用 `.behindWindow` 模糊屏幕内容 —— **材质色调/圆角/描边/字体一致，模糊的实际画面不一致** |
+| **无屏幕录制权限也能看到自己的视图长什么样** | `NSView.bitmapImageRepForCachingDisplay` + `cacheDisplay(in:to:)` 抓**自己窗口**的内容不需要任何权限（`screencapture` 拍整屏才需要）。`scripts/preview-toast.swift` 就是这么出亮/深两张预览图的。代价：预览用 `.withinWindow` 模糊窗口内的假壁纸，真机用 `.behindWindow` 模糊屏幕内容 —— **材质色调/圆角/描边/字体一致，模糊的实际画面不一致**。⚠️ **2026-10-04 起整套设置窗口也能这样验收**（`UISnapshotTests`，`MULTIDOCK_UI_SNAPSHOT=1`）：抓 `contentView.superview`（主题框视图）才**含标题栏与工具栏**，只抓 contentView 拍不到窗口 chrome；`@Observable` 失效要等一个 RunLoop 拍子才重算 body，不等会拍到旧页；`NSTemporaryDirectory()` 返回 `/var/folders/...` 不是 `/tmp` |
 | **`orderOut` 后窗口会在 CG 窗口列表里滞留** | 窗口被 `orderOut` 后 `kCGWindowIsOnscreen` 立刻变 false，但那条记录**还会在列表里留好几秒**才真正消失。用窗口元数据核对「消失」时刻时**必须滤掉 `onscreen == false`**，否则时长会晚报 |
 | **`CGWindowListCopyWindowInfo` 读元数据零权限** | 实测在无屏幕录制权限下能读到 `kCGWindowLayer` / `kCGWindowAlpha` / `kCGWindowBounds` / `kCGWindowIsOnscreen`（**读不到 `kCGWindowName`**，那是被系统抹掉的）。所以窗口类验收完全不需要权限 |
 | 菜单栏图标（补充） | 自动隐藏菜单栏时状态栏窗口在 `y=-24`、`onscreen=false`、约 51×24 —— 与 toast（`y=80`、高 32、水平居中）天然可区分 |
@@ -770,6 +771,23 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-10-04（第 28 次）— UI 对齐 Apple 原生设计（工具栏标签页 / 菜单副标题 / 桌面页 Form 化）
+
+**用户说**：「读取apple原生应用的design，让符合此设计」。
+
+**做了什么**（纯视觉与文案，不改任何行为与接线）：
+
+1. **逐文件盘点 6 个 UI 文件**。已有的原生底子保留不动：Form + `.formStyle(.grouped)`、语义色、SF Symbols、NSMenu、toast 原生 HUD（P2.5 规格钉死，未碰）。
+2. **设置窗口**：SwiftUI `TabView`（macOS 上渲染成浏览器式标签——没有任何 Apple 设置窗口长那样）→ **System Preferences 式工具栏标签页**：`NSToolbar` + delegate 的 `toolbarSelectableItemIdentifiers` + `window.toolbarStyle = .preference`，图标+文字居中、选中高亮。页状态放 `SettingsTabModel`（`@Observable`），AppKit 写、SwiftUI 读。窗口装配抽成 `SettingsWindowFactory`，AppDelegate 与快照测试**共用** —— 快照若复制一份装配，验出来的就不是真窗口。⚠️ 两个可用性坑：`NSToolbar(identifier:selectableItemsIdentifiers:)` 在部署目标 macOS 14.0 上不可用（报 "extra argument"），用经典 delegate 方法 + `selectedItemIdentifier`；`NSMenuItem.subtitle` 是 **14.4+**。
+3. **菜单栏**：禁用假菜单项「（⇧+左键…同效）」→ `previous.subtitle`；「⚠︎ 桌面功能不可用」的文字字形 → SF Symbol `exclamationmark.triangle` + 副标题。
+4. **桌面 Tab 右侧详情**：自绘 `VStack` + `Divider` → 与通用页同一套 `Form` + `.formStyle(.grouped)`（此桌面 / Dock 来源 / 图标条 / 外观 / 应用 五个 Section）；绑定与 `dockEdited` 接线一字未动。
+5. **文案更正**：设置页「P0 实测结论：Dock 没有热重载」→ 实验 17 后的准确表述（私有实时通道存在、外观键已验证，条目未打通前不启用）。
+6. **视觉验收（零权限）**：新增 `UISnapshotTests`（`MULTIDOCK_UI_SNAPSHOT=1` 开启，默认跳过，与真实 Dock 验收同一套门控约定）：离屏渲染真窗口出亮/暗 × 两页 PNG 人工核对。三个坑进 §4：抓 `contentView.superview` 才含窗口 chrome；`@Observable` 失效要等 RunLoop 拍子（否则拍到旧页）；`NSTemporaryDirectory()` 不是 `/tmp`。
+
+**验收**：`swift build -c release --disable-sandbox` 零警告；`swift test` **328 全绿**（+1 快照测试，默认跳过）；`./scripts/build-app.sh` 打包成功；四张快照（亮/暗 × 通用/桌面）人工核对 —— 工具栏标签选中高亮、分组表单、暗色全语义色适配。
+
+**当前进度**：P0–P5 不变，无行为改动。**未解决**：§6.3 B15 等，均不变。⚠️ **上一轮的「文档按通用 Agent 结构精简重组」任务被本任务打断、未执行**（AGENTS.md 仍是单文件全量结构），用户需要时再继续。
 
 ### 2026-10-03（第 27 次）— 实验 17：CoreDock 通道探路 —— 「热重载不存在」被部分推翻（**零业务代码改动**）
 

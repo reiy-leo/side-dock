@@ -184,19 +184,59 @@ struct DesktopListView: View {
     @ViewBuilder
     private var detail: some View {
         if let space = selectedSpace {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+            // 与「通用」页同一套 grouped Form 风格 —— 同一个 App 里同类设置长一样（熟悉感）。
+            Form {
+                Section("此桌面") {
                     header(space)
-                    Divider()
+                }
+                Section("Dock 来源") {
                     inheritToggle(space)
-                    if state.hasOverride(for: space) {
-                        overrideEditor(space)
-                    } else {
+                    if !state.hasOverride(for: space) {
                         inheritHint
                     }
                 }
-                .padding(14)
+                if state.hasOverride(for: space) {
+                    Section("这个桌面的图标条") {
+                        DockStripEditor(
+                            config: configBinding(for: space),
+                            availableKeys: state.availableWhitelistedKeys,
+                            captureLive: { state.captureLiveDockConfig() }
+                        ) { reason in
+                            state.dockEdited(.desktop(space), reason: reason)
+                        }
+                    }
+                    Section("这个桌面的外观") {
+                        DockAppearanceEditor(
+                            appearance: appearanceBinding(for: space),
+                            unavailableKeys: state.unavailableAppearanceKeys
+                        ) { reason in
+                            state.dockEdited(.desktop(space), reason: reason)
+                        }
+                    }
+                    Section("应用") {
+                        HStack(spacing: 8) {
+                            Button("立即应用") {
+                                state.applyConfigForDesktop(space, reason: "手动应用 \(state.displayName(for: space)) 的 Dock")
+                            }
+                            Button("从当前真实 Dock 抓取") {
+                                guard let live = state.captureLiveDockConfig() else { return }
+                                state.setOverride(live, for: space, reason: "从当前真实 Dock 抓取")
+                            }
+                            Button("重置为默认") {
+                                state.setOverride(nil, for: space, reason: "重置为沿用默认 Dock")
+                            }
+                            Button("撤销自动回存") { state.undoLastAutoCapture() }
+                                .disabled(!state.canUndoAutoCapture())
+                                .help("撤销上一次「识别到你在真实 Dock 上的改动并回存」的覆盖（回存只落在当前活动桌面上）。")
+                        }
+                        Text("切到这个桌面时会自动应用这套 Dock。与默认一致时会被指纹短路，不会重启 Dock。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
+            .formStyle(.grouped)
         } else {
             VStack {
                 Spacer()
@@ -257,53 +297,6 @@ struct DesktopListView: View {
                         .foregroundStyle(.orange)
                 }
             }
-        }
-    }
-
-    private func overrideEditor(_ space: DesktopSpace) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("这个桌面的图标条").font(.subheadline.weight(.medium))
-                DockStripEditor(
-                    config: configBinding(for: space),
-                    availableKeys: state.availableWhitelistedKeys,
-                    captureLive: { state.captureLiveDockConfig() }
-                ) { reason in
-                    state.dockEdited(.desktop(space), reason: reason)
-                }
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("这个桌面的外观").font(.subheadline.weight(.medium))
-                DockAppearanceEditor(
-                    appearance: appearanceBinding(for: space),
-                    unavailableKeys: state.unavailableAppearanceKeys
-                ) { reason in
-                    state.dockEdited(.desktop(space), reason: reason)
-                }
-            }
-
-            Divider()
-
-            HStack(spacing: 8) {
-                Button("立即应用") { state.applyConfigForDesktop(space, reason: "手动应用 \(state.displayName(for: space)) 的 Dock") }
-                Button("从当前真实 Dock 抓取") {
-                    guard let live = state.captureLiveDockConfig() else { return }
-                    state.setOverride(live, for: space, reason: "从当前真实 Dock 抓取")
-                }
-                Button("重置为默认") {
-                    state.setOverride(nil, for: space, reason: "重置为沿用默认 Dock")
-                }
-                Button("撤销自动回存") { state.undoLastAutoCapture() }
-                    .disabled(!state.canUndoAutoCapture())
-                    .help("撤销上一次「识别到你在真实 Dock 上的改动并回存」的覆盖（回存只落在当前活动桌面上）。")
-            }
-            Text("切到这个桌面时会自动应用这套 Dock。与默认一致时会被指纹短路，不会重启 Dock。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

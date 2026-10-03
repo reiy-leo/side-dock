@@ -1,24 +1,132 @@
+import AppKit
 import SwiftUI
 
-/// 设置窗口。两个 Tab：通用（默认 Dock）/ 桌面（逐桌面独立 Dock）。
+/// 设置窗口当前显示的页。由窗口工具栏（NSToolbar 可选项）写入，SwiftUI 侧只读。
+/// 放成可注入的类而不是 `@State`：NSToolbar 的 item action 在 AppKit 侧，写不进视图状态。
+@MainActor
+@Observable
+final class SettingsTabModel {
+    var tab: SettingsTab = .general
+}
+
+/// 设置窗口的两页。
+enum SettingsTab {
+    case general
+    case desktop
+}
+
+/// 设置窗口。两个页：通用（默认 Dock）/ 桌面（逐桌面独立 Dock）。
 ///
 /// 顶部有一条**报警横幅**：`docs/PLAN.md` §3.1 末段要求"降级时在 UI 明确报警，而不是静默失效"，
 /// §3.9 第 3 条要求"Dock 拉不回来时提示从备份恢复"。这两件事都只进日志和调试面板是不合格的 ——
 /// 用户不看日志。
 struct SettingsView: View {
     @Bindable var state: AppState
+    var tabModel: SettingsTabModel
 
     var body: some View {
         VStack(spacing: 0) {
             WarningBanner(state: state)
-            TabView {
-                GeneralTab(state: state)
-                    .tabItem { Label("通用", systemImage: "gearshape") }
-                DesktopListView(state: state)
-                    .tabItem { Label("桌面", systemImage: "rectangle.3.group") }
+            switch tabModel.tab {
+            case .general: GeneralTab(state: state)
+            case .desktop: DesktopListView(state: state)
             }
         }
         .frame(width: 780, height: 560)
+    }
+}
+
+// MARK: - 窗口工具栏（System Preferences 式标签页）
+
+/// macOS 设置窗口的原生形态：工具栏上「图标 + 文字」的标签页，选中项高亮
+/// （窗口 `toolbarStyle = .preference`）。SwiftUI 的 `TabView` 在 macOS 上渲染成
+/// 浏览器式的窗口标签——没有任何一个 Apple 设置窗口长那样。
+@MainActor
+final class SettingsToolbarController: NSObject, NSToolbarDelegate {
+    static let generalItem = NSToolbarItem.Identifier("MultiDock.Settings.General")
+    static let desktopItem = NSToolbarItem.Identifier("MultiDock.Settings.Desktop")
+
+    private let tabModel: SettingsTabModel
+
+    init(tabModel: SettingsTabModel) {
+        self.tabModel = tabModel
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        Self.items
+    }
+
+    /// 把两页做成「可选中」的标签：AppKit 负责选中高亮，页切换仍走 item action。
+    func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [Self.generalItem, Self.desktopItem]
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        Self.items
+    }
+
+    private static var items: [NSToolbarItem.Identifier] {
+        [.flexibleSpace, generalItem, desktopItem, .flexibleSpace]
+    }
+
+    func toolbar(
+        _ toolbar: NSToolbar,
+        itemForItemIdentifier identifier: NSToolbarItem.Identifier,
+        willBeInsertedIntoToolbar flag: Bool
+    ) -> NSToolbarItem? {
+        let item = NSToolbarItem(itemIdentifier: identifier)
+        switch identifier {
+        case Self.generalItem:
+            item.label = "通用"
+            item.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "通用")
+            item.target = self
+            item.action = #selector(showGeneral)
+        case Self.desktopItem:
+            item.label = "桌面"
+            item.image = NSImage(systemSymbolName: "rectangle.3.group", accessibilityDescription: "桌面")
+            item.target = self
+            item.action = #selector(showDesktop)
+        default:
+            return nil
+        }
+        return item
+    }
+
+    @objc private func showGeneral() { tabModel.tab = .general }
+    @objc private func showDesktop() { tabModel.tab = .desktop }
+}
+
+// MARK: - 窗口装配
+
+/// 设置窗口的完整装配（SwiftUI 内容 + 可选中工具栏标签）。
+/// AppDelegate 与 UI 快照测试**共用** —— 快照要复制一份装配逻辑，验出来的就不是真窗口。
+@MainActor
+enum SettingsWindowFactory {
+    private static var keepAliveKey: UInt8 = 0
+
+    static func makeWindow(state: AppState, tabModel: SettingsTabModel) -> NSWindow {
+        let toolbarController = SettingsToolbarController(tabModel: tabModel)
+        let window = NSWindow(contentViewController: NSHostingController(
+            rootView: SettingsView(state: state, tabModel: tabModel)
+        ))
+        window.title = "MultiDock 设置"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        // 关掉后仍保留实例，再次打开时复用，避免状态丢失。
+        window.isReleasedWhenClosed = false
+        let toolbar = NSToolbar(identifier: "MultiDock.Settings.Tabs")
+        toolbar.delegate = toolbarController
+        toolbar.displayMode = .iconAndLabel
+        toolbar.allowsUserCustomization = false
+        toolbar.autosavesConfiguration = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .preference
+        toolbar.selectedItemIdentifier = SettingsToolbarController.generalItem
+        // 与 `SettingsView` 根视图的 `.frame(width:height:)` 保持一致，
+        // 否则窗口先按这个尺寸画一帧再被 SwiftUI 撑开，会看到一次跳动。
+        window.setContentSize(NSSize(width: 780, height: 560))
+        // NSToolbar.delegate 是弱引用：把 controller 挂在窗口上保活。
+        objc_setAssociatedObject(window, &keepAliveKey, toolbarController, .OBJC_ASSOCIATION_RETAIN)
+        return window
     }
 }
 
@@ -241,7 +349,7 @@ private struct GeneralTab: View {
                         Text(strategy.displayName).tag(strategy)
                     }
                 }
-                Text("P0 实测结论：Dock 没有热重载，改配置必须重启 Dock 进程。SIGHUP 约 0.1 秒不可用，SIGTERM 约 0.4 秒。")
+                Text("实测：写偏好后 Dock 不会自己重读，改配置要重启 Dock 进程 —— SIGHUP 约 0.1 秒不可用，SIGTERM 约 0.4 秒。（macOS 存在私有的实时生效通道，外观键已验证可行；条目路径打通前不启用。）")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

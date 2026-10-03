@@ -92,10 +92,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         if !state.spaceProviderAvailable {
             let warning = NSMenuItem(
-                title: "⚠︎ 桌面功能不可用（见调试面板）",
+                title: "桌面功能不可用",
                 action: nil,
                 keyEquivalent: ""
             )
+            warning.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "桌面功能不可用")
+            if #available(macOS 14.4, *) {
+                warning.subtitle = "详见调试面板"
+            }
             warning.isEnabled = false
             menu.addItem(warning)
             menu.addItem(.separator())
@@ -132,10 +136,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         previous.target = self
         previous.isEnabled = state.spaceProviderAvailable && state.desktops.count > 1
         // 图标上的等价操作写进副标题：菜单栏图标宽窄有限，靠 tooltip 不够显眼。
-        let hint = NSMenuItem(title: "（⇧+左键点菜单栏图标同效）", action: nil, keyEquivalent: "")
-        hint.isEnabled = false
+        // （macOS 14.4 起 NSMenuItem 原生支持副标题；更早的版本没有副标题，行为不变。）
+        if #available(macOS 14.4, *) {
+            previous.subtitle = "⇧+左键点菜单栏图标同效"
+        }
         menu.addItem(previous)
-        menu.addItem(hint)
 
         // 计划 §3.7 菜单栏下拉：把此刻真实 Dock 抓下来覆盖当前桌面的配置。
         let resetFromLive = NSMenuItem(

@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var debugWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var settingsTabModel: SettingsTabModel?
     private var powerOffObserver: NSObjectProtocol?
     private var screenParametersObserver: NSObjectProtocol?
 
@@ -130,14 +131,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let window = makeWindow(
-            title: "MultiDock 设置",
-            // 与 `SettingsView` 根视图的 `.frame(width:height:)` 保持一致，
-            // 否则窗口先按这个尺寸画一帧再被 SwiftUI 撑开，会看到一次跳动。
-            size: NSSize(width: 780, height: 560),
-            content: SettingsView(state: state)
-        )
+        let tabModel = settingsTabModel ?? SettingsTabModel()
+        settingsTabModel = tabModel
+        let window = SettingsWindowFactory.makeWindow(state: state, tabModel: tabModel)
         settingsWindow = window
+        window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
