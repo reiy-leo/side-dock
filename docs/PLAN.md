@@ -31,7 +31,7 @@
 | Dock 偏好域 | `com.apple.dock` 34 个键；`persistent-apps` 15 项（首项是 Launchpad）、`persistent-others` 有「下载」 |
 | **Finder 的表示方式** | `persistent-apps` 里**没有 Finder**，Finder 是 Dock 隐式固定项。Launchpad 则是普通条目 `file:///System/Applications/Launchpad.app/`（`com.apple.launchpad.launcher`），可通过写 plist 增删 |
 | Dock 进程守护 | `KeepAlive = {AfterInitialDemand:1, SuccessfulExit:0}` → **必须让 Dock 以信号致死方式退出**才会被 launchd 拉起；优雅退出（exit 0）不会重启 |
-| Dock 热重载 | **P0 已证伪：不存在热重载**。写偏好后 post `com.apple.dock.prefchanged`（darwin 与分布式两种都试了）Dock 完全不响应；`kill -HUP` 会让 Dock 直接退出并由 launchd 拉起（是重启，不是重载）。重启后偏好全部生效 |
+| Dock 热重载 | **P0 已证伪 notifyd 热重载**。写偏好后 post `com.apple.dock.prefchanged`（darwin 与分布式两种都试了）Dock 完全不响应；`kill -HUP` 会让 Dock 直接退出并由 launchd 拉起（是重启，不是重载）。重启后偏好全部生效。⚠️ **2026-10-03 实验 17 部分修正**：存在另一条 **MIG 通道**（HIServices 的 `CoreDock*` 函数 → `com.apple.dock.server` 端点）——外观键实测可实时生效（`CoreDockSetTileSize` 不重启就改域并持久化），**条目热替换未打通**（三种载荷被静默拒绝）；主路径维持 SIGHUP，见 `docs/spikes.md` 实验 17 |
 | 多显示器空间 | `com.apple.spaces spans-displays` 不存在 → 默认"显示器各自独立空间"开启，映射键需 `(displayUUID, spaceUUID)` |
 | 当前风险项 | 本机 `mru-spaces = 1`（"根据最近使用自动重新排列空间"）。它会打乱桌面顺序，与"循环切下一个桌面"直接冲突 → 设置页提供**显式开关**（用户主动点击才改，不静默修改） |
 
@@ -263,11 +263,12 @@ struct AppSettings: Codable {
 
 | 方案 | 做法 | P0 实测结果 |
 | --- | --- | --- |
-| A. 通知 | 写偏好后 post `com.apple.dock.prefchanged` | ❌ **彻底无效**。darwin 通知与真·分布式通知都试过，Dock 完全不响应（PID 不变、tile 的 `GUID` 未被补全） |
+| A. 通知 | 写偏好后 post `com.apple.dock.prefchanged` | ❌ **彻底无效**。darwin 通知与真·分布式通知都试过，Dock 完全不响应（PID 不变、tile 的 `GUID` 未被补全）。⚠️ 实验 17 补测了 MIG 版（`CoreDockSendNotification`，msg 0x7D0）：status=0 但同样不触发重读 —— Dock 二进制里那个字符串是它**对外广播**的方向 |
 | B. SIGHUP | `kill(dockPID, SIGHUP)` | ✅ **生效**，但**不是热重载而是进程重启**（PID 变化，launchd 立即拉回）。总不可用窗口仅 **约 101 ms** |
 | C. SIGTERM | `kill(dockPID, SIGTERM)`，未归位则 `launchctl kickstart` ⚠️ **P0 实验当时带 `-k`；实现已去掉 `-k`**（实验 9：带上会把 launchd 正要拉起的 Dock 再杀一次） | ✅ 生效（重启）。Dock 会先做约 255 ms 退出清理，总不可用窗口 **约 367–395 ms** |
+| D. CoreDock MIG 通道（**实验 17，2026-10-03 新增**） | HIServices 的 `CoreDockSetTileSize` / `SetPreferences` / `AddFileToDock` / `SendNotification` 直发 `com.apple.dock.server` | ⚠️ **未定**：外观 setter 一次实测成功（`SetTileSize` 不重启改域并持久化），但数值语义未定；条目与整域字典均被静默拒绝。**打通前不接入主路径** |
 
-> **不存在热重载**。写偏好后必须重启 Dock 进程，没有零闪烁方案。
+> **不存在 notifyd 热重载**；但「必须重启 Dock 进程」已被实验 17 部分推翻 —— MIG 通道对外观键存在。**在实验 17 续把条目路径与数值语义摸清之前，主路径维持 SIGHUP 不变。**
 
 **决定：主路径 = B（SIGHUP），兜底 = C（SIGTERM + kickstart）。** SIGHUP 比 SIGTERM 快约 4 倍（101 ms vs 395 ms），因为 SIGTERM 会被捕获并触发 Dock 的退出清理。UI 与 README 的措辞为「切换桌面时 Dock 会刷新约 0.1 秒」。
 

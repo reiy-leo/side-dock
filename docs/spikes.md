@@ -1495,6 +1495,73 @@ kickstart 后 Dock PID = 80643        ← 未变
 
 ---
 
+## 实验 17：CoreDock 私有 API 通道 —— 「热重载不存在」被**部分推翻**（2026-10-03）
+
+**问题**：能否不重启 Dock 就替换图标们（`persistent-apps` / `persistent-others` + 外观）？
+实验 1 的结论是「不存在热重载」——但那次只测了 **notifyd 路径**（`notifyutil` / `NSDistributedNotificationCenter`）。
+本实验把另一条路（**MIG → `com.apple.dock.server`**）挖了出来并实测。结论先行：
+
+> **通道存在、无权限闸门；外观键实时生效已实锤（一次意外命中）；条目热替换未打通（三种载荷全被 Dock 静默拒绝）。**
+> **「post 通知无效」依然成立；「必须重启 Dock 进程」不再成立。**
+
+### 17.1 通道是怎么找到的（纯静态分析，零写入）
+
+| 步骤 | 做法 | 发现 |
+| --- | --- | --- |
+| 1 | `launchctl print gui/501/com.apple.Dock.agent` | Dock 挂着 **`com.apple.dock.server`** 等 14 个 launchd 端点（注意：`sed` 截取会漏，必须完整列出） |
+| 2 | `strings` Dock 二进制 | 有 `com.apple.dock.server` / `com.apple.dock.prefchanged` / `com.apple.dock.add-item` |
+| 3 | `nm -u` **Finder** 二进制 | Finder 导入 **`_CoreDockAddFileToDock`**、**`_CoreDockSendNotification`**、`_CoreDockSetTrashFull`（垃圾桶满就是"外部进程让 Dock 实时变化"的活例） |
+| 4 | `dyld_info -imports Finder` | 这些符号 **(from ApplicationServices)** → 实体在 **HIServices**（经 ApplicationServices 重导出，**不用 dlopen，直接可链**） |
+| 5 | `dyld_info -exports HIServices` | 完整 API 面：Add/Remove/Set/Get/CopyPreferences/SendNotification 等约 60 个 `CoreDock*` 函数 |
+| 6 | 排除干扰 | `DockKit.framework` 是 MagSafe 配件框架（`DockAccessoryManager`），与 Dock 条目无关；System Settings 二进制里没有 `com.apple.dock.server` 字符串（走的是框架内部）；旧 `Dock.prefPane` 是无二进制的资源壳 |
+
+### 17.2 签名恢复（lldb 反汇编 HIServices 桩函数，全部核实过）
+
+Dock 二进制符号被裁（`nm -U` 只剩 9 个 C++ typeinfo），但 HIServices 的桩函数在，`lldb -b -o "target create <探针>" -o "disassemble -n <函数名>"` 直接看。
+
+| 函数 | 真实签名（反汇编还原） | 要点 |
+| --- | --- | --- |
+| `CoreDockSendNotification` | `(CFStringRef name, Int32 flags) -> OSStatus` | 序列化 CFString → `_DSSendNotification(port, 0x7D0, data, len, flags)` |
+| `CoreDockAddFileToDock` | `(CFTypeRef file, Int32 flags) -> OSStatus` | 同一 msgid 0x7D0，载荷换成序列化 CFType —— **Dock 端按载荷类型分派** |
+| `CoreDockSetPreferences` | `(CFDictionary) -> OSStatus` | msgid **0xBB8(3000)**，单参数 |
+| `CoreDockCopyPreferences` | `(CFTypeRef request, CFTypeRef *out) -> OSStatus` | **两个参数**；request 传 nil 会崩（SerializeCFType 不判空）——第一次探针的 SIGSEGV 就是它 |
+| `CoreDockGetTileSize` | `() -> Float`（xmm0 返回） | 无参数、返回 float；读到的 0.17857143 与域里的 36.0 对不上，**数值语义未定** |
+| `CoreDockSetTileSize` | `(Int32) -> OSStatus` | `sendSetFloatValue(1, value)` —— **参数按 float 位型解释**（见 17.3） |
+| `CoreDockRemoveItem` | `(Int32) -> OSStatus` | 底层叫 `_DSRemoveWindow`，参数是 Dock 内部窗口/tile ID，**不是数组下标** |
+| `CoreDockIsDockRunning` | `() -> Bool` | 读的是 HIServices 自己的缓存标志 `sDockRunning`，没注册客户端时恒 false，**不代表 Dock 没跑** |
+| `getDockPort` | bootstrap 查 `com.apple.dock.server` | **无权限闸门**：无特权 CLI 进程实测拿到 status=0 与真实 orientation/pinning 值 |
+
+### 17.3 实测结果矩阵（每轮：`defaults export` 备份 → 触发 → 轮询 GUID/PID/域 → 强制还原）
+
+| 尝试 | status | Dock 行为 | 判定 |
+| --- | --- | --- | --- |
+| `SendNotification("com.apple.dock.prefchanged", 0)`（写好无 GUID 测试 tile 后） | 0 | 5 s 内 GUID 不补、PID 不变 | ❌ Dock 不因这条消息重读偏好 |
+| `SetPreferences(整份域 35 键, tilesize=37)` | 0 | 域 tilesize 不变 | ❌ 整域字典不被接受 |
+| `AddFileToDock(CFURL(Calculator), 0)` | 0 | apps 数不变 | ❌ CFURL 载荷不触发（也可能要求客户端注册/别的类型） |
+| **`SetTileSize(999999)`**（本意"无副作用自检"，**实际是真调用**） | 0 | **域 `tilesize` 36.0 → 16.0，PID 不变，mod-count 不动** | ✅ **实时生效 + 持久化实锤**（999999 按 float 位型 ≈ 1.4e-39 → 被钳到最小 16） |
+| `SetTileSize(0x42100000=36.0f 位型)` / `64` / `36` | 0 | 域不再变化 | ⚠️ 数值语义未定（为何 36.0 位型无效），**别按现理解上生产** |
+
+### 17.4 意外与恢复（诚实记录）
+
+1. **我误发了 `SetTileSize(999999)`** —— 把它当"无副作用自检"，实际它就是一次真实调用。用户 Dock 图标当场变小。已用 `defaults write com.apple.dock tilesize -float 36` + SIGHUP 恢复。教训：**"自检"调用也必须用无副作用模式，不能拿写函数试编译**。
+2. 三轮实验共重启 Dock 5 次（还原路径），PID 链 `493→47938→48072→48206→48395→48484`，全部健康；终态与实验前全量 diff **为空**（除 mod-count 等 Dock 自有键）。
+3. **沙箱坑（新增）**：本会话沙箱里 `CFPreferencesCopyMultiple(nil, …)` **只回 1 个键**，逐键 `CFPreferencesCopyAppValue` 完全正常 → 探针的观察手段必须逐键读，否则会把"观察坏了"误判成"实验失败"（第一轮就因此白跑）。
+4. `defaults` CLI 在沙箱里读到的是**真实域**（18057 字节 / 35 键），与探针的 CFPreferences 视图不一致 —— 两者观察口径不同，别混用。
+
+### 17.5 结论与下一步
+
+1. **修正实验 1 的表述**：`com.apple.dock.prefchanged` 在 Dock 二进制里大概率是它**对外广播**的方向（自己改了偏好时发给别人），不是收；Dock 不监听任何 notifyd 通知这件事没变。
+2. **外观键的热重载通道已实锤存在**（`CoreDockSetTileSize` 一次成功：改域 + 持久化 + 不重启），但**数值语义未定**，不能上生产。
+3. **条目热替换未打通** —— 三种载荷全被静默拒绝。缺口在 Dock 端 msgid 2000/3000 处理器的分派逻辑：可能要求 `CoreDockRegisterClientWithRunLoop` 注册、可能要求特定 CFType（CFString 路径而非 CFURL）、也可能校验发送方 audit token。
+4. **下一步（实验 17 续，全部只读）**：
+   - 反汇编 Dock 端 handler：Dock 二进制在磁盘上（10 MB），`otool -tV` 全量反汇编后找 0x7D0/2000 消息分派表与 `com.apple.dock.prefchanged` / `com.apple.dock.add-item` 的 xref；
+   - `CoreDockRegisterClientWithRunLoop` 先注册再重试三种载荷；
+   - 试 `AddFileToDock(CFString 路径, 0)`；
+   - 看 Finder「在 Dock 中保留」时谁发什么（`dyld_info -fixups Finder` 或给 Finder 的 `cmdAddToDock:` 附近反汇编——lldb attach Finder 可能被 hardened runtime 拒）。
+5. 若条目路径最终打通：`DockController.apply` 可升级为「写域 + 实时推送」，SIGHUP 降级为兜底；A8 的暴露面（launchd 节流/退避）将从应用主路径上**整体消失**。若打不通：外观键 setter 也可以先把"仅外观变化"的 apply 从重启降为零重启（但要先解决 17.3 的数值语义）。
+
+---
+
 ## 复现方法
 
 ```bash
@@ -1527,4 +1594,8 @@ swiftc -O -o /tmp/md-backoff scripts/measure-launchd-backoff.swift && /tmp/md-ba
 
 # LaunchServices 在重启窗口里滞后多久（实验 15.3）
 swiftc -O -o /tmp/md-ls-lag scripts/measure-launchservices-lag.swift && /tmp/md-ls-lag 6
+
+# CoreDock 通道探针（实验 17）
+#   read / notify / state / domain 是只读；settilesize / setprefs / addfile 会真的动 Dock —— 必须先备份再跑
+swiftc -O -o /tmp/coredock-probe scripts/spike-coredock-probe.swift && /tmp/coredock-probe read
 ```

@@ -140,6 +140,13 @@ macOS 多桌面（Space）工具：为每个桌面绑定一套**原生 Dock** �
 > ⚠️ **本节在 2026-09-20 被更正过两次**：先写错"三个 override 全空"（读取脚本用错 JSON 键名），
 > 再写错"两条 override 与默认重复、可以清成沿用默认"（忽略了 override 是整体替换）。**看 §5 那条约定。**
 
+> 🔬 **2026-10-03（实验 17）：用户问"能否不重启 Dock 就换图标"。结论：通道找到了，条目没打通。**
+> HIServices 的 `CoreDock*` 私有函数（Finder 的"在 Dock 中保留"就走这条）→ MIG `com.apple.dock.server`，
+> **无权限闸门**；`CoreDockSetTileSize` 实测**不重启就改域并持久化**（外观键热重载实锤），
+> 但 `SetPreferences(整域)` / `AddFileToDock(CFURL)` / `SendNotification(prefchanged)` 全被静默拒绝，
+> `SetTileSize` 的数值语义未定 —— **主路径维持 SIGHUP 不变，B15 跟踪**。
+> 详见 `docs/spikes.md` 实验 17 与 `scripts/spike-coredock-probe.swift`。
+
 ### 已完成
 
 | 项 | 位置 | 状态 |
@@ -502,7 +509,7 @@ A4 的**逻辑侧已自动化**（`DockAcceptanceTests.testExternalDockChangeIsC
 | 主动切桌面 | `CGSManagedDisplaySetCurrentSpace(cid, displayUUID, spaceID)` **可用**，**实测 0–6 ms 生效（瞬时提交，没有动画）** |
 | **切桌面没有动画，且做不到**（2026-09-18 复核，`spikes.md` 实验 7） | 程序化切空间是**硬切**：3 轮实测 **6 / 0 / 0 ms**。想加"左右滑动"的四条路全断：① `SLSManagedDisplaySetIsAnimating` 是**粘滞状态位**（置位后 600 ms 内 **101/101** 次采样仍为 true，不会自复位），**且它的返回值是 void ABI 残留寄存器** —— 同一次运行 8 次调用恒为 `-785121165`，换一次运行变成 `-2752379`，**不能当成功标志**；② 会话级开关 `SLSSetSessionSwitchCubeAnimation`（值 `cube`/`transition`/`none`/`""`，对应 `kSLSSessionSwitchTransitionType*`）**只有 set 没有 get**，偏好域里也没有（`CGSessionCopyCurrentDictionary()` 仅 11 个键，全审计/用户/登录态），扫遍 `__TEXT` 5,037,056 字节只有函数名本身 → **改了还原不回去，破无痕原则**；③ `SLSWillSwitchSpaces` 按 `(cid, CFArray)` 试直接 **SIGSEGV**（`array_call_as_integer_list`），签名未知，**别再拿图形会话试错**；④ 合成按键事件被拦（`CGPreflightPostEventAccess()` 返回 true，但**阳性对照合成 `Cmd+Tab` 也不生效**）。真正的过渡在 WindowServer 内部的 `Transition{Slide,Cube,Flip,Blend,Shrink,Spiral,Drop,RadialBlur}Metal`，只服务用户手势 |
 | **枚举私有框架导出符号的方法** | `nm` 在磁盘上找不到 SkyLight（框架在 dyld 共享缓存里，磁盘无实体文件）。要在**进程内**解析：`_dyld_get_image_header` 拿镜像 → 遍历 `LC_SEGMENT_64` 取 `__LINKEDIT`/`__TEXT` → **`LC_SYMTAB.symoff`/`stroff` 是共享缓存内的文件偏移**，必须先经 `__LINKEDIT` 换算成 vmaddr 再取指针，直接当指针用会 SIGSEGV。脚本 `scripts/spike-symbols.swift`，本机 SkyLight 共 **23,474** 个导出符号 |
-| Dock 热重载 | **不存在**。post `com.apple.dock.prefchanged`（darwin 与分布式两种都试过）完全无效 |
+| ⚠️ Dock 热重载（**2026-10-03 实验 17 部分修正**） | notifyd 热重载**不存在**：post `com.apple.dock.prefchanged`（darwin / 分布式 / **CoreDock MIG 版**三种都试过）完全无效。**但 MIG 通道本身存在**：HIServices 的 `CoreDock*` 函数（经 ApplicationServices 重导出，直接可链）→ Dock 的 launchd 端点 `com.apple.dock.server`，**无权限闸门**。实测 `CoreDockSetTileSize`（参数按 **float 位型**经 Int32 传，越界被钳）**不重启就改域并持久化**；但 `SetPreferences(整域字典)` / `AddFileToDock(CFURL)` / `SendNotification` 都被 Dock **静默拒绝**（status=0 无行为）—— **条目热替换未打通，主路径维持 SIGHUP**。签名与完整矩阵见 `docs/spikes.md` 实验 17；探针在 `scripts/spike-coredock-probe.swift` |
 | Dock 重启 | `kill -HUP`：进程消失于 +13 ms、归位 +101 ms（**总不可用约 101 ms**）。`kill -TERM`：Dock 先做约 255 ms 清理，总不可用 **约 367–395 ms**。**主路径选 SIGHUP** |
 | **launchd 的重启节流**（P3 实测，`spikes.md` 实验 5） | 距上一次重启**不足约 1 秒**时再次重启，Dock 要 **约 1070 ms** 才归位；间隔 **≥ 1 秒**只要 **约 70 ms**。阈值在 0.6–1.0 s 之间。⚠️ **不是"隐式节流"** —— `com.apple.Dock.plist` 里**本来就写着 `ThrottleInterval = 1`**（`launchctl print gui/501/com.apple.Dock.agent` 显示 `minimum runtime = 1`）。→ `DockReloader.minimumSpacing` 默认 1 s 先等再重启（等待期间 Dock 可用），实测 Dock 不可用时长 **45–90 ms** |
 | ⚠️ **别被"uptime 门槛"骗了 —— 那个假说已被实测推翻**（2026-09-20，`spikes.md` 实验 11→12） | 真机日志里 uptime 6.5 s / 1 s 的两次重启花了 **26 046 / 31 039 ms**，而 uptime ≥ 30 s 的 4 次只要 50–126 ms，看起来就是"launchd 有 ~10 s 的 crash-uptime 门槛"。**但控制实验直接证伪**：uptime 6.0 / 12.0 / 20.0 s 各测一次 + 60 s 与 81 486 s 两个对照，**归位耗时 37–68 ms，一次都没被罚**。`com.apple.Dock.plist` 里写的本来就是 `ThrottleInterval = 1`（`launchctl print gui/501/com.apple.Dock.agent` 显示 `minimum runtime = 1`）。→ **`minimumSpacing` 不要动**。26–31 s 属偶发、根因未定，见 §6.3 A8 |
@@ -669,6 +676,7 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 | B12 | ~~编辑条竖排未实现~~ | 位置改成左/右后，编辑条与实际 Dock 长得不一样 | ✅ **已解决（2026-09-18，P5）**：`DockStripEditor.isVertical` + `SlotSizing` |
 | B13 | ~~孤儿绑定不清理也不提示~~ | 配置越积越多、看不出哪些还有效 | ✅ **已解决（2026-09-18，P5）**：桌面页横幅 + 「清理」按钮 + 二次确认。**绝不自动删**（拔外接屏会误伤） |
 | B14 | ~~`DockWatcher` 回存前不存历史版本~~ | 用户手改被误判时，旧配置找不回来 | ✅ **已解决（2026-09-18，P5）**：改成内存撤销栈 `DockEditHistory` + UI 上的「撤销自动回存」。**刻意不落盘** —— 落盘一堆没有恢复入口的文件是花架子 |
+| B15 | **Dock 图标热替换通道未打通**（2026-10-03，实验 17）：CoreDock MIG 通道存在且无权限闸门，外观 setter 实测可实时生效；但 `SetPreferences(整域)` / `AddFileToDock(CFURL)` / `SendNotification(prefchanged)` 三种载荷被 Dock **静默拒绝**，`SetTileSize` 的**数值语义未定**（36.0 位型无效、越界值被钳 16） | 打通前"不重启换图标"做不了；外观键零重启也不能上生产 | 下一步全只读：反汇编 Dock 端 msg 0x7D0/0xBB8 处理器（Dock 二进制在磁盘上，`otool -tV`）；或先 `CoreDockRegisterClientWithRunLoop` 再重试；或试 `AddFileToDock(CFString 路径)`。**别再拿写函数当"自检"** —— 17.4 记了一次误发把用户 tilesize 改成 16 的事故 |
 | **C. 参数与取舍（记录在案）** | | | |
 | C1 | **`DockWatcher` 轮询周期 2 s 是拍的**，没有实测依据 | 用户手动改 Dock 后最长 2 s 才被回存 | 按用户体感调 |
 | C2 | **一次切换的应用总耗时约 1 秒**（其中 Dock 只消失 45–90 ms，其余是主动错开节流的等待） | 切桌面后 Dock 配置生效有一秒延迟，但期间 Dock 可用 | 按"宁等不闪"处理，见 §6.1 第 6 条 |
@@ -762,6 +770,22 @@ MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptance
 ## 8. 会话记录
 
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
+
+### 2026-10-03（第 27 次）— 实验 17：CoreDock 通道探路 —— 「热重载不存在」被部分推翻（**零业务代码改动**）
+
+**用户问**：「读取项目状态，确定如何在不重启 dock 的情况下替换 dock 图标们」。
+
+**做了什么**（全部是静态分析 + 带安全栏的真机实验，没碰业务代码）：
+
+1. **复核实验 1**：当年只测了 notifyd 路径（`notifyutil` / `NSDistributedNotificationCenter`，object 均为 nil）。
+2. **静态分析**（零写入）：`launchctl print` 发现 Dock 挂着 **`com.apple.dock.server`** 等 14 个端点；`nm -u` 发现 **Finder 导入 `_CoreDockAddFileToDock` / `_CoreDockSendNotification`**；`dyld_info` 顺着 ApplicationServices 找到实体在 **HIServices**（直接可链，不用 dlopen），`dyld_info -exports` 拿到约 60 个 `CoreDock*` 函数。`DockKit` 是 MagSafe 配件框架，红鲱鱼。
+3. **lldb 反汇编 HIServices 桩函数恢复签名**（Dock 二进制被裁符号，HIServices 的桩在）：`SendNotification(CFStringRef, Int32)`、`AddFileToDock(CFTypeRef, Int32)`、`SetPreferences(CFDictionary)`、`CopyPreferences(CFTypeRef, CFTypeRef*)`、`SetTileSize(Int32)`（**float 位型**）等；`getDockPort` 无权限闸门。
+4. **带安全栏的真机实验**（备份 + PID 看门狗 + 强制还原，三轮共重启 Dock 5 次全部健康）：`SendNotification` / `SetPreferences(整域)` / `AddFileToDock(CFURL)` **全被静默拒绝**（status=0 无行为）；**`SetTileSize` 一次误发实测"不重启就改域并持久化"**（36.0→16.0，被钳到最小值）—— 外观键热重载实锤，但随后 36.0 位型 / 64 / 36 都无效，**数值语义未定**。
+5. **事故与恢复（诚实记录）**：把 `SetTileSize(999999)` 当"无副作用自检"误发了出去，用户 Dock 图标当场变小；已用 `defaults write tilesize 36` + SIGHUP 恢复。终态与实验前全量 diff 为空。
+6. **新坑**：沙箱里 `CFPreferencesCopyMultiple(nil,…)` 只回 1 个键，读域必须逐键 `CFPreferencesCopyAppValue`；第一轮实验因观察手段坏了白跑。
+7. 留档：`scripts/spike-coredock-probe.swift`（探针，模式分只读/写入两档）、`docs/spikes.md` 实验 17（17.1 发现链 / 17.2 签名 / 17.3 结果矩阵 / 17.4 事故 / 17.5 下一步）、PLAN.md §3.5 加方案 D 并修正两处"不存在热重载"表述、§4 热重载行改写。
+
+**当前进度**：P0–P5 状态不变（无业务代码改动）。**新增未解决项 §6.3 B15**（条目热替换通道 + SetTileSize 数值语义；下一步全只读：反汇编 Dock 端 msg 0x7D0/0xBB8 处理器 / 注册客户端后重试 / 试 CFString 载荷）。
 
 ### 2026-09-22（第 26 次）— 基线复核 + 把 `docs/PLAN.md` 与实验 16 对齐（**零代码改动**）
 
