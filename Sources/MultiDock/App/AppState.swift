@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import os
@@ -79,6 +80,8 @@ final class AppState {
     let switcher: SpaceSwitcher
     /// 切换桌面的中上部提示。由 `AppDelegate` 注入 —— `AppState` 不碰 AppKit 窗口。
     private(set) var toastPresenter: ToastPresenter?
+    /// 次级 Dock 条的调度器。同样由 `AppDelegate` 注入；内容与开关从本状态读取。
+    private(set) var secondaryDock: SecondaryDockController?
 
     /// Dock 应用流水线（读全量域 → 只覆盖白名单键 → 原子写 → 重启 Dock → 校验）。
     let dockController: DockController
@@ -163,8 +166,9 @@ final class AppState {
                 self.append(.info, "活动空间不是用户桌面（可能是全屏 App），不触发切换")
             }
             self.toastPresenter?.handleActiveSpaceChanged(space)
+            self.secondaryDock?.spaceDidChange(space)
             // 桌面切换后把该桌面的 Dock 推下去（内容相同会被指纹短路，不会白重启 Dock）。
-            if let space { self.applyConfigForDesktop(space, reason: "切到 \(self.displayName(for: space))") }
+            if let space { self.applyForDesktopSwitch(space, reason: "切到 \(self.displayName(for: space))") }
         }
         // 必须在最后：闭包要捕获 `self`，而所有存储属性得先初始化完。
         dockController.onOutcome = { [weak self] outcome in self?.handleDockOutcome(outcome) }
@@ -251,6 +255,19 @@ final class AppState {
         dockController.request(config, reason: reason, strategy: settings.reloadStrategy)
     }
 
+    /// **桌面切换路径**的统一入口（被动回调 + 三条预应用都走它）。
+    ///
+    /// 「冻结原生 Dock 逐桌面切换」开启时整条跳过：原生 Dock 保持一套固定配置、
+    /// 不再写偏好/重启，逐桌面的差异由次级 Dock 条呈现。
+    /// 手动路径（「立即应用」、编辑器的「编辑后立即应用」）不走这里，不受冻结影响。
+    func applyForDesktopSwitch(_ space: DesktopSpace, reason: String) {
+        guard !settings.freezeNativeDockSwitching else {
+            append(.info, "原生 Dock 已冻结：跳过「\(reason)」，由次级 Dock 条呈现")
+            return
+        }
+        applyConfigForDesktop(space, reason: reason)
+    }
+
     /// 用户手动改了真实 Dock → 回存到当前桌面的配置（计划 §3.8）。
     func handleUserDockEdit(_ config: DockConfig) {
         guard settings.autoCaptureUserEdits else {
@@ -262,6 +279,15 @@ final class AppState {
         defer {
             dockWatcher?.acknowledge(dockController.appliedComparableFingerprint)
             dockWatcher?.start()
+        }
+
+        if settings.freezeNativeDockSwitching {
+            // 冻结模式下原生 Dock 只有一套固定配置，"当前桌面绑定"对它不再成立 ——
+            // 手动改动一律归入默认 Dock（次级条上无 override 的桌面会立即反映出来）。
+            editHistory.push(settings.defaultDock, for: DockEditHistory.defaultDockKey)
+            updateSettings { $0.defaultDock = config }
+            append(.info, "冻结模式：手动改动已回存到默认 Dock（\(config.pinnedApps.count) 个图标）")
+            return
         }
 
         guard let space = activeSpace else {
@@ -381,6 +407,32 @@ final class AppState {
         toastPresenter = presenter
     }
 
+    /// 注入次级 Dock 条调度器（由 `AppDelegate` 组装，见 `attachToast` 的同一模式）。
+    func attachSecondaryDock(_ controller: SecondaryDockController) {
+        secondaryDock = controller
+    }
+
+    /// 次级 Dock 条的内容快照（调度器经注入闭包调用）。
+    ///
+    /// 返回 nil = 该桌面没有可显示的内容（条隐藏），口径与 `applyConfigForDesktop`
+    /// 拒绝空 Dock 一致。正在运行的 App 集合现取 `NSWorkspace`（条目数少，开销可忽略）。
+    func secondaryDockContent(for space: DesktopSpace?) -> SecondaryDockContentSnapshot? {
+        guard let space else { return nil }
+        let config = effectiveConfig(for: space)
+        let running = Set(
+            NSWorkspace.shared.runningApplications
+                .filter { $0.activationPolicy == .regular }
+                .compactMap(\.bundleIdentifier)
+        )
+        // 图标尺寸跟随该桌面生效配置的 tilesize（钳到合理区间，别让条厚得离谱）。
+        let iconSize = min(max(config.appearance.tilesize, 28), 48)
+        return SecondaryDockContentBuilder.snapshot(
+            from: config,
+            runningBundleIDs: running,
+            iconSize: iconSize
+        )
+    }
+
     // MARK: - 生命周期
 
     func start() {
@@ -417,6 +469,8 @@ final class AppState {
 
         startDockWatcher()
         startDockPresenceMonitor()
+        // 次级 Dock 条按"此刻的活动桌面"初始化（之后由桌面变化回调驱动）。
+        secondaryDock?.spaceDidChange(observer.activeSpace)
         // 自愈必须放在最后：它要走还原链路（写偏好 + 重启 Dock），
         // 得等观察器、watcher、监视器都就位，否则还原完它们才启动，状态会错。
         scheduleSelfHealIfNeeded()
@@ -426,6 +480,7 @@ final class AppState {
         observer.stop()
         dockWatcher?.stop()
         dockPresenceMonitor?.stop()
+        secondaryDock?.stop()
         append(.info, "桌面观察已停止")
     }
 
@@ -529,7 +584,7 @@ final class AppState {
             append(.warning, "没有可切换的下一个桌面（当前显示器只有 1 个桌面，或尚未识别到活动桌面）")
             return
         }
-        applyConfigForDesktop(target, reason: "预应用：切到 \(displayName(for: target))")
+        applyForDesktopSwitch(target, reason: "预应用：切到 \(displayName(for: target))")
         guard switcher.switchTo(target) != nil else {
             append(.warning, "切换到 \(displayName(for: target)) 失败")
             return
@@ -547,7 +602,7 @@ final class AppState {
             append(.warning, "没有可切换的上一个桌面（当前显示器只有 1 个桌面，或尚未识别到活动桌面）")
             return
         }
-        applyConfigForDesktop(target, reason: "预应用：切到 \(displayName(for: target))")
+        applyForDesktopSwitch(target, reason: "预应用：切到 \(displayName(for: target))")
         guard switcher.switchTo(target) != nil else {
             append(.warning, "切换到 \(displayName(for: target)) 失败")
             return
@@ -560,7 +615,7 @@ final class AppState {
             append(.error, "桌面切换不可用：\(spaceProviderWarning ?? "未知原因")")
             return
         }
-        applyConfigForDesktop(space, reason: "预应用：切到 \(displayName(for: space))")
+        applyForDesktopSwitch(space, reason: "预应用：切到 \(displayName(for: space))")
         guard switcher.switchTo(space) != nil else {
             append(.warning, "切换到 \(displayName(for: space)) 失败")
             return

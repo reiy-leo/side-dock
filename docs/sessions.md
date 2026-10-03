@@ -3,6 +3,20 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-04（第 33 次）— 次级 Dock 条：随桌面秒换内容 + 冻结开关（实验 21）
+
+**用户说**：三连问——「切换桌面后为什么非要重启 Dock」「可以完全替换原生 Dock 么」「能不能紧贴原生 Dock 加一条 secondary dock 栏，默认显示一半、hover 显示全、不用放大效果，按照这个实现」。
+
+**做了什么**：
+
+1. **答了两个可行性问题**：热重载不存在是实验 1/17 的实测结论（Dock 按发送方放行 MIG）；完全替换做不到（launchd KeepAlive + SIP + Dock 进程承载 cmd-tab/Mission Control/废纸篓/最小化窗口）；「并存的自绘条」可行且本代码库零件基本齐。
+2. **产品决策（AskUserQuestion，用户选定）**：「随桌面 + 冻结开关」——条显示当前桌面 `effectiveConfig` 的图标，切桌面换视图零重启；设置加「冻结原生 Dock 逐桌面切换」（默认关，开启后 SIGHUP 切换路径整体退役）。
+3. **实验 21（几何探针）**：⚠️ 推翻了原计划——15.8.1 上 Dock 条**不是**独立 CG 窗口（Dock 进程只有全屏 layer-20 容器窗口）。几何源改用 `NSScreen.visibleFrame` 排他内缩（本机 bottom、内缩 53）。另核实 config.json 已全量 bottom（A9 的「默认 right」过时）。
+4. **实现**：新 5 件——`SecondaryDockLayout`（纯几何：三方位/半露=向 Dock 平移半条厚靠层级 19<20 被 Dock 遮挡/clamp）、`DockFaceProviding`（visibleFrame 内缩探测）、`SecondaryDockStripView`（条目模型 + 纯函数内容构建器 + SwiftUI 条）、`SecondaryDockWindow`（Toast 配方可交互变体，层级 19）、`SecondaryDockController`（状态机 + 1s 几何轮询 + hover 150ms 防抖 + 鼠标安全网）。改 4 处——`AppSettings` +2 字段（decodeIfPresent 同步补）、AppState（第三个 space 消费者 + `applyForDesktopSwitch` 冻结闸门 + 冻结时手动改动改道默认 Dock）、AppDelegate（装配 + `withObservationTracking` 内容观察 + 屏幕变化即时重探）、SettingsView（「次级 Dock 条」区块两个开关）。
+5. **测试与验收**：+27 条 → **355 全绿**（几何三方位/半露/clamp、内容构建、状态机、冻结闸门、解码回归）；快照 `secondary-dock-{light,dark}.png` 人工核对通过；`build-app.sh` 重打包并启动，window-dump 实测 `layer=19 x=600 y=1115 w=720 h=56`（换算即半露位逐像素吻合），日志 `次级 Dock 条：Dock 几何变化 → bottom 内缩 (0.0, 53.0, 1920.0, 1147.0)`，切桌面 SIGHUP 58 ms 正常。
+
+**当前进度**：共存模式已在真机运行（冻结默认关，原生照旧切换）。**等用户手测**：① hover 滑出/收回手感；② 点击图标启动；③ 半露观感（亮/暗）；④ 满意后开「冻结原生 Dock 的逐桌面切换」再体感切桌面（应完全无重启）。文档同步：PLAN §3.12、rules 次级条节、spikes 实验 21、AGENTS.md 约束修订。剩余待办不变（B5/A1–A5/B8/B9/B10/A8 只等复现）。
+
 ### 2026-10-04（第 32 次）— 用户原始诉求落地：自动隐藏三明治，切换无闪烁
 
 **用户说**：「切换桌面不用重启 dock（会先黑屏再出现 dock 栏），而是平滑地感觉不到，我记得 github 上有 repo 实现了，无感切换」。

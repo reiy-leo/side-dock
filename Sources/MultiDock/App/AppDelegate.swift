@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import SwiftUI
 
 /// AppKit 委托：组装状态、菜单栏、窗口，并把退出流程交给 `LifecycleController`。
@@ -12,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lifecycle: LifecycleController!
     private var menuBar: MenuBarController!
     private var toastWindow: DesktopNameToastWindow!
+    private var secondaryDockWindow: SecondaryDockWindow!
+    private var secondaryDockController: SecondaryDockController?
 
     private var debugWindow: NSWindow?
     private var settingsWindow: NSWindow?
@@ -23,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let state = AppState()
         self.state = state
         attachToast(to: state)
+        attachSecondaryDock(to: state)
 
         lifecycle = LifecycleController(state: state)
         // 无痕原则的两条接线：把「改过 Dock」记进会话标记；退出时把基准写回真实 Dock。
@@ -65,6 +69,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    /// 次级 Dock 条的接线：窗口在这里建，调度逻辑在 `SecondaryDockController`，
+    /// 内容快照与开关仍归 `AppState`。同样必须在 `state.start()` 之前接上。
+    private func attachSecondaryDock(to state: AppState) {
+        let window = SecondaryDockWindow()
+        secondaryDockWindow = window
+        let controller = SecondaryDockController(
+            deps: .init(
+                presenter: window,
+                faceProvider: ScreenInsetDockFaceProvider(),
+                content: { [weak state] space in state?.secondaryDockContent(for: space) },
+                isEnabled: { [weak state] in state?.settings.showSecondaryDock ?? true },
+                log: { [weak state] message in
+                    state?.append(.info, message)
+                }
+            )
+        )
+        secondaryDockController = controller
+        window.onActivate = { item in
+            guard let path = item.launchPath else { return }
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        }
+        window.onHoverChange = { [weak controller] inside in
+            controller?.hoverChanged(inside)
+        }
+        state.attachSecondaryDock(controller)
+        controller.start()
+        observeSecondaryDockConfiguration(state, controller: controller)
+    }
+
+    /// 次级 Dock 条的内容随配置变化（改图标、改绑定、开关切换）即时刷新。
+    /// 与 `MenuBarController` 同一手法：`withObservationTracking` 观察一轮、变更时重注册。
+    private func observeSecondaryDockConfiguration(
+        _ state: AppState,
+        controller: SecondaryDockController
+    ) {
+        withObservationTracking {
+            _ = state.settings
+            _ = state.bindings
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                controller.refresh()
+                self.observeSecondaryDockConfiguration(state, controller: controller)
+            }
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         lifecycle.applicationWillTerminate()
         if let token = powerOffObserver {
@@ -103,6 +154,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.state.handleScreenParametersChanged()
+                // 插拔/改分辨率会改变 Dock 的排他内缩，次级条立刻重摆（1s 轮询兜底）。
+                self?.secondaryDockController?.geometryTick()
             }
         }
     }

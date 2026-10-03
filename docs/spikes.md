@@ -1664,6 +1664,47 @@ SIGHUP 重启（PID 329→755、60 ms）、10 键写入、条目进 Dock、还�
 
 ---
 
+## 实验 21：次级 Dock 条的几何源 —— Dock 条不是独立 CG 窗口（2026-10-04，**已实现**）
+
+**背景**：用户拍板做「贴原生 Dock、半露、hover 滑出」的次级条（见 `docs/PLAN.md` §3.12）。
+原计划用 CGWindowList 按 Dock PID 找「Dock 条窗口」量几何。
+
+**实测（`scripts/spike-probe.swift` + 一次性全窗口 dump）**：
+
+| 观测量 | 值 |
+| --- | --- |
+| Dock 进程的全部窗口（`.optionAll`） | **只有两个全屏 layer-20 窗口**（1920×1200，一个 onscreen 一个 offscreen） |
+| Dock 条自身的窗口 | **不存在** —— 条画在全屏容器窗口里（15.8.1；实验 20 也见过 owner=Dock 零条目的容器） |
+| 屏幕 | 1920×1200，`visibleFrame = (0, 53, 1920, 1147)`（菜单栏自动隐藏，顶部无内缩） |
+| 当前偏好 | `orientation=bottom`、`autohide=0`、`tilesize=36` |
+| config.json | 默认与全部 3 条绑定都是 `bottom`（A9 时代的"默认 right"已过时，用户已改） |
+
+**结论与决定**：
+
+1. **几何源改用 `NSScreen.visibleFrame` 的排他内缩** —— 它就是系统为原生 Dock 预留位置的
+   权威表达，随 Dock 方位/大小/自动隐藏自动更新，且天然跨 Dock 重启窗口（CGWindowList 在
+   Dock 重启的 45–90 ms 里是空的）。`visibleFrame` 只有 top 是菜单栏的，left/right/bottom
+   三向内缩即 Dock。
+2. **摆放力学统一为「贴内侧、半露藏身后」**：条贴 Dock 内侧面（bottom→上方、right→左侧、
+   left→右侧，与用户 msg3 的三方位一致）；半露 = 向 Dock 方向平移半个条厚，本条窗口层级
+   **19 < 20**，滑进去的部分被原生 Dock 像素挡住，hover 向屏幕内侧滑出全条。
+   这个力学**不依赖侧边 Dock 的垂直锚定**，三方位几何完全同构。
+3. **点击/hover 的事件通路**：全屏 Dock 容器窗口在条的区域上方（层级 20 > 19），但它在
+   条区域外必然事件穿透（否则全屏所有普通窗口都收不到点击）——真机窗口核验见下，点击手感
+   归入用户手测（A 组）。
+
+**真机验收（`build/MultiDock.app`，04:45）**：window-dump 读到次级条窗口
+`layer=19 x=600 y=1115 w=720 h=56`（CG 坐标）——换算回 AppKit 即 y 29–85：
+下半截 29–53 在 Dock 条后、上半截 53–85 从 Dock 顶边探出，水平居中，720 宽 = 16 条目
+（访达 + 15 配置图标），与设计逐像素吻合。日志出现
+`次级 Dock 条：Dock 几何变化 → bottom 内缩 (0.0, 53.0, 1920.0, 1147.0)`。
+
+**测试**：+27 条（几何三方位/半露/clamp、内容构建 Finder 置首 + 运行指示、状态机
+hover 防抖/安全网/全屏隐藏、冻结闸门、旧配置解码）——**355 全绿**，快照
+`secondary-dock-{light,dark}.png` 人工核对通过。
+
+---
+
 ## 复现方法
 
 ```bash

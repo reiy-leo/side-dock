@@ -610,6 +610,48 @@ struct AppSettings: Codable {
 
 ---
 
+### 3.12 次级 Dock 条（2026-10-04 新增，用户拍板）
+
+**定位**：贴在原生 Dock 内侧的自绘图标条，**不替换**原生 Dock、不改写它的偏好。
+硬约束 2 的「不自己画 Dock 栏」由用户在本日修订：新增次级条是被批准的例外，
+原生 Dock 的地位与无痕原则不变（条是纯 App UI，不写任何偏好，退出即消失）。
+
+**交互规格（用户原话）**：
+
+- 位置：贴原生 Dock「下方/内侧」——bottom 方位 → 从 Dock 顶边探出；right → 左侧；left → 右侧。
+- **默认半露**：整条向 Dock 方向平移半个条厚，滑进 Dock 身后的部分被 Dock 像素挡住
+  （次级条窗口层级 19 < Dock 20）；**hover 滑出全条**（离开 150 ms 防抖后收回）。
+- **不做放大效果**，图标定尺寸（跟随该桌面生效配置的 tilesize，钳 28–48）。
+- 点击条目 → `NSWorkspace.open`（已运行则激活）；运行指示点常驻槽位不跳动。
+
+**内容与冻结开关（用户从三个方案里选定「随桌面 + 冻结开关」）**：
+
+- 内容 = 当前桌面的 `effectiveConfig(for:).pinnedApps`（Finder 幻影置首 + 启动台首位复用
+  `DockStripRules`），**切桌面瞬间换内容**（换视图，零重启、零写入）。
+- 设置新增「冻结原生 Dock 的逐桌面切换」（默认关）：开启后 `applyForDesktopSwitch` 整条跳过
+  ——原生 Dock 保持一套固定配置，不再随桌面写偏好/重启；手动路径（「立即应用」、编辑器的
+  「编辑后立即应用」）不受影响。冻结期间用户手动改真实 Dock → 回存到**默认 Dock**
+  （"当前桌面绑定"的语义在冻结下不成立）。
+
+**机制**（实测依据见 `docs/spikes.md` 实验 21——Dock 条不是独立 CG 窗口，几何源用
+`visibleFrame` 排他内缩）：
+
+| 件 | 位置 | 说明 |
+| --- | --- | --- |
+| 纯几何 | `Dock/SecondaryDockLayout.swift` | `detectDockFace`（三向内缩 → 方位）+ `placement`（展开/半露两 frame）+ `barSize`；全纯函数 |
+| 几何源 | `Dock/DockFaceProviding.swift` | `ScreenInsetDockFaceProvider` 扫全部 `NSScreen`，取内缩最大的屏；探测不到（自动隐藏中）→ 保持现状 |
+| 呈现 | `UI/SecondaryDockWindow.swift` | Toast 配方 + 三处不同：可交互、层级 19、SwiftUI 图标条；材质 `.popover` + maskImage 圆角 |
+| 内容 | `UI/SecondaryDockStripView.swift` | 条目模型 + `SecondaryDockContentBuilder`（纯函数）+ SwiftUI 视图 |
+| 调度 | `UI/SecondaryDockController.swift` | 状态机（半露/展开/隐藏）+ 1 s 几何轮询 + hover 防抖 + 鼠标位置安全网；依赖全注入可单测 |
+
+**可见性行为**：全屏空间（`space == nil`）隐藏，与原生 Dock 对齐；开关关闭隐藏；
+内容为空（该桌面 `pinnedApps` 为空）隐藏。多显示器跟随内缩最大的那块屏（B5 未实测，标注）。
+
+**验收**：单测 +27（355 全绿）；快照 `secondary-dock-{light,dark}.png`；真机 window-dump
+核验 `layer=19` 半露 frame 逐像素吻合（实验 21）；hover/点击手感归入用户手测（A 组）。
+
+---
+
 ## 4. 实施阶段与验收
 
 | 阶段 | 内容 | 验收标准 |

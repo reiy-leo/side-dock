@@ -355,12 +355,18 @@ struct AppSettings: Codable, Hashable, Sendable {
     var reloadStrategy: ReloadStrategy = .auto
     /// 切换桌面时在屏幕中上部弹 1 秒的桌面名提示（`docs/PLAN.md` §3.10）。
     var showToastOnDesktopSwitch = true
+    /// 次级 Dock 条：贴着原生 Dock 内侧半露、hover 滑出、随桌面秒换内容的自绘图标条。
+    var showSecondaryDock = true
+    /// 冻结原生 Dock 的逐桌面切换：开启后切桌面不再写偏好/重启 Dock，
+    /// 逐桌面的差异全部由次级 Dock 条呈现（原生 Dock 保持一套固定配置）。
+    /// 手动路径（「立即应用」「编辑后立即应用」）不受影响。
+    var freezeNativeDockSwitching = false
     /// 默认 Dock（通用 Tab 编辑的那一套）。没有单独绑定的桌面就用它。
     var defaultDock = DockConfig()
 
     enum CodingKeys: String, CodingKey {
         case restoreOnQuit, clickAction, autoApplyOnEdit, autoCaptureUserEdits, reloadStrategy
-        case showToastOnDesktopSwitch, defaultDock
+        case showToastOnDesktopSwitch, showSecondaryDock, freezeNativeDockSwitching, defaultDock
     }
 
     init() {}
@@ -379,6 +385,9 @@ struct AppSettings: Codable, Hashable, Sendable {
         reloadStrategy = try container.decodeIfPresent(ReloadStrategy.self, forKey: .reloadStrategy) ?? .auto
         showToastOnDesktopSwitch =
             try container.decodeIfPresent(Bool.self, forKey: .showToastOnDesktopSwitch) ?? true
+        showSecondaryDock = try container.decodeIfPresent(Bool.self, forKey: .showSecondaryDock) ?? true
+        freezeNativeDockSwitching =
+            try container.decodeIfPresent(Bool.self, forKey: .freezeNativeDockSwitching) ?? false
         defaultDock = try container.decodeIfPresent(DockConfig.self, forKey: .defaultDock) ?? DockConfig()
     }
 }

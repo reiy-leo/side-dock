@@ -258,6 +258,27 @@ private struct GeneralTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            Section("次级 Dock 条") {
+                Toggle("显示次级 Dock 条", isOn: secondaryDockBinding)
+                Text("贴在原生 Dock 内侧的自绘图标条：默认只露一半（藏在原生 Dock 身后），鼠标移上去滑出全条。内容跟随当前桌面的图标配置，切换桌面瞬间换内容、不重启 Dock。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Toggle("冻结原生 Dock 的逐桌面切换", isOn: freezeNativeDockBinding)
+                    .disabled(!state.settings.showSecondaryDock)
+                if state.settings.freezeNativeDockSwitching {
+                    Text("已冻结：原生 Dock 保持一套固定配置，切桌面不再重启；每个桌面的差异由次级条呈现。手动改动真实 Dock 会记入默认 Dock。")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if !state.settings.showSecondaryDock {
+                    Text("需要先开启「显示次级 Dock 条」——冻结后桌面的差异只能靠次级条看到。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
             Section("退出行为") {
                 Toggle("退出 App 时还原为原始 Dock", isOn: restoreOnQuitBinding)
                 Text("无痕原则：首次运行会把当时的 Dock 完整存为基准快照，退出时自动还原；即使被强杀或崩溃，下次启动也会检测并还原。")
@@ -459,6 +480,30 @@ private struct GeneralTab: View {
             set: { value in
                 state.updateSettings { $0.showToastOnDesktopSwitch = value }
                 if !value { state.toastPresenter?.dismissNow() }
+            }
+        )
+    }
+
+    private var secondaryDockBinding: Binding<Bool> {
+        Binding(
+            get: { state.settings.showSecondaryDock },
+            set: { value in
+                state.updateSettings { $0.showSecondaryDock = value }
+                // 关掉时立即收窗口；打开时由观察回调刷新。冻结开关跟着失能/恢复。
+                if !value {
+                    state.updateSettings { $0.freezeNativeDockSwitching = false }
+                }
+                state.secondaryDock?.refresh()
+            }
+        )
+    }
+
+    private var freezeNativeDockBinding: Binding<Bool> {
+        Binding(
+            get: { state.settings.freezeNativeDockSwitching },
+            set: { value in
+                state.updateSettings { $0.freezeNativeDockSwitching = value }
+                state.secondaryDock?.refresh()
             }
         )
     }

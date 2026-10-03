@@ -299,6 +299,35 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 
 ---
 
+### 已完成：次级 Dock 条（随桌面换内容 + 冻结开关）✅ 2026-10-04
+
+用户拍板的新功能（规格与决策见 `docs/PLAN.md` §3.12，实测依据见 `docs/spikes.md` 实验 21）。
+硬约束 2 的「不自己画 Dock 栏」由用户当日修订：次级条是被批准的例外，**不替换**原生 Dock。
+
+**实现要点（改动时别踩）**：
+
+1. **Dock 条不是独立 CG 窗口**（15.8.1 实测：Dock 进程只有全屏 layer-20 容器窗口）。
+   几何源**永远用 `NSScreen.visibleFrame` 的排他内缩**（left/right/bottom 三向；top 是菜单栏的），
+   别改回 CGWindowList 找「Dock 条窗口」——那个窗口不存在，而且 CGWindowList 在 Dock 重启的
+   45–90 ms 里是空的，`visibleFrame` 天然跨重启窗口。
+2. **窗口层级 19 必须低于 Dock（20）**：半露 = 整条向 Dock 方向平移半个条厚，滑进 Dock 身后的
+   部分靠 Dock 像素遮挡。改高于 20 会反过来盖住原生 Dock 的图标。toast 是 25（高于 Dock），
+   两者的层级方向**相反**，别抄混。
+3. 内缩 ≤ 8 px 视为「探测不到 Dock」（自动隐藏滑走后内缩 ≈ 0）——此时**保持现有位置**，
+   不要把条挪到屏幕边缘外或按零内缩重摆。
+4. 空配置判据与 `applyConfigForDesktop` 同口径：看**原始** `pinnedApps.isEmpty`。
+   `DockStripRules.normalizedApps([])` 会补一枚启动台，拿它判空永远判不出来。
+5. `SecondaryDockWindow` 是 toast 配方的可交互变体：`ignoresMouseEvents = false`、
+   `canBecomeKey/Main` 仍必须 = false（点击启动不需要 key）。显示仍用 `orderFrontRegardless()`。
+6. 冻结闸门（`AppState.applyForDesktopSwitch`）只挡**切换路径**（被动回调 + 三条预应用）；
+   「立即应用」「编辑后立即应用」不走它。冻结期间 `handleUserDockEdit` 改道回存**默认 Dock**，
+   不是当前桌面的绑定。
+7. 几何变化走 1 s 轮询 + 屏幕变化事件；回收 hover 用 150 ms 防抖 + `NSEvent.mouseLocation`
+   安全网（窗口自己动过时 exit 事件可能丢）。测试里别调 `start()`（会起真轮询任务），
+   手动调 `geometryTick()`。
+
+---
+
 
 ---
 

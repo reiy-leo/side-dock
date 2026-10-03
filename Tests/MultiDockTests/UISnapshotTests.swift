@@ -43,6 +43,59 @@ final class UISnapshotTests: XCTestCase {
         }
         print("UI 快照 → \(outDir.path)")
     }
+
+    /// 次级 Dock 条：与真窗口同一条装配路径（`SecondaryDockWindowFactory`），
+    /// 摆放用与运行时同一套几何（底部 Dock、内缩 53），验图标条本身的视觉。
+    func testSnapshotSecondaryDockInLightAndDark() throws {
+        guard ProcessInfo.processInfo.environment["MULTIDOCK_UI_SNAPSHOT"] == "1" else {
+            throw XCTSkip("需要 MULTIDOCK_UI_SNAPSHOT=1（生成 /tmp/multidock-ui-snapshot/*.png）")
+        }
+
+        let outDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("multidock-ui-snapshot", isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        var config = DockConfig()
+        config.pinnedApps = DockStripRules.normalizedApps([
+            DockStripRules.tile(forAppAt: "/System/Applications/Calculator.app"),
+            DockStripRules.tile(forAppAt: "/System/Applications/Notes.app"),
+            DockStripRules.tile(forAppAt: "/Applications/Safari.app"),
+            DockStripRules.tile(forAppAt: "/System/Applications/Weather.app"),
+        ].compactMap { $0 })
+        let snapshot = try XCTUnwrap(
+            SecondaryDockContentBuilder.snapshot(
+                from: config,
+                runningBundleIDs: ["com.apple.Safari"],
+                iconSize: 36
+            )
+        )
+        let face = DockFaceGeometry(
+            orientation: .bottom,
+            screen: CGRect(x: 0, y: 0, width: 1920, height: 1200),
+            visible: CGRect(x: 0, y: 53, width: 1920, height: 1147)
+        )
+        let placement = SecondaryDockLayout.placement(
+            barSize: SecondaryDockLayout.barSize(
+                itemCount: snapshot.items.count,
+                iconSize: snapshot.iconSize,
+                isVertical: false
+            ),
+            face: face
+        )
+        let window = SecondaryDockWindowFactory.makeWindow(
+            items: snapshot.items,
+            isVertical: false,
+            iconSize: snapshot.iconSize,
+            frame: placement.revealed
+        )
+
+        for appearance in [NSAppearance.Name.aqua, NSAppearance.Name.darkAqua] {
+            let suffix = appearance == .darkAqua ? "dark" : "light"
+            window.appearance = NSAppearance(named: appearance)
+            try capture(window, to: outDir.appendingPathComponent("secondary-dock-\(suffix).png"))
+        }
+        print("次级 Dock 快照 → \(outDir.path)")
+    }
     // MARK: - 夹具
 
     /// 与 `AppStateDockTests` 同一套注入姿势：临时目录的存储 + 假 Provider + 测试专用日志。
