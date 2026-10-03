@@ -817,12 +817,22 @@ final class DockAcceptanceTests: XCTestCase {
         [验收] 图标顺序 after-apply：\(Self.labels(of: after))
         """)
 
-        // ---- 4. Dock 真的读进去了吗：新 tile 必须被补上 GUID ----
-        // Dock 的回写是异步的，P0 是"重启后去看"；这里轮询等它落盘。
-        let guid = await Self.waitForDockToBackfillGUID(of: probe, timeout: .seconds(8))
-        XCTAssertNotNil(guid, "Dock 没给条目补 GUID → 说明它根本没读这份写入（P0 判据）")
+        // ---- 4. Dock 真的读进去了吗 ----
+        // P0 判据（macOS 15.7.9，见 `docs/facts.md`）：Dock 读取后会异步给无 GUID 的条目补 GUID。
+        // ⚠️ **macOS 15.8.1 (24H32) 起这条判据失效**（2026-10-04 实验 19）：两次验收此断言失败，
+        // 而 mod-count 正常 +1（Dock 确实重启并重读）—— 新系统重启后**不再回填 GUID**，
+        // persistent-apps 一个字节都不改写。15.8+ 的判据降级为「条目跨 Dock 重启仍在」。
+        let liveAfterApply = DockConfig.read(from: DockPreferences.readDomain()).pinnedApps
+        XCTAssertTrue(
+            liveAfterApply.contains { $0.normalizedKey == probe.normalizedKey },
+            "SIGHUP 重启后写入的条目不在域里 —— apply 链路断了"
+        )
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        if (os.majorVersion, os.minorVersion) < (15, 8) {
+            let guid = await Self.waitForDockToBackfillGUID(of: probe, timeout: .seconds(8))
+            XCTAssertNotNil(guid, "Dock 没给条目补 GUID → 说明它根本没读这份写入（P0 判据，仅适用于 15.7.x）")
+        }
         XCTAssertEqual(DockPreferences.readDomain()["tilesize"]?.doubleValue, config.appearance.tilesize)
-        print("[验收] Dock 已为写入的条目补上 GUID：\(guid?.fingerprintToken ?? "?")")
     }
 
     // MARK: - 其他项验收：只搬 Dock 自己的条目（不合成）+ 移除后 Dock 仍健康

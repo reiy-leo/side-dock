@@ -3,7 +3,10 @@
 > 2026-10-04 自 AGENTS.md §4 迁移（verbatim，除本说明）。换机器需重新验证；新实测直接往表里追加。
 > 本文中"见 §5 / §6.3 / §8"分别指 `docs/rules.md` / `AGENTS.md` 未决问题 / `docs/sessions.md`。
 
-开发机：**macOS 15.7.9 (24G830)、x86_64、单显示器、Xcode 26.3、Swift 6.2.4**。换机器需重新验证。
+开发机：**macOS 15.8.1 (24H32)、x86_64、单显示器、Xcode 26.3、Swift 6.2.4**。换机器需重新验证。
+⚠️ **2026-10-04 系统从 15.7.9 (24G830) 更新到 15.8.1**（Dock 二进制 09-23 重建）。更新后已重验：
+真机 Dock 验收 **9/9 绿**（GUID 判据已版本化，见实验 19 与「Dock 是否应用了写入」行）；
+实验 18 通知观测在更新后的系统上完成。实验 1–17 在 15.7.9 上完成，涉及 Dock 行为的结论以 15.8.1 验收为准。
 
 | 项 | 结论 |
 | --- | --- |
@@ -30,7 +33,7 @@
 | **`NSRunningApplication` 会返回 `processIdentifier == -1`** | Dock 重启窗口里 `runningApplications(withBundleIdentifier: "com.apple.dock")` 会返回一个**正在退出**的实例，其 PID 是 **-1**（实测复现）。`kill(-1, sig)` = 发给**当前用户全部进程**，`kill(0, sig)` = 整个进程组。**必须过滤 `> 0`，并在发信号前用 `proc_name` 确认进程名是 `Dock`** |
 | **查 Dock PID 的代价** | `NSRunningApplication` **0.6–1.4 ms**；`/usr/bin/pgrep -x Dock` **109–112 ms**（子进程，绝不能放进轮询热路径）；`proc_listpids(PROC_ALL_PIDS)` + `proc_name` **0.02 ms** |
 | Dock 进程守护 | `/System/Library/LaunchAgents/com.apple.Dock.plist` 为 `KeepAlive = {AfterInitialDemand:1, SuccessfulExit:0}` → 必须信号致死才会被拉起；**优雅退出（exit 0）不会重启，用户会当场失去 Dock** |
-| **Dock 是否应用了写入** | 判据：写入的 tile 不带 `GUID`，Dock 真正读取并应用后会**补上 `GUID`**。实测正负两种情形都验证过。**回写是异步的**：P2 验收里 apply 返回后立刻读还是 `nil`，轮询 200 ms 内就出现了 → 判据要配轮询，别读完就断言 |
+| **Dock 是否应用了写入** | 判据：写入的 tile 不带 `GUID`，Dock 真正读取并应用后会**补上 `GUID`**。实测正负两种情形都验证过。**回写是异步的**：P2 验收里 apply 返回后立刻读还是 `nil`，轮询 200 ms 内就出现了 → 判据要配轮询，别读完就断言。⚠️ **15.8.1 起失效（实验 19，2026-10-04）**：Dock 重启后 mod-count 照常 +1（重启重读发生）但 **persistent-apps 零改写、不再回填 GUID**。15.8+ 判据降级为「条目跨 Dock 重启仍在 + mod-count 变化」，验收用例已按系统版本条件化 |
 | **只写白名单键：已实测成立** | P2 验收（2026-09-18）：apply 一次（改 `tilesize` + `magnification` + 加一个 Calculator 条目）后与操作前全量域 diff，**变化只有 `magnification` / `persistent-apps` / `tilesize`**，白名单外的键一个都没动 |
 | **别的进程写的 Dock 偏好，本进程立刻读得到** | 2026-09-18 实测：`/usr/bin/defaults write com.apple.dock tilesize -float 72` 之后，`CFPreferencesCopyMultiple` 立刻读到 72.0（无需轮询、无需等 Dock 重启）。这条让「用户手拖图标」这件事**可以脚本化复现** —— `DockWatcher` 的判据是"可比指纹变了、且不等于我们写下去的那份"，而用户拖动本来就是 Dock 进程写同一个域，两种来源在偏好域层面**无法区分也不需要区分**。所以 `DockAcceptanceTests.testExternalDockChangeIsCapturedBackToActiveDesktop` 用 `defaults write` + 真实 `DockReloader().reload()` 就等价于一次真人拖动，A4 从"只能手测"变成自动化回归 |
 | **写外观键真的生效** | `tilesize` 36 → 52、`magnification` 翻转，写入后域里的值就是新值，且 Dock 重启（PID 变化）。`persistent-apps` 的新条目被补上 `GUID`（实测 `i:1414651200` 等，每次不同）→ Dock 确实按新偏好重建了 Dock |
@@ -49,7 +52,7 @@
 | **`SMAppService.mainApp` 只在 `.app` 里可用** | `swift test` / `swift run` 的进程不是 bundle（`Bundle.main.bundlePath` 不以 `.app` 结尾），拿不到有效的登录项句柄。所以 `LoginItem.isAvailable` 先看 bundle，不可用时 UI 直接显示原因 —— **不要**在非 bundle 环境里调 `SMAppService.mainApp.status` |
 | **历史备份的命名** | `~/Library/Application Support/MultiDock/backups/dock-yyyyMMdd-HHmmss.plist`，最多 20 份。`BaselineStore.listBackups()` 从文件名解析时刻；解析不出来（用户改过名）就退回文件修改时间 |
 | **`persistent-others` 的目录条目形状**（2026-09-18 实测） | 真实域里是 `directory-tile`，`tile-data` = `file-data`(`_CFURLString` 带尾斜杠) + `file-label` + `file-type`(**2**) + `arrangement`(2) + `displayas`(0) + `showas`(1) + `preferreditemsize`(字符串 `"-1"`) + `is-beta`(0) + `book`(656 字节书签) + `file-mod-date` / `parent-mod-date` / `GUID`(由 Dock 补) |
-| **自拼的目录条目 Dock 不认领**（`spikes.md` 实验 8） | 自己拼 `directory-tile` 写进域后 Dock **不补 `GUID`**（等 4 秒 / 8 秒都不补）；补全展示字段、甚至自己用 `URL.bookmarkData()` 生成 `book` 也一样 → 沿用"没有 GUID = Dock 没读进去"的判据。**且字段不全的形状会让 Dock 直接 SIGABRT**（本机 7 份崩溃报告，launchd 反复拉起 → 崩溃循环，用户当场失去 Dock）。→ 结论：**其他项只搬不造**，要加文件夹必须由用户在访达里自己拖进 Dock |
+| **自拼的目录条目 Dock 不认领**（`spikes.md` 实验 8） | 自己拼 `directory-tile` 写进域后 Dock **不补 `GUID`**（等 4 秒 / 8 秒都不补）；补全展示字段、甚至自己用 `URL.bookmarkData()` 生成 `book` 也一样 → 沿用"没有 GUID = Dock 没读进去"的判据。**且字段不全的形状会让 Dock 直接 SIGABRT**（本机 7 份崩溃报告，launchd 反复拉起 → 崩溃循环，用户当场失去 Dock）。→ 结论：**其他项只搬不造**，要加文件夹必须由用户在访达里自己拖进 Dock。⚠️ **15.8.1 上「GUID 判据」本身失效**（实验 19）——"不认领"的证据方法过时，但**结论不变**：SIGABRT 风险是独立证据，「只搬不造」维持 |
 | **`persistent-others = []` 无害**（实验 8） | 写入空数组 + SIGHUP → Dock **0.6 s** 归位。所以「移除最后一项」不需要设限 |
 | **反复杀 Dock 会触发 launchd 递增退避**（2026-09-18 实测） | 连续多次信号致死 + kickstart 之后，`launchctl print` 显示 `state = spawn scheduled`，Dock **几十秒不回来**（正常 SIGHUP 约 100 ms），`kickstart` 也被同一段退避挡住；**静置等待比反复催更快**（实测停手后 8 秒内回来）。⚠️ 原先写的"App 正常使用不受影响"**已被 2026-09-19 实验 9 证伪** —— 正常使用就会踩，见下面两行 |
 | **`launchctl kickstart` 会阻塞几十秒**（2026-09-19 实测） | launchd 在退避里时这条命令**直到服务真被拉起才返回**（日志空白实测 54 / 60 / 64 秒）。所以它**绝不能 `waitUntilExit()`** —— 那会把 `@MainActor` 冻住那么久，整个 App（监视器、桌面轮询、toast、设置窗口）全部停摆。判据：500 ms 一轮的存活监视器在两分钟里只留一行日志 |
