@@ -650,6 +650,11 @@ struct AppSettings: Codable {
   桌面生效配置的最大条目数、图标尺寸 = 默认 Dock 的 tilesize——**切桌面只换图标、窗口
   一毫米不挪**（用户原话：「不要随桌面滚动，sticky 到原生 Dock 固定位置」）。未冻结时
   维持按本桌面撑开的原规格。
+- **空间归属 = 方案 ②（2026-10-05 用户拍板，实验 24 折中）**：窗口用 `.moveToActiveSpace`
+  单空间配方——手势切换瞬间条**留在旧空间（新空间不可见，不滑）**，切换完成回调把窗口拉回
+  当前空间并 0.18 s 淡入；程序化切换（菜单栏点击）经 `SpaceSwitcher.switchTo →
+  observer.refreshNow()` 当拍拉回，没有 300 ms 空窗。拉回闸门：仅「换了空间且切换前后都在
+  显示」才拉（同一空间重复事件 / 全屏进出 / 从隐藏恢复不拉）。
 - **显隐与原生 Dock 同步（2026-10-04 用户修订）**：原生 Dock 隐藏 → 条隐藏；Dock 显出 →
   条同步显示。信号 = face（`visibleFrame` 内缩）为主，自动隐藏生效中（face == nil）用
   「光标在显出带」启发式补判（实验 22：Dock 实际显隐没有零权限直读信号）；几何轮询 200 ms。
@@ -676,18 +681,19 @@ struct AppSettings: Codable {
 | --- | --- | --- |
 | 纯几何 | `Dock/SecondaryDockLayout.swift` | `detectDockFace`（三向内缩 → 方位）+ `placement`（展开/半露两 frame）+ `barSize` + `dockArea`（显出带判定，实验 22）；全纯函数 |
 | 几何源 | `Dock/DockFaceProviding.swift` | `ScreenInsetDockFaceProvider` 扫全部 `NSScreen`，取内缩最大的屏 |
-| 呈现 | `UI/SecondaryDockWindow.swift` | Toast 配方 + 三处不同：可交互、层级 19、SwiftUI 图标条；材质 `.popover` + maskImage 圆角 |
+| 呈现 | `UI/SecondaryDockWindow.swift` | Toast 配方 + 三处不同：可交互、层级 19、SwiftUI 图标条；材质 `.popover` + maskImage 圆角；**方案 ②：单空间配方 + `pullToActiveSpace()`（置透明 → 临时跨空间 → orderFront → 16 ms 设回 → 0.18 s 淡入）** |
 | 内容 | `UI/SecondaryDockStripView.swift` | 条目模型（含 `sizingSlots` 固定几何）+ `SecondaryDockContentBuilder`（纯函数）+ SwiftUI 视图 |
-| 调度 | `UI/SecondaryDockController.swift` | 状态机（半露/展开/隐藏）+ **显隐同步（face + 显出带 + 400 ms 宽限）**+ 200 ms 几何轮询 + hover 防抖 + 鼠标位置安全网；依赖全注入可单测 |
+| 调度 | `UI/SecondaryDockController.swift` | 状态机（半露/展开/隐藏）+ **显隐同步（face + 显出带 + 400 ms 宽限）**+ 200 ms 几何轮询 + hover 防抖 + 鼠标位置安全网 + **空间切换拉回闸门**（换空间且前后都显示才拉）；依赖全注入可单测 |
 
 **可见性行为**：全屏空间（`space == nil`）隐藏；开关关闭隐藏；
 内容为空（该桌面 `pinnedApps` 为空）隐藏；**自动隐藏 / 重启瞬态里与原生 Dock 同步显隐**
 （Dock 隐藏条也藏，光标碰边 Dock 显出时条同步出来 —— 实验 22）。多显示器跟随内缩最大的那块屏（B5 未实测，标注）。
 
-**验收**：次级条相关单测（几何三方位 / 半露 / clamp / dockArea / 内容构建 / 状态机 / 固定几何 / 同步显隐，
-累计到 **364 全绿**）；快照 `secondary-dock-{light,dark}.png`；真机 window-dump
+**验收**：次级条相关单测（几何三方位 / 半露 / clamp / dockArea / 内容构建 / 状态机 / 固定几何 /
+同步显隐 / **空间拉回五例**——切空间拉一次、连切各拉一次、重复事件不拉、进全屏不拉、出全屏不拉，
+累计到 **369 全绿**）；快照 `secondary-dock-{light,dark}.png`；真机 window-dump
 核验 `layer=19` 半露 frame 逐像素吻合（实验 21）、启动对齐日志、切桌面零重启日志（v3.6.1/2）；
-hover/点击手感归入用户手测（A11）。
+hover/点击/方案 ② 切桌面手感归入用户手测（A11）。
 
 ---
 

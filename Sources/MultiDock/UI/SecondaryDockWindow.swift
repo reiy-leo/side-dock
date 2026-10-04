@@ -9,6 +9,9 @@ protocol SecondaryDockPresenting: AnyObject {
     func setFrame(_ frame: NSRect, animated: Bool)
     func orderFront()
     func orderOut()
+    /// 把窗口拉回当前活动空间（`.moveToActiveSpace` 折中方案的配套，实验 24 / AGENTS.md §6.1 #4）。
+    /// 真实窗口 = 「临时跨空间可见 → orderFront → 设回单空间」+ 淡入；替身记录调用次数即可。
+    func pullToActiveSpace()
 }
 
 /// 贴在原生 Dock 内侧的次级条窗口。
@@ -16,12 +19,14 @@ protocol SecondaryDockPresenting: AnyObject {
 /// 窗口层配方沿用 `DesktopNameToastWindow`（那条配方每一条都是踩过坑的）：
 /// borderless、`canBecomeKey` / `canBecomeMain` = false（绝不抢焦点）、用 `orderFrontRegardless()` 显示。
 /// 与 toast 的三点不同：
-/// - **不设 `.canJoinAllSpaces`**：`.canJoinAllSpaces` 会把窗口注册成每个空间的成员，轨道板
-///   滑动切桌面时参与过渡动画、跟着桌面一起滑，已实测证伪（实验 23）。⚠️ 但**纯 `.stationary`
-///   也不能钉住**——真人手势实测照样滑（实验 24：第三方窗口「跨空间可见且过渡不滑动」零权限
-///   下无解，特权来自进程身份）。现行配方只是不再把窗口注册成空间成员；手势切换时条仍随
-///   桌面滑，等用户在「接受滑动」与 `.moveToActiveSpace`「消失再出现」之间拍板
-///   （AGENTS.md §6.1 #4），**别再在窗口属性上找「钉住」配方**。
+/// - **空间归属用 `.moveToActiveSpace`（实验 24 折中方案，2026-10-05 用户拍板）**：
+///   「跨空间可见且过渡不滑动」零权限下无解（窗口层级 / Dock tags / `CGSSetWindowWorkspace`
+///   全证伪，特权来自进程身份）——只有系统窗口（原生 Dock、菜单栏）能钉住。本条改为
+///   `.moveToActiveSpace`：**切换桌面瞬间条留在旧空间（对新空间不可见，不滑动）**，切换完成
+///   后由 `SecondaryDockController.spaceDidChange` 调 `pullToActiveSpace()` 把它拉回当前空间
+///   并淡入。`NSWorkspace.activeSpaceDidChangeNotification` 只在真人手势时触发，但程序化
+///   切换（菜单栏点击）也有 `SpaceSwitcher.switchTo → observer.refreshNow()` 立即回调，
+///   两条路都在切换当拍拉回，没有 300 ms 空窗。
 /// - `ignoresMouseEvents = false` —— 条要接收点击与 hover；
 /// - `level = 19` —— **低于** Dock 的 20：半露时滑进 Dock 身后的部分被 Dock 像素挡住，
 ///   视觉上就是「从原生 Dock 底下探出来」；
@@ -32,10 +37,20 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     /// 低于 Dock（20）、高于一切普通窗口。toast 用 25（高于 Dock），本条必须**低于** Dock。
     private static let windowLevel = NSWindow.Level(rawValue: 19)
     private static let cornerRadius: CGFloat = 14
+    /// 常态配方：窗口只属一个空间——切换瞬间留在旧空间（对新空间不可见，**不滑动**，实验 24）。
+    private static let singleSpaceBehavior: NSWindow.CollectionBehavior =
+        [.moveToActiveSpace, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+    /// 拉回瞬间的临时配方：跨空间可见，`orderFrontRegardless` 借它在当前空间重新注册。
+    private static let crossSpaceBehavior: NSWindow.CollectionBehavior =
+        [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+    /// 拉回后的淡入时长——与 hover 滑动（`setFrame` 动画 0.18 s）同款节奏。
+    private static let pullFadeDuration = 0.18
 
     private let window: SecondaryDockPanelWindow
     private let container: NSVisualEffectView
     private var hosting: NSHostingView<SecondaryDockStripView>!
+    /// 「设回单空间配方」的延迟任务；连切时取消上一拍未生效的，防止堆积。
+    private var pullResetTask: Task<Void, Never>?
 
     /// 点击条目。由 `AppDelegate` 注入（`NSWorkspace.open`）。
     var onActivate: (SecondaryDockItem) -> Void = { _ in }
@@ -55,7 +70,7 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         window.backgroundColor = .clear
         window.hasShadow = true
         window.level = Self.windowLevel
-        window.collectionBehavior = [.stationary, .fullScreenAuxiliary, .ignoresCycle]
+        window.collectionBehavior = Self.singleSpaceBehavior
         window.isReleasedWhenClosed = false
         window.isMovable = false
         window.animationBehavior = .none
@@ -103,6 +118,28 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
 
     func orderOut() {
         window.orderOut(nil)
+    }
+
+    /// 拉回当前活动空间并淡入（`spike-pull-nsworkspace` 实证配方）：
+    /// 1. 置透明 → 切到临时跨空间配方 → `orderFrontRegardless` 在当前空间重新注册；
+    /// 2. 下一拍（16 ms，spike 实证 10 ms 即够，留一帧余量）设回单空间配方；
+    /// 3. 0.18 s easeInEaseOut 淡入（与 hover 滑动同款节奏）。
+    /// 连击时 `pullResetTask` 先取消上一拍未生效的复位，防止旧任务把新空间的配方改回去。
+    func pullToActiveSpace() {
+        pullResetTask?.cancel()
+        window.alphaValue = 0
+        window.collectionBehavior = Self.crossSpaceBehavior
+        orderFront()
+        pullResetTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(16))
+            guard !Task.isCancelled, let self else { return }
+            self.window.collectionBehavior = Self.singleSpaceBehavior
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Self.pullFadeDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().alphaValue = 1
+        }
     }
 
     private func makeStrip(items: [SecondaryDockItem], isVertical: Bool, iconSize: CGFloat) -> SecondaryDockStripView {

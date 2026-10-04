@@ -3,6 +3,34 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-05（第 39 次）— 用户拍板方案 ②：次级条切 `.moveToActiveSpace`，切换后拉回 + 0.18 s 淡入（v3.6.3）
+
+**用户说**：「选 ②，接着打磨拉回时机和出现的柔和度」（对第 38 次会话留下的「滑动 vs 消失再出现」拍板）
+
+**做了什么**：
+
+1. **次级条空间归属改方案 ②**（`UI/SecondaryDockWindow.swift`）：常态配方
+   `[.moveToActiveSpace, .stationary, .fullScreenAuxiliary, .ignoresCycle]`——单空间归属，
+   手势切换瞬间条留在旧空间（新空间不可见，**不滑**）；呈现协议新增 `pullToActiveSpace()`。
+2. **拉回与柔和度**（同文件）：`pullToActiveSpace()` = 置透明 → 临时 `.canJoinAllSpaces` +
+   `orderFrontRegardless`（当前空间重新注册，实验 24 路 5 配方的直系后代）→ 16 ms 后设回
+   单空间（连切时复位任务自取消）→ 0.18 s easeInEaseOut 淡入（与 hover 滑动同款节奏）。
+3. **拉回时机闸门**（`UI/SecondaryDockController.swift` `spaceDidChange`）：仅「换了空间 &&
+   切换前后都在显示」才拉——同一空间重复事件、进全屏、出全屏、从隐藏恢复都不拉；手势
+   （NSWorkspace 快速通道）与程序化切换（菜单栏点击，`SpaceSwitcher.switchTo →
+   observer.refreshNow()` 当拍回调）两条路都汇入这里，没有 300 ms 空窗。
+4. **测试 +5**（`Tests/MultiDockTests/SecondaryDockTests.swift`）：切空间拉一次 / 连切各拉一次 /
+   重复事件不拉 / 进全屏隐藏不拉 / 出全屏恢复不拉；替身补 `pullCount`。**369 全绿**、构建零警告、
+   `./scripts/build-app.sh` 已重新打包。
+5. **文档**：AGENTS.md（决策演变 v3.6.3 / §3 现行行为 / §6.1 #4 销账进 §6.2 / A11 更新 / 待办
+   顺序）、PLAN.md §3.12（交互规格 + 机制表 + 验收）、rules.md 要点 #12（现行配方与闸门）、
+   spikes.md 实验 24「决定」段更新为已产品化。
+
+**当前进度**：方案 ② 代码与文档全部落地，等用户真机手测（A11 第 ⑤ 项）：① 手势切换——条应
+「消失再淡入」不滑；② 菜单栏点击切换——应无感知空窗；③ 连击不闪；④ 全屏进出正常。若淡入节奏
+不顺手：调 `SecondaryDockWindow.pullFadeDuration`（0.18 s）或 16 ms 复位延迟。其余待办不变
+（A1–A3/A5 / B5 / B9/B10 / B8 / A8 只等复现）。
+
 ### 2026-10-04（第 38 次）— 实验 23 修法被真人手测推翻 → 实验 24 全路证伪：「不滑动」零权限无解，`.moveToActiveSpace` 是唯一折中
 
 **用户说**：「现在的secondary dock还是会随桌面滑动，更改为滑动桌面时secondary dock不滑动，保持sticky在原生dock原位置」（对第 37 次修法的真机反馈，之后多轮试错、逐色观察）

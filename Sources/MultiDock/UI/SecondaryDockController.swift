@@ -69,9 +69,23 @@ final class SecondaryDockController {
 
     /// 桌面变化（`SpaceObserver.onActiveSpaceChanged` 的第三个消费者）。
     /// `nil` = 全屏空间，与原生 Dock 一样躲起来。
+    ///
+    /// 方案 ② 的拉回时机就在这里（实验 24 / AGENTS.md §6.1 #4，2026-10-05 拍板）：
+    /// 窗口单空间配方（`.moveToActiveSpace`）在切换瞬间留在旧空间——新空间看不见它，**不滑动**；
+    /// 切换完成回调到达时把它拉回当前空间并淡入。手势与程序化切换（`SpaceSwitcher.switchTo →
+    /// observer.refreshNow()`）都会当拍走到这里，没有 300 ms 空窗。
     func spaceDidChange(_ space: DesktopSpace?) {
+        let spaceChanged = space != lastSpace
+        let wasShowing = isShowing
         lastSpace = space
         applyCurrentState()
+        // 只在「换了空间」且「条在旧空间还挂着、新空间仍要显示」时拉回：
+        // - 从隐藏到显示（全屏回来 / 刚开启）不用拉——`orderFront` 本身就落在当前空间；
+        // - 切到全屏（nil）`applyCurrentState` 已把条藏起来，`isShowing` 变 false，不拉；
+        // - 同一空间的重复事件不拉，防止淡入叠淡入的闪烁。
+        if spaceChanged, wasShowing, isShowing {
+            deps.presenter.pullToActiveSpace()
+        }
     }
 
     /// 开关或配置（settings / bindings）变化后的统一入口。

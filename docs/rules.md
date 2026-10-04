@@ -354,11 +354,14 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 12. **「手势切换时条不滑动」零权限下做不到（实验 24，别再试窗口配方）**：窗口层级
     （`CGSSetWindowLevel` 20/24/25）、复制原生 Dock 的 `CGSSetWindowTags`、
     `CGSSetWindowWorkspace`（15.8.1 不存在）、每空间独立窗口，全部真人手测证伪——
-    特权来自**进程身份**，窗口属性无解。现行 `collectionBehavior =
-    [.stationary, .fullScreenAuxiliary, .ignoresCycle]`（实验 23 改的）在手势过渡时
-    **照样滑**；唯一不滑的折中是 `.moveToActiveSpace`「切换瞬间消失、到位再出现」，
-    **等用户拍板再动**（AGENTS.md §6.1 #4）。判据教训：`CGWindowList`「在屏」证明不了
-    「动画期间不滑动」，这类命题只能真人手势实测。
+    特权来自**进程身份**，窗口属性无解。**现行已按用户拍板（2026-10-05）实现方案 ②**：
+    常态配方 `[.moveToActiveSpace, .stationary, .fullScreenAuxiliary, .ignoresCycle]`——
+    单空间归属，切换瞬间条留在旧空间（不滑）；`SecondaryDockWindow.pullToActiveSpace()` =
+    置透明 → 临时 `.canJoinAllSpaces` + `orderFrontRegardless`（在当前空间重新注册）→
+    16 ms 后设回单空间 → 0.18 s 淡入（连切时复位任务自取消）。调度闸门在
+    `SecondaryDockController.spaceDidChange`：仅「换了空间 && 切换前后都在显示」才拉
+    （同一空间重复事件 / 全屏进出 / 从隐藏恢复都不拉，防叠淡入闪烁）。判据教训：`CGWindowList`
+    「在屏」证明不了「动画期间不滑动」，这类命题只能真人手势实测。
 
 ---
 

@@ -197,6 +197,7 @@ private final class FakeSecondaryDockPresenter: SecondaryDockPresenting {
     private(set) var frames: [(frame: NSRect, animated: Bool)] = []
     private(set) var frontCount = 0
     private(set) var outCount = 0
+    private(set) var pullCount = 0
 
     var lastFrame: NSRect? { frames.last?.frame }
     var lastAnimated: Bool? { frames.last?.animated }
@@ -212,6 +213,7 @@ private final class FakeSecondaryDockPresenter: SecondaryDockPresenting {
 
     func orderFront() { frontCount += 1 }
     func orderOut() { outCount += 1 }
+    func pullToActiveSpace() { pullCount += 1 }
 }
 
 @MainActor
@@ -388,6 +390,75 @@ final class SecondaryDockControllerTests: XCTestCase {
         controller.spaceDidChange(nil)
         XCTAssertEqual(presenter.outCount, 1, "全屏空间与原生 Dock 一样躲起来")
         XCTAssertEqual(presenter.frontCount, 1, "不再重复显示")
+    }
+
+    // MARK: - 切桌面的空间拉回（方案 ②，实验 24 / AGENTS.md §6.1 #4，2026-10-05 拍板）
+
+    func testSpaceSwitchPullsShowingBarToNewSpace() {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(presenter: presenter, provider: provider, content: content)
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        // 切到另一个桌面：窗口单空间配方还挂在旧空间，必须拉回当前空间并淡入。
+        controller.spaceDidChange(FakeSpaceProvider.desktops(count: 2)[1])
+        XCTAssertEqual(presenter.pullCount, 1, "显示中的条换了空间要拉回")
+        XCTAssertEqual(presenter.frontCount, 1, "拉回复用已显示的窗口，不重新 orderFront")
+        XCTAssertEqual(presenter.outCount, 0, "拉回不该先收起")
+    }
+
+    func testRapidSpaceSwitchesPullEachTime() {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(presenter: presenter, provider: provider, content: content)
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        let spaces = FakeSpaceProvider.desktops(count: 2)
+        controller.spaceDidChange(spaces[1])
+        controller.spaceDidChange(spaces[0])
+        XCTAssertEqual(presenter.pullCount, 2, "每次真实切换都拉一次（过期的复位由窗口侧取消，不归调度器管）")
+    }
+
+    func testSameSpaceEventDoesNotPull() {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(presenter: presenter, provider: provider, content: content)
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        // 同一桌面的重复事件（刷新路径）不拉——拉回自带淡入，重复触发会叠出闪烁。
+        controller.spaceDidChange(makeSpace())
+        XCTAssertEqual(presenter.pullCount, 0, "同一桌面的重复事件不拉回")
+    }
+
+    func testFullscreenSwitchHidesWithoutPull() {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(presenter: presenter, provider: provider, content: content)
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        controller.spaceDidChange(nil)
+        XCTAssertEqual(presenter.outCount, 1)
+        XCTAssertEqual(presenter.pullCount, 0, "切到全屏是隐藏路径，不是拉回")
+    }
+
+    func testReturnFromFullscreenShowsWithoutPull() {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(presenter: presenter, provider: provider, content: content)
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        controller.spaceDidChange(nil)
+        XCTAssertEqual(presenter.outCount, 1, "前置：全屏时已隐藏")
+
+        // 从全屏回到用户桌面：从隐藏到显示，orderFront 本身就落在当前空间，不用拉。
+        controller.spaceDidChange(FakeSpaceProvider.desktops(count: 2)[1])
+        XCTAssertEqual(presenter.frontCount, 2, "从隐藏恢复显示")
+        XCTAssertEqual(presenter.pullCount, 0, "隐藏过的窗口 orderFront 落在当前空间，无需拉回")
     }
 
     func testDisabledKeepsHidden() {

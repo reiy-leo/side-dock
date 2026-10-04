@@ -1830,8 +1830,15 @@ frame、冻结模式固定几何 + 图标尺寸取默认 Dock）——**364 全�
    （手势切换实测触发，实验 18）或 SkyLight 轮询；「闪现后消失」说明 alpha/显隐切换太糙，
    若采用需在 `SecondaryDockWindow` 上做专门的过渡处理。
 
-**决定**：**等用户拍板**——接受现状（滑动）还是采用 `.moveToActiveSpace`（消失再出现）。
-当前代码维持实验 23 的纯 `.stationary`（至少不再把窗口注册成每个空间的成员）。
+**决定（2026-10-05 更新）**：**用户拍板方案 ②**，已产品化（v3.6.3）。要点：
+常态单空间配方（`[.moveToActiveSpace, .stationary, .fullScreenAuxiliary, .ignoresCycle]`）——
+切换瞬间条留在旧空间（不滑）；切换回调 `SecondaryDockWindow.pullToActiveSpace()` =
+置透明 → 临时 `.canJoinAllSpaces` + `orderFrontRegardless`（当前空间重新注册）→ 16 ms 设回
+单空间 → 0.18 s easeInEaseOut 淡入（连切时复位任务自取消）。拉回闸门在
+`SecondaryDockController.spaceDidChange`：仅「换了空间 && 切换前后都在显示」才拉（同一空间
+重复事件 / 进出全屏 / 从隐藏恢复不拉）。拉回时机不依赖单一通知：手势走 NSWorkspace 快速通道、
+程序化切换走 `SpaceSwitcher.switchTo → observer.refreshNow()` 当拍回调，两者都汇入
+`SpaceObserver` 的去重回调。真机手感（淡入节奏 / 空窗感知）待用户手测（A11）。
 
 **未采纳的更激进方向**（记录在案）：辅助功能权限 / 私有 `CGSSetWindowWorkspace`（已不存在）
 / 每空间独立窗口（实验路 6，效果更差）。
