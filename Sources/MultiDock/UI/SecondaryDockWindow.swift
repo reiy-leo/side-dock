@@ -16,10 +16,12 @@ protocol SecondaryDockPresenting: AnyObject {
 /// 窗口层配方沿用 `DesktopNameToastWindow`（那条配方每一条都是踩过坑的）：
 /// borderless、`canBecomeKey` / `canBecomeMain` = false（绝不抢焦点）、用 `orderFrontRegardless()` 显示。
 /// 与 toast 的三点不同：
-/// - **不设 `.canJoinAllSpaces`**：只靠 `.stationary` 跨空间。`.canJoinAllSpaces` 会让窗口
-///   成为每个空间的成员，轨道板滑动切桌面时参与过渡动画、跟着桌面一起滑；纯 `.stationary`
-///   让窗口浮在所有空间之上、不属任何空间，切换时钉在原地——与原生 Dock 一致
-///   （实测见 `scripts/spike-stationary-spaces.swift`：纯 stationary 仍在所有空间在屏）。
+/// - **不设 `.canJoinAllSpaces`**：`.canJoinAllSpaces` 会把窗口注册成每个空间的成员，轨道板
+///   滑动切桌面时参与过渡动画、跟着桌面一起滑，已实测证伪（实验 23）。⚠️ 但**纯 `.stationary`
+///   也不能钉住**——真人手势实测照样滑（实验 24：第三方窗口「跨空间可见且过渡不滑动」零权限
+///   下无解，特权来自进程身份）。现行配方只是不再把窗口注册成空间成员；手势切换时条仍随
+///   桌面滑，等用户在「接受滑动」与 `.moveToActiveSpace`「消失再出现」之间拍板
+///   （AGENTS.md §6.1 #4），**别再在窗口属性上找「钉住」配方**。
 /// - `ignoresMouseEvents = false` —— 条要接收点击与 hover；
 /// - `level = 19` —— **低于** Dock 的 20：半露时滑进 Dock 身后的部分被 Dock 像素挡住，
 ///   视觉上就是「从原生 Dock 底下探出来」；

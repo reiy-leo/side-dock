@@ -3,6 +3,21 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-04（第 38 次）— 实验 23 修法被真人手测推翻 → 实验 24 全路证伪：「不滑动」零权限无解，`.moveToActiveSpace` 是唯一折中
+
+**用户说**：「现在的secondary dock还是会随桌面滑动，更改为滑动桌面时secondary dock不滑动，保持sticky在原生dock原位置」（对第 37 次修法的真机反馈，之后多轮试错、逐色观察）
+
+**做了什么**（11 个 spike，全零权限、有色测试窗、真人触控板滑动观察；结论 = 实验 24）：
+
+1. **推翻实验 23**：纯 `.stationary` 的次级条真机手势实测**照样滑动**。实验 23 的判据缺陷定案：程序化硬切 + `CGWindowList` 在屏核对只能证明「切换完成后在屏」，证明不了「动画期间不参与滑动」。
+2. **逐路证伪（`scripts/spike-window-level-sticky` / `spike-window-workspace` / `spike-dock-tags`）**：`CGSSetWindowLevel` 20/24/25（Dock/菜单栏/状态栏级）全滑；**`CGSSetWindowWorkspace` 与 `SLSSetWindowWorkspace` 在 15.8.1 不存在**（13 个候选符号探查）；读原生 Dock 的 `CGSSetWindowTags` 复制进测试窗（含 NeverFlatten 位组合）照滑——**特权来自进程身份，不是窗口属性**。
+3. **空间归属路（`spike-managed-space` / `spike-multi-window`）**：纯 `.managed` 窗口留在源空间随旧桌面滑走；每桌面独立窗口 = 旧窗滑走 + 新窗滑入，把一个滑动变成两个。
+4. **拉回路（`spike-move-to-active` / `spike-pull-after-anim` / `spike-pull-fast` / `spike-pull-nsworkspace`）**：`.moveToActiveSpace` + 通知/轮询后「临时 canJoinAllSpaces → orderFront → 设回」**不滑**——切换瞬间窗口消失、到位后重新出现，是零权限下唯一不滑的方案；变体（30 ms 快轮询、纯 NSWorkspace 通知 + 10 ms 设回、动画结束后拉）只是拉回时机与延迟不同。
+5. **隐藏路（`spike-hide-show` / `spike-hide-during-anim`）**：切换时 `alphaValue=0` / `orderOut`、结束后恢复——**闪现后消失**肉眼可见，是 moveToActiveSpace 的劣化版，弃。
+6. **文档固化（本条对应的提交）**：实验 24 + 实验 23 推翻标注写入 `docs/spikes.md`（共 24 个实验）；两条新事实入 `docs/facts.md`（硬限制 + 判据教训）；AGENTS.md / rules.md 同步；11 个 spike 脚本入库。**代码未动**——次级条维持实验 23 的纯 `.stationary`（用户未拍板前不改行为）。
+
+**当前进度**：**卡在用户拍板**——零权限下只有两个选项：① 维持现状（手势切换时次级条随桌面滑）；② 改 `.moveToActiveSpace`（切换瞬间条消失、到位后重新出现，不滑）。②若采用还需打磨拉回时机（NSWorkspace 通知 vs 轮询）与出现的柔和度。其余待办不变（A11 其余项 / A1–A3/A5 / B5/B8/B9/B10 / A8 只等复现）。
+
 ### 2026-10-04（第 37 次）— 次级条随桌面滑动：去掉 `.canJoinAllSpaces` 改纯 `.stationary`（实验 23）
 
 **用户说**：「现在的secondary dock还是会随桌面滑动，更改为滑动桌面时secondary dock不滑动，保持sticky在原生dock原位置」

@@ -349,8 +349,16 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 11. **冻结模式下条是固定几何**：`SecondaryDockContentSnapshot.sizingSlots` = 所有活着的桌面
     生效配置的最大条目数、iconSize 取默认 Dock——切桌面只换内容不挪窗。改条目口径时
     `AppState.secondaryDockMaxSlots` 必须与 `SecondaryDockContentBuilder` 同口径
-    （Finder 幻影 +1、`normalizedApps` 缺启动台补一枚）。未冻结（opt-out 老模式）保持
+    （Finder 幻影 +1、`normalizedApps` 缺启动台补一枚）。未冻结（opt-out）老模式保持
     按本桌面撑开的原规格，别顺手统一。
+12. **「手势切换时条不滑动」零权限下做不到（实验 24，别再试窗口配方）**：窗口层级
+    （`CGSSetWindowLevel` 20/24/25）、复制原生 Dock 的 `CGSSetWindowTags`、
+    `CGSSetWindowWorkspace`（15.8.1 不存在）、每空间独立窗口，全部真人手测证伪——
+    特权来自**进程身份**，窗口属性无解。现行 `collectionBehavior =
+    [.stationary, .fullScreenAuxiliary, .ignoresCycle]`（实验 23 改的）在手势过渡时
+    **照样滑**；唯一不滑的折中是 `.moveToActiveSpace`「切换瞬间消失、到位再出现」，
+    **等用户拍板再动**（AGENTS.md §6.1 #4）。判据教训：`CGWindowList`「在屏」证明不了
+    「动画期间不滑动」，这类命题只能真人手势实测。
 
 ---
 

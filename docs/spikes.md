@@ -17,7 +17,8 @@
 > 触发通知（B7 结案）**；**实验 19：系统更新到 15.8.1，GUID 回填判据失效并版本化**；
 > **实验 20：自动隐藏三明治（重启不可见）**；**实验 21：次级条几何源（Dock 条不是独立 CG 窗口）**；
 > **实验 22：Dock 实际显隐没有零权限直读信号（同步显隐的启发式由此而来）**；
-> **实验 23：`.canJoinAllSpaces` 是次级条随桌面滑动的元凶——纯 `.stationary` 才钉住**。共 **23 个实验**。
+> **实验 23：`.canJoinAllSpaces` 让窗口参与空间过渡动画（修法已实现，但「纯 `.stationary` 能钉住」的结论被实验 24 的真人手势实测推翻）**；
+> **实验 24：次级条不滑动在零权限下无解——窗口层级 / Dock tags / 私有 API / 多窗全试遍，`.moveToActiveSpace`「消失再出现」是唯一折中**。共 **24 个实验**。
 
 1. **不存在热重载**。写偏好后无论 post 什么通知，Dock 都不会重新读取——必须重启 Dock 进程。
 2. **重启很快**：SIGHUP 后 Dock 仅约 **101 ms** 不可用；SIGTERM 约 **395 ms**（Dock 收到 TERM 会先做约 255 ms 清理再退出）。→ **主路径定为 SIGHUP**，SIGTERM + kickstart 作兜底。
@@ -1747,7 +1748,7 @@ frame、冻结模式固定几何 + 图标尺寸取默认 Dock）——**364 全�
 
 ---
 
-## 实验 23：次级条随桌面滑动的根因 —— `.canJoinAllSpaces` 破坏 `.stationary`（2026-10-04，**已实现**）
+## 实验 23：次级条随桌面滑动的根因 —— `.canJoinAllSpaces` 破坏 `.stationary`（2026-10-04，已实现；**「纯 stationary 钉住」被实验 24 推翻**）
 
 **背景**：用户报告次级 Dock 条在轨道板滑动切桌面时**跟着桌面一起滑**，而原生 Dock 钉在原地。
 次级条窗口配方是 `[.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]`，
@@ -1784,6 +1785,56 @@ frame、冻结模式固定几何 + 图标尺寸取默认 Dock）——**364 全�
 **改动**：`Sources/MultiDock/UI/SecondaryDockWindow.swift` 一行（collectionBehavior 去掉
 `.canJoinAllSpaces`）+ 注释说明。**364 测试全绿**（无单测覆盖窗口 collectionBehavior，
 靠 spike 脚本实证）。
+
+⚠️ **2026-10-04 晚间推翻**：用户真机手势滑动实测，**纯 `.stationary` 的条照样随桌面滑**。
+本实验的判据缺陷：用**程序化硬切**（0–6 ms，没有过渡动画）+ `CGWindowList` 在屏核对——它只能
+证明「切换完成后窗口在新空间在屏」，**证明不了「过渡动画期间窗口不参与滑动」**。真正的判据
+只能是真人手势 + 肉眼（脚本无法复现手势动画，实验 7）。教训：**「在屏」与「不滑动」是两个
+命题**，跨空间可见的第三方窗口一律被卷进过渡动画（机制见实验 24）。
+
+---
+
+## 实验 24：次级条「不滑动」零权限无解 —— 全路证伪，`.moveToActiveSpace` 是唯一折中（2026-10-04 晚，**结论 = macOS 硬限制**）
+
+**背景**：实验 23 的修法（纯 `.stationary`）真机实测**仍然滑动**。此后系统性排查零权限下
+所有「窗口跨空间可见 + 过渡不滑动」的可能路径，11 个 spike 逐路人肉实测（均零权限、不改
+系统；每路建有色测试窗，真人触控板滑动切桌面观察）。
+
+**逐路证伪（脚本 → 观察）**：
+
+| # | 路径 | 脚本 | 真机观察 |
+| --- | --- | --- | --- |
+| 1 | 窗口层级：`CGSSetWindowLevel` 设 20（Dock 级）/ 24（菜单栏级）/ 25（状态栏级），另设「纯 stationary + CGS 20」 | `spike-window-level-sticky.swift` | **全部滑动**（红/蓝/绿/橙/紫无一钉住） |
+| 2 | SkyLight 窗口级私有 API | `spike-window-workspace.swift` | **`CGSSetWindowWorkspace` 在 15.8.1 不存在**（探查 13 个符号，`SLSSetWindowWorkspace` 同样没有）；`CGSSetWindowTags`（bit 16 NeverFlatten）无效，红窗照滑 |
+| 3 | 复制原生 Dock 的窗口 tags | `spike-dock-tags.swift` | 读出 Dock tags 写进测试窗（含「Dock tags」「NeverFlatten 位」「Dock+NeverFlatten」三组）——**照滑**。tags 不是特权的来源 |
+| 4 | 纯 `.managed`（只属当前空间）+ 切换后 `orderFrontRegardless` 拉回 | `spike-managed-space.swift` | 窗口**留在源空间随旧桌面滑走**，切换后能拉回来但过程可见 |
+| 5 | `.moveToActiveSpace` + 通知/轮询后「临时 canJoinAllSpaces → orderFront → 设回」拉到新空间 | `spike-move-to-active.swift` | **不滑动**——切换瞬间窗口消失、到新空间后重新出现（「消失再出现」） |
+| 6 | 每桌面一个独立窗口（`.managed`，程序化逐空间创建） | `spike-multi-window.swift` | 8 个彩色窗各属各的空间——**过渡时旧窗随旧空间滑走、新窗随新空间滑入**，等于把滑动换成了两个 |
+| 7 | 保持 canJoinAllSpaces + SkyLight 30 ms 轮询检测到变化立即 `alphaValue=0`、通知到达再恢复 | `spike-hide-show.swift` | 品红窗**闪现后消失**（alpha 0/1 抖动肉眼可见），不可用 |
+| 8 | `.managed` + 检测到变化 `orderOut`、150 ms 后拉回 | `spike-hide-during-anim.swift` | 黄窗同样有闪断 |
+| 9 | `.managed` + 动画结束后（NSWorkspace 通知）再拉 | `spike-pull-after-anim.swift` | 橙窗不滑动，但出现时机依赖通知，延迟可感知 |
+| 10 | 拉回提速（30 ms 轮询 + 同步设回） | `spike-pull-fast.swift` | 紫窗仍有可感知延迟，30 ms 轮询 CPU 代价高 |
+| 11 | 只用 NSWorkspace 通知 + 10 ms 设回 | `spike-pull-nsworkspace.swift` | 青窗同 5——「消失再出现」，延迟取决于通知时机 |
+
+**结论（硬限制，别再按这些方向改代码）**：
+
+1. **只有系统特权进程的窗口（原生 Dock、菜单栏）能跨空间可见且过渡不滑动**——特权来自进程
+   身份，不是窗口属性。第三方窗口无论 `collectionBehavior`、窗口层级（19/20/24/25）、
+   窗口 tags 怎么设，只要跨空间可见就**必然参与空间过渡动画**。
+2. `.stationary` 只管 Mission Control/Exposé（Apple 文档原文），**不覆盖 Spaces 过渡参与**。
+3. 零权限下的全部选项只有两个，没有第三个：① **接受滑动**（现状，纯 `.stationary`）；②
+   **`.moveToActiveSpace` 拉回**——窗口只属一个空间，切换瞬间消失、到位后重新出现（本质是
+   「放弃过渡期间可见」换「不滑动」）。隐藏/显示、alpha、多窗口等花样全部退化为②的劣化版
+   （闪断肉眼可见）。
+4. `.moveToActiveSpace` 方案的已知毛病（待打磨/待拍板）：拉回时机依赖 NSWorkspace 通知
+   （手势切换实测触发，实验 18）或 SkyLight 轮询；「闪现后消失」说明 alpha/显隐切换太糙，
+   若采用需在 `SecondaryDockWindow` 上做专门的过渡处理。
+
+**决定**：**等用户拍板**——接受现状（滑动）还是采用 `.moveToActiveSpace`（消失再出现）。
+当前代码维持实验 23 的纯 `.stationary`（至少不再把窗口注册成每个空间的成员）。
+
+**未采纳的更激进方向**（记录在案）：辅助功能权限 / 私有 `CGSSetWindowWorkspace`（已不存在）
+/ 每空间独立窗口（实验路 6，效果更差）。
 
 ---
 
@@ -1836,4 +1887,18 @@ swift scripts/spike-secondary-dock-sync.swift
 
 # 次级条跨空间可见性 / 滑动根因（实验 23；零权限、不改系统、结束自动切回原桌面）
 swift scripts/spike-stationary-spaces.swift
+
+# 次级条「不滑动」全路排查（实验 24；全部零权限、有色测试窗，需真人触控板滑动切桌面观察）
+#   每个脚本建 1–8 个有色窗，观察颜色见 docs/spikes.md 实验 24 的表格
+swift scripts/spike-window-level-sticky.swift    # 窗口层级 20/24/25
+swift scripts/spike-window-workspace.swift       # CGSSetWindowWorkspace 等符号探查（已不存在）
+swift scripts/spike-dock-tags.swift              # 复制原生 Dock 的窗口 tags
+swift scripts/spike-managed-space.swift          # 纯 .managed + orderFront 拉回
+swift scripts/spike-multi-window.swift           # 每桌面独立窗口（会程序化切遍所有桌面再切回）
+swift scripts/spike-move-to-active.swift         # .moveToActiveSpace 拉回（唯一不滑的折中）
+swift scripts/spike-pull-after-anim.swift       # 动画结束后拉回（NSWorkspace 通知）
+swift scripts/spike-pull-fast.swift              # 30 ms 轮询快速拉回
+swift scripts/spike-pull-nsworkspace.swift       # 纯 NSWorkspace 通知拉回
+swift scripts/spike-hide-show.swift              # 切换时 alpha 隐藏、结束恢复
+swift scripts/spike-hide-during-anim.swift       # 切换时 orderOut、150 ms 后拉回
 ```
