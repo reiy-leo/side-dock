@@ -23,7 +23,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         super.init()
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "dock.rectangle", accessibilityDescription: "MultiDock")
             button.imagePosition = .imageLeading
             button.target = self
             button.action = #selector(statusItemClicked(_:))
@@ -31,10 +30,32 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.toolTip = "MultiDock — 左键切下一个桌面，⇧+左键切上一个，右键打开菜单"
         }
+        applyIcon()
 
         menu.delegate = self
         refreshTitle()
         observeActiveSpace()
+        observeMenuBarIcon()
+    }
+
+    // MARK: - 图标
+
+    /// 套用设置里的菜单栏图标（Lucide 五选一）。取不到时回落系统符号 —— 菜单栏绝不能空着。
+    private func applyIcon() {
+        statusItem.button?.image = state.settings.menuBarIcon.image
+            ?? NSImage(systemSymbolName: "dock.rectangle", accessibilityDescription: "MultiDock")
+    }
+
+    /// 设置页换图标 → 立即生效（`withObservationTracking` 只回调一次，重注册自己）。
+    private func observeMenuBarIcon() {
+        withObservationTracking {
+            _ = state.settings.menuBarIcon
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.applyIcon()
+                self?.observeMenuBarIcon()
+            }
+        }
     }
 
     // MARK: - 图标标题

@@ -325,12 +325,14 @@ struct AppSettings: Codable, Hashable, Sendable {
     /// 默认 Dock 显示「最近添加的应用」（/Applications + ~/Applications，按修改时间）
     /// 的个数。范围 1...15，默认 10（2026-10-05 用户规格）。
     var defaultDockAppCount = 10
+    /// 菜单栏图标（Lucide 五选一，2026-10-06 用户规格）。换图标立即生效，不重启 Dock。
+    var menuBarIcon: MenuBarIcon = .default
 
     enum CodingKeys: String, CodingKey {
         case restoreOnQuit, clickAction, autoApplyOnEdit, autoCaptureUserEdits, reloadStrategy
         case showToastOnDesktopSwitch, desktopNamePlacement
         case showSecondaryDock, freezeNativeDockSwitching
-        case dockBars, defaultDockAppCount
+        case dockBars, defaultDockAppCount, menuBarIcon
     }
 
     init() {}
@@ -357,5 +359,6 @@ struct AppSettings: Codable, Hashable, Sendable {
         dockBars = try container.decodeIfPresent([DockBar].self, forKey: .dockBars) ?? []
         defaultDockAppCount =
             try container.decodeIfPresent(Int.self, forKey: .defaultDockAppCount) ?? 10
+        menuBarIcon = try container.decodeIfPresent(MenuBarIcon.self, forKey: .menuBarIcon) ?? .default
     }
 }

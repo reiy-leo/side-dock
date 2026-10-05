@@ -122,6 +122,53 @@ enum SettingsWindowFactory {
     }
 }
 
+// MARK: - 菜单栏图标选择
+
+/// 五选一的图标格子：图标 + 名称，选中描强调色（apple-design：选项并列、状态一眼可见）。
+private struct MenuBarIconChoice: View {
+    let icon: MenuBarIcon
+    @Binding var selection: MenuBarIcon
+
+    private var isSelected: Bool { selection == icon }
+
+    var body: some View {
+        Button {
+            selection = icon
+        } label: {
+            VStack(spacing: 4) {
+                Group {
+                    if let image = icon.image(size: 20) {
+                        Image(nsImage: image)
+                            .resizable()
+                            .renderingMode(.template)
+                            .frame(width: 20, height: 20)
+                    } else {
+                        Image(systemName: "questionmark")
+                            .frame(width: 20, height: 20)
+                    }
+                }
+                .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                Text(icon.displayName)
+                    .font(.caption2)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            }
+            .frame(width: 56, height: 48)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(nsColor: .textBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(isSelected ? Color.accentColor : Color(nsColor: .separatorColor),
+                                  lineWidth: isSelected ? 1.5 : 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("\(icon.displayName)（Lucide \(icon.lucideName)）")
+    }
+}
+
 // MARK: - 报警横幅
 
 /// 设置窗口内容列顶部的报警区。两条都为空时**整个视图不占空间**。
@@ -210,6 +257,14 @@ private struct GeneralTab: View {
                     }
                 }
                 .pickerStyle(.radioGroup)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("图标")
+                    HStack(spacing: 8) {
+                        ForEach(MenuBarIcon.allCases, id: \.self) { icon in
+                            MenuBarIconChoice(icon: icon, selection: menuBarIconBinding)
+                        }
+                    }
+                }
                 Text("右键或 ⌥+左键始终打开菜单。⇧+左键切上一个桌面；左键若设为「打开菜单」，⇧+左键也一并打开菜单。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -310,6 +365,13 @@ private struct GeneralTab: View {
         Binding(
             get: { state.settings.clickAction },
             set: { value in state.updateSettings { $0.clickAction = value } }
+        )
+    }
+
+    private var menuBarIconBinding: Binding<MenuBarIcon> {
+        Binding(
+            get: { state.settings.menuBarIcon },
+            set: { value in state.updateSettings { $0.menuBarIcon = value } }
         )
     }
 

@@ -3,6 +3,44 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 53 次）— 菜单栏图标五选一（Lucide）
+
+**用户说**：「通用中可以设置菜单栏中显示的图标，从lucide icons的中tree-deciduous、parasol、
+sparkles、app-window-mac、shell中选一个」。
+
+**做了什么**：
+
+1. **调研定方案**：Lucide 是 SVG 线条图标，SF Symbols 无对应形状。实测**原生 `NSImage(data:)`
+   直接解码 SVG**（`_NSSVGImageRep`，CoreSVG），不需要任何第三方库、无网络、无权限 ——
+   于是把五个图标的 SVG 路径**逐字内嵌**进代码（`UI/MenuBarIcon.swift`，注明 lucide-static
+   v1.52.0 / ISC 许可），渲染成 `isTemplate` 模板图交给系统按菜单栏亮暗着色。
+2. **`MenuBarIcon` 枚举**：五个 case + `displayName`（落叶树/遮阳伞/闪光/窗口/贝壳）+
+   `lucideName`（查源用）+ `image`（18 pt 缓存）/ `image(size:)`（设置页预览）。
+   渲染器收敛到 `@MainActor`（Swift 6 严格并发：静态可变缓存不能是 nonisolated 全局，
+   编译器当场拦下——改成 `MenuBarIconRenderer` 主 actor 单例缓存）。
+3. **设置字段**：`AppSettings.menuBarIcon`（默认 `.treeDeciduous`）+ 手写 `decodeIfPresent`
+   兜默认 + 编码往返；config.json 存 rawValue（`treeDeciduous` 等）。
+4. **接线**：`MenuBarController` 启动即套用；`observeMenuBarIcon()` 用
+   `withObservationTracking` 观察设置变化 → **换图标立即生效**；解码失败回落原系统符号
+   （菜单栏绝不能空着）。
+5. **通用页选择器**：横向五格（图标 + 名称，选中描强调色 + 淡底），复用 apple-design
+   审阅后的设计语言（8pt 圆角、选中 1.5pt 强调色描边）。
+6. **测试 +4**：五个图标都非空（笔画像素 >8）、互不相同（逐像素比对防抄错路径）、
+   缓存命中（同尺寸同实例）、rawValue 解码与新增值回落默认 —— **430 全绿**。
+7. **验收**：离屏渲染五图标 18/36 pt 于亮暗底色（`/tmp/menubar-icons.png`，CoreSVG 零报错）；
+   设置页快照亮暗各出图核对（选择器渲染、选中态、五格对齐）；重打包 `build/MultiDock.app`。
+8. **文档**：facts.md（SVG 原生解码 + `#"..."#` 装不下 SVG 的坑）、AGENTS（约束 4/现行行为/
+   模块地图/决策演变/测试数 430）、本记录。
+
+**影响 / 未解决**：
+
+- 菜单栏图标尺寸固定 18 pt（原符号 `dock.rectangle` 是 18×14）：实机若觉得偏大/偏小，
+  改 `MenuBarIcon.image` 的尺寸一处即可。
+- 换图标后菜单栏的那个「桌面序号」标题仍在图标右侧（`imageLeading` 不变）——真机观感归 A13。
+- 五个图标的观感取舍（哪个最协调）只能用户真机看一眼。
+
+---
+
 ### 2026-10-06（第 52 次）— 设置窗口组件设计统一（apple-design 审阅）
 
 **用户说**：「（apple-design 技能）检查当前的设置窗口中的组件，让设计更协调、更优雅」。
