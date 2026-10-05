@@ -31,19 +31,9 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: Binding(
-                get: { tabModel.tab },
-                set: { tabModel.tab = $0 ?? tabModel.tab }
-            )) {
-                Section {
-                    Label("通用", systemImage: "gearshape").tag(SettingsTab.general)
-                    Label("桌面", systemImage: "rectangle.3.group").tag(SettingsTab.desktop)
-                    Label("数据", systemImage: "externaldrive").tag(SettingsTab.data)
-                    Label("关于", systemImage: "info.circle").tag(SettingsTab.about)
-                }
-            }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 150, ideal: 160, max: 200)
+            sidebar
+                .listStyle(.sidebar)
+                .navigationSplitViewColumnWidth(min: 150, ideal: 160, max: 200)
         } detail: {
             VStack(spacing: 0) {
                 WarningBanner(state: state)
@@ -57,6 +47,47 @@ struct SettingsView: View {
             .frame(minWidth: 600, minHeight: 500)
         }
         .frame(width: 880, height: 560)
+    }
+
+    // MARK: 侧边栏
+
+    /// 侧边栏布局（2026-10-06 用户要求）：主 tabs（通用/桌面/数据）在顶部、
+    /// 与窗口顶再让出一截；「关于」钉在列底。
+    ///
+    /// **为什么「关于」不走 List 行**：`List` 没有"行钉底"机制——中间塞 spacer 行
+    /// 不会撑开（行高取内容理想值）。用 `safeAreaInset(edge: .bottom)` 承载一根
+    /// 单行的原生 sidebar 小 `List`（与上方同一份 selection 绑定）：行样式、hover、
+    /// 选中胶囊、窗口非激活变灰全走系统实现，不手绘。
+    private var sidebar: some View {
+        List(selection: tabSelection) {
+            Section {
+                Label("通用", systemImage: "gearshape").tag(SettingsTab.general)
+                Label("桌面", systemImage: "rectangle.3.group").tag(SettingsTab.desktop)
+                Label("数据", systemImage: "externaldrive").tag(SettingsTab.data)
+            }
+        }
+        // 无 titlebar 的窗口里红绿灯浮在侧边栏上，默认行距顶太近 —— 顶部再让出一截
+        // （safeAreaInset 不产生可点击视图，不挡窗口顶部拖拽区）。
+        .safeAreaInset(edge: .top, spacing: 0) {
+            Color.clear.frame(height: 26)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            List(selection: tabSelection) {
+                Label("关于", systemImage: "info.circle").tag(SettingsTab.about)
+            }
+            // 高度 = 单行 sidebar List 的自然高度（上下 contentInset ~10 + 行 ~28）。
+            // 行高是系统固定值，窗口缩放不影响。
+            .frame(height: 48)
+        }
+    }
+
+    /// 上、下两个 List 共用同一份选中绑定：点「关于」时上方三行自动全不选，
+    /// 点主 tabs 时底部「关于」自动取消高亮。
+    private var tabSelection: Binding<SettingsTab> {
+        Binding(
+            get: { tabModel.tab },
+            set: { tabModel.tab = $0 ?? tabModel.tab }
+        )
     }
 }
 
@@ -146,23 +177,6 @@ private struct GeneralTab: View {
 
     var body: some View {
         Form {
-            Section("默认 Dock") {
-                Stepper(
-                    "显示最近添加的应用：\(state.settings.defaultDockAppCount) 个",
-                    value: defaultDockCountBinding,
-                    in: 1...DockBar.maxApps
-                )
-                recentAppsPreview
-                Text("内容自动来自「/Applications」和「~/Applications」里最新添加的应用（按修改时间排序），打开设置窗口时重扫。装了新应用后点下面的「立即应用」让它进 Dock。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("大小、放大、自动隐藏、最小化特效、最小化到应用图标等外观项跟随系统设置，在这里不提供。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
             Section("应用") {
                 HStack(spacing: 8) {
                     Button("立即应用") { state.applyDefaultDock() }
@@ -295,44 +309,6 @@ private struct GeneralTab: View {
             }
         }
         .formStyle(.grouped)
-    }
-
-    /// 默认 Dock 的只读预览：当前扫描结果按顺序排开（不可编辑 —— 内容是自动生成的）。
-    @ViewBuilder
-    private var recentAppsPreview: some View {
-        if state.defaultDock.pinnedApps.isEmpty {
-            Text("（没有扫描到应用）")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } else {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(state.defaultDock.pinnedApps, id: \.normalizedKey) { tile in
-                        VStack(spacing: 2) {
-                            Image(nsImage: DockStripRules.icon(for: tile, size: 32))
-                                .resizable()
-                                .frame(width: 32, height: 32)
-                                .opacity(DockStripRules.isInstalled(tile) ? 1 : 0.35)
-                            Text(tile.label)
-                                .font(.caption2)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .frame(width: 52)
-                        }
-                        .help(tile.label)
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-            .frame(height: 56)
-        }
-    }
-
-    private var defaultDockCountBinding: Binding<Int> {
-        Binding(
-            get: { state.settings.defaultDockAppCount },
-            set: { state.setDefaultDockAppCount($0) }
-        )
     }
 
     private var clickActionBinding: Binding<ClickAction> {
