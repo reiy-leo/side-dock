@@ -182,6 +182,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showSettings() {
+        // 用户规格（2026-10-06）：**打开设置窗口才重扫**最近应用；每次打开都扫
+        // （窗口复用时也要扫），顺带即刷台前调度 / 原生 Dock 方位，不等 2 s 轮询拍。
+        state.prepareSettingsPresentation()
         if let window = settingsWindow {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)

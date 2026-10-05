@@ -99,3 +99,10 @@ enum StageManagerStatus {
         return nil
     }
 }
+
+/// 一次环境读取（`AppState` 的 2 s 轮询快照）：台前调度开关 + 原生 Dock 方位。
+/// 两者任一变化都要反映到设置页（位置选项避开左 / 附着-独立提示）。
+struct EnvironmentReading: Equatable, Sendable {
+    var stageManagerActive: Bool?
+    var dockSide: SecondaryDockOrientation?
+}

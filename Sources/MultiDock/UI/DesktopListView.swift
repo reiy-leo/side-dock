@@ -80,7 +80,7 @@ struct DesktopListView: View {
                     syncDrafts()
                 }
                 Spacer()
-                Text("一个桌面只挂一根栏；绑定时另一根会自动让出")
+                Text("一个桌面只挂一根栏；绑定时另一根会自动让出 · 原生 Dock \(state.dockSideDescription)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

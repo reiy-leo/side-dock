@@ -735,7 +735,7 @@ final class SecondaryDockFreezeTests: XCTestCase {
         stores: (ConfigStore, BaselineStore),
         provider: FakeSpaceProvider? = nil,
         recentApps: [DockTile]? = nil,
-        stageManagerActive: Bool? = false
+        environment: EnvironmentReading = EnvironmentReading(stageManagerActive: false, dockSide: .bottom)
     ) -> AppState {
         let injectedApps = recentApps ?? apps(count: 1, prefix: "Default")
         let state = AppState(
@@ -755,7 +755,7 @@ final class SecondaryDockFreezeTests: XCTestCase {
             provider: provider ?? FakeSpaceProvider(isAvailable: false, reason: "测试替身"),
             fileLog: makeTestFileLog(),
             recentAppsProvider: { limit in Array(injectedApps.prefix(limit)) },
-            stageManagerActiveProvider: { stageManagerActive }
+            environmentReader: { environment }
         )
         // 冻结现在是产品默认值；这里的用例各自显式决定冻结状态，默认按「未冻结」测。
         state.updateSettings { $0.freezeNativeDockSwitching = false }

@@ -197,7 +197,7 @@ private struct GeneralTab: View {
                     in: 1...DockBar.maxApps
                 )
                 recentAppsPreview
-                Text("内容自动来自「/Applications」和「~/Applications」里最新添加的应用（按修改时间排序，启动时扫描）。装了新应用后点下面的「立即应用」，或重启本 App 让它进 Dock。")
+                Text("内容自动来自「/Applications」和「~/Applications」里最新添加的应用（按修改时间排序），打开设置窗口时重扫。装了新应用后点下面的「立即应用」让它进 Dock。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

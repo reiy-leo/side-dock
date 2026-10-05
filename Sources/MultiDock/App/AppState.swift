@@ -134,8 +134,18 @@ final class AppState {
     /// 「最近添加的应用」的来源。默认扫 `/Applications` + `~/Applications`（按修改时间），
     /// 测试注入固定结果。
     private let recentAppsProvider: (_ limit: Int) -> [DockTile]
-    /// 台前调度开关（nil = 读不到）。决定 Dock 栏可选的位置（开启时避开左）。
-    private let stageManagerActiveProvider: () -> Bool?
+    /// 环境读取：台前调度开关 + 原生 Dock 方位（都零权限）。测试注入固定值。
+    private let environmentReader: () -> EnvironmentReading
+
+    /// 台前调度开关（缓存，2 s 轮询 + 打开设置窗口时即刷）。nil = 读不到，按未开启处理。
+    /// 它决定 Dock 栏可选位置（开着避开左）；变更即更新设置页的位置选项。
+    private(set) var stageManagerActive: Bool?
+    /// 原生 Dock 方位（缓存，同一轮询）。nil = 探测不到（自动隐藏 / 重启瞬态）。
+    /// 只喂设置页的实时提示；次级条自己的附着/独立判定走它 200 ms 的几何轮询，不经过这里。
+    private(set) var dockSide: SecondaryDockOrientation?
+    /// 环境轮询任务（2 s 一拍，便宜：一次 CFPreferences 读 + 一次 NSScreen 扫）。
+    private var environmentTask: Task<Void, Never>?
+    private var hasReadEnvironment = false
 
     /// 依赖全部可注入：`DockController`、两个 Store、以及空间提供者都能换成测试替身，
     /// 这样「立即应用 / 还原 / 切桌面预应用」这几条路径不必真的动用户的 Dock 也能测。
@@ -154,7 +164,12 @@ final class AppState {
         presenceMonitor: DockPresenceMonitor? = nil,
         fileLog: FileLogSink = FileLogSink(),
         recentAppsProvider: @escaping (_ limit: Int) -> [DockTile] = { RecentAppsScanner.scan(limit: $0) },
-        stageManagerActiveProvider: @escaping () -> Bool? = { StageManagerStatus.isActive() }
+        environmentReader: @escaping () -> EnvironmentReading = {
+            EnvironmentReading(
+                stageManagerActive: StageManagerStatus.isActive(),
+                dockSide: ScreenInsetDockFaceProvider().currentFace()?.orientation
+            )
+        }
     ) {
         let provider = provider ?? SpaceProviderFactory.make()
         spaceProviderAvailable = provider.isAvailable
@@ -167,7 +182,7 @@ final class AppState {
         self.injectedPresenceMonitor = presenceMonitor
         self.fileLog = fileLog
         self.recentAppsProvider = recentAppsProvider
-        self.stageManagerActiveProvider = stageManagerActiveProvider
+        self.environmentReader = environmentReader
         observer.onActiveSpaceChanged = { [weak self] space in
             guard let self else { return }
             if let space {
@@ -306,9 +321,60 @@ final class AppState {
         return "\(base) \(counter)"
     }
 
-    /// Dock 栏的可选位置。台前调度开着时避开左（其窗口条固定占屏幕左缘）。
+    /// Dock 栏的可选位置（缓存值驱动，`refreshEnvironment` 更新后 SwiftUI 自动重渲染）。
+    /// 台前调度开着时避开左（其窗口条固定占屏幕左缘）。
     var availableBarPositions: [DockBarPosition] {
-        DockBarPosition.available(stageManagerActive: stageManagerActiveProvider() ?? false)
+        DockBarPosition.available(stageManagerActive: stageManagerActive ?? false)
+    }
+
+    /// 设置页实时提示：原生 Dock 的方位决定了「位置=同侧」的栏是附着模式（贴 Dock 内侧）。
+    var dockSideDescription: String {
+        switch dockSide {
+        case .bottom: return "当前在底部（位置=底部的栏附着在 Dock 内侧）"
+        case .left: return "当前在左侧（位置=左侧的栏附着在 Dock 内侧）"
+        case .right: return "当前在右侧（位置=右侧的栏附着在 Dock 内侧）"
+        case nil: return "位置未识别（各栏按自身位置独立贴边）"
+        }
+    }
+
+    /// 读一次环境（台前调度 + 原生 Dock 方位），值变化时更新缓存并记日志。
+    /// 首次读取静默（启动日志里没必要多两条）。
+    func refreshEnvironment() {
+        let reading = environmentReader()
+        if reading.stageManagerActive != stageManagerActive {
+            stageManagerActive = reading.stageManagerActive
+            if hasReadEnvironment, let active = reading.stageManagerActive {
+                append(.info, "台前调度：\(active ? "开启" : "关闭")——Dock 栏可选位置已更新")
+            }
+        }
+        if reading.dockSide != dockSide {
+            dockSide = reading.dockSide
+            if hasReadEnvironment, let side = reading.dockSide {
+                append(.info, "原生 Dock 位置变化 → \(side)")
+            }
+        }
+        hasReadEnvironment = true
+    }
+
+    /// 打开设置窗口时的快照刷新（用户规格 2026-10-06：**只有打开设置窗口才重扫**最近应用），
+    /// 顺带即刷环境（不等 2 s 轮询拍）。
+    ///
+    /// 重扫只更新内存里的默认 Dock（预览跟着变）；**不会自动应用**——
+    /// 把新内容写进 Dock 仍由「立即应用」/ 数量改动 / 下次启动对齐触发，
+    /// 否则每次开设置都可能白重启一次 Dock。
+    func prepareSettingsPresentation() {
+        rebuildDefaultDock(reason: "打开设置窗口重扫")
+        refreshEnvironment()
+    }
+
+    private func startEnvironmentPoll() {
+        environmentTask?.cancel()
+        environmentTask = Task { [weak self] in
+            while !Task.isCancelled {
+                self?.refreshEnvironment()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
     }
 
     // MARK: - 默认 Dock（最近添加的应用）
@@ -506,6 +572,7 @@ final class AppState {
         refreshDisplayScreens()
         refreshBackups()
         refreshDockCapabilities()
+        refreshEnvironment()
 
         // 把"此刻真实 Dock 的内容"记成已应用状态：如果它已经等于要应用的那份配置，
         // 下面的自动应用就会被指纹短路，启动时不会白重启一次 Dock。
@@ -525,6 +592,8 @@ final class AppState {
 
         startDockWatcher()
         startDockPresenceMonitor()
+        // 环境轮询（台前调度 / 原生 Dock 方位，2 s）：变化要反映到设置页的位置选项与提示。
+        startEnvironmentPoll()
         // 次级 Dock 条按"此刻的活动桌面"初始化（之后由桌面变化回调驱动）。
         secondaryDock?.spaceDidChange(observer.activeSpace)
         // 自愈必须放在最后：它要走还原链路（写偏好 + 重启 Dock），
@@ -539,6 +608,8 @@ final class AppState {
         dockWatcher?.stop()
         dockPresenceMonitor?.stop()
         secondaryDock?.stop()
+        environmentTask?.cancel()
+        environmentTask = nil
         frozenDockAlignmentTask?.cancel()
         append(.info, "桌面观察已停止")
     }

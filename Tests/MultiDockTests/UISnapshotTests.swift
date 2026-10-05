@@ -139,7 +139,7 @@ final class UISnapshotTests: XCTestCase {
             recentAppsProvider: { limit in
                 Array(Self.previewApps().prefix(limit))
             },
-            stageManagerActiveProvider: { false }
+            environmentReader: { EnvironmentReading(stageManagerActive: false, dockSide: .bottom) }
         )
         // 冻结是产品默认值；快照按「未冻结」的设置页文案出图，别让横幅文案跟着默认值漂移。
         state.updateSettings { $0.freezeNativeDockSwitching = false }

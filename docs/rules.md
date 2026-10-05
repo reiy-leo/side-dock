@@ -391,6 +391,9 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 7. **次级条「附着 vs 独立贴边」的判定在 face == nil（自动隐藏）时要用 `lastFaceOrientation`
    兜底**——否则跟随 Dock 隐藏的附着条会在 Dock 滑走瞬间被误判成独立贴边"常驻"
    （`SecondaryDockController.applyCurrentState` 的 `rememberedAttached` 分支）。
+8. **环境变化（台前调度 / 原生 Dock 方位）没有系统通知**，只能轮询：`AppState` 2 s 一拍
+   （`EnvironmentReading`：一次 CFPreferences 读 + 一次 NSScreen 扫，可忽略的开销），
+   打开设置窗口再即刷一拍。**别等通知**——没有；也别为这个加权限。
 
 ---
 

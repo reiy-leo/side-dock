@@ -50,7 +50,9 @@ final class AppStateDockTests: XCTestCase {
         stores: (ConfigStore, BaselineStore),
         provider: FakeSpaceProvider? = nil,
         recentApps: [DockTile]? = nil,
-        stageManagerActive: Bool? = false
+        environment: @escaping () -> EnvironmentReading = {
+            EnvironmentReading(stageManagerActive: false, dockSide: .bottom)
+        }
     ) -> AppState {
         let injectedApps = recentApps ?? Self.apps(count: 1, prefix: "Default")
         let state = AppState(
@@ -72,7 +74,7 @@ final class AppStateDockTests: XCTestCase {
             provider: provider ?? FakeSpaceProvider(isAvailable: false, reason: "测试替身"),
             fileLog: makeTestFileLog(),
             recentAppsProvider: { limit in Array(injectedApps.prefix(limit)) },
-            stageManagerActiveProvider: { stageManagerActive }
+            environmentReader: environment
         )
         // 冻结的启动对齐在「默认 Dock 自动生成」之后会真实写一次 Dock；
         // 本文件的用例各自管理写入次数，默认按「未冻结」起跑（与旧文件同口径）。
@@ -1074,5 +1076,91 @@ final class AppStateDockTests: XCTestCase {
 
         XCTAssertTrue(state.dockBars.allSatisfy { $0.spaceID == nil })
         XCTAssertTrue(state.log.contains { $0.message.contains("读不到 com.apple.dock") })
+    }
+
+    // MARK: - 打开设置窗口的重扫与环境刷新（2026-10-06 用户规格）
+
+    func testSettingsPresentationRescansRecentApps() {
+        // 「只有打开设置窗口才重扫」：prepareSettingsPresentation 要把最新的扫描结果
+        // 刷进内存里的默认 Dock（预览跟着变）；**不自动应用**——写 Dock 仍由
+        // 「立即应用」/ 数量改动 / 启动对齐触发。
+        let scanResult = Box<[DockTile]>(Self.apps(count: 2, prefix: "V1"))
+        let preferences = FakePreferences(domain: baseDomain())
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("multidock-tests-rescan-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let state = AppState(
+            dockController: DockController(
+                preferences: preferences,
+                reloader: DockReloader(
+                    process: FakeDockProcess(),
+                    timeout: .milliseconds(200),
+                    pollInterval: .milliseconds(2),
+                    fallbackGrace: .milliseconds(20),
+                    minimumSpacing: .zero
+                ),
+                backup: {}
+            ),
+            configStore: ConfigStore(fileURL: directory.appendingPathComponent("config.json")),
+            baselineStore: BaselineStore(
+                baselineURL: directory.appendingPathComponent("baseline.plist"),
+                markerURL: directory.appendingPathComponent("session.state"),
+                backupsURL: directory.appendingPathComponent("backups", isDirectory: true)
+            ),
+            fileLog: makeTestFileLog(),
+            recentAppsProvider: { limit in Array(scanResult.value.prefix(limit)) }
+        )
+        state.updateSettings { $0.freezeNativeDockSwitching = false }
+        state.updateSettings { $0.autoApplyOnEdit = false }
+        state.start()
+        defer { state.stop() }
+
+        XCTAssertEqual(state.defaultDock.pinnedApps.map(\.label), ["启动台", "V10", "V11"])
+
+        scanResult.value = Self.apps(count: 3, prefix: "V2")
+        state.prepareSettingsPresentation()
+
+        XCTAssertEqual(state.defaultDock.pinnedApps.map(\.label), ["启动台", "V20", "V21", "V22"],
+                       "打开设置窗口要重扫最近应用")
+        XCTAssertEqual(preferences.writeCount, 0, "重扫不写 Dock（不自动应用）")
+    }
+
+    func testStageManagerChangeUpdatesAvailablePositions() {
+        // 台前调度开/关要实时反映到位置选项（2 s 轮询 + 打开设置即刷）。
+        let reading = Box(EnvironmentReading(stageManagerActive: true, dockSide: .bottom))
+        let state = makeState(
+            preferences: FakePreferences(domain: baseDomain()),
+            stores: makeStores("sm-change"),
+            environment: { reading.value }
+        )
+        state.start()
+        defer { state.stop() }
+
+        XCTAssertEqual(state.availableBarPositions, [.bottom, .right], "台前调度开着：避开左")
+
+        reading.value = EnvironmentReading(stageManagerActive: false, dockSide: .bottom)
+        state.refreshEnvironment()
+
+        XCTAssertEqual(state.availableBarPositions, [.bottom, .left, .right], "台前调度关了：左回来")
+        XCTAssertTrue(state.log.contains { $0.message.contains("台前调度：关闭") })
+    }
+
+    func testDockSideChangeIsTrackedForSettingsHint() {
+        let reading = Box(EnvironmentReading(stageManagerActive: false, dockSide: .bottom))
+        let state = makeState(
+            preferences: FakePreferences(domain: baseDomain()),
+            stores: makeStores("dock-side"),
+            environment: { reading.value }
+        )
+        state.start()
+        defer { state.stop() }
+
+        XCTAssertTrue(state.dockSideDescription.contains("底部"))
+
+        reading.value = EnvironmentReading(stageManagerActive: false, dockSide: .right)
+        state.refreshEnvironment()
+
+        XCTAssertTrue(state.dockSideDescription.contains("右侧"))
+        XCTAssertTrue(state.log.contains { $0.message.contains("原生 Dock 位置变化") })
     }
 }
