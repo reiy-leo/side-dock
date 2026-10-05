@@ -28,7 +28,7 @@ final class UISnapshotTests: XCTestCase {
         state.refreshDockCapabilities()
         seed(state)
         let tabModel = SettingsTabModel()
-        // 用真的窗口装配（含工具栏），而不是测试里另拼一个 —— 否则验出来的不是真窗口。
+        // 用真的窗口装配（含隐藏 titlebar 的窗口样式），而不是测试里另拼一个 —— 否则验出来的不是真窗口。
         let window = SettingsWindowFactory.makeWindow(state: state, tabModel: tabModel)
 
         for appearance in [NSAppearance.Name.aqua, NSAppearance.Name.darkAqua] {

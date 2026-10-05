@@ -3,6 +3,31 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 45 次）— 设置窗口去 titlebar：侧边栏贯通到窗口顶（系统设置同款）
+
+**用户说**：「侧边栏贯通titlebar，去掉titlebar」。
+
+**做了什么**：
+
+1. **`SettingsWindowFactory`**（`UI/SettingsView.swift`）：styleMask 加 `.fullSizeContentView` +
+   `titleVisibility = .hidden` + `titlebarAppearsTransparent = true`。**保留 `.titled`**——
+   红绿灯、顶部隐藏拖拽区、「窗口」菜单标题都靠它；`window.title` 只是UI上不再显示。
+   `NavigationSplitView` 左栏材质因此贯通到窗口顶，红绿灯浮在侧边栏上，无标题文字、
+   无 titlebar 分隔线（系统设置同款）。
+2. **验证**：UI 快照亮/暗 8 张核对通过——侧边栏到顶、内容列按安全区自动内收
+   （首行「通用」在红绿灯下方，不遮挡）；快照由 `cacheDisplay` 画 contentView，
+   红绿灯浮层本身不进 PNG，真机观感归 A12 一起看。
+3. **测试**：406 全绿；UISnapshotTests 一句过时注释（「含工具栏」→「含隐藏 titlebar
+   的窗口样式」）；**已重打包 build/MultiDock.app**。
+4. **文档**：PLAN §3.7 侧边栏 bullet 补「同日再修订」、AGENTS §3 模块地图设置 UI 行。
+
+**影响 / 未解决**：
+
+- 窗口顶 ~28 pt 是隐藏拖拽区；SwiftUI 内容有安全区内收，可点内容不会钻到红绿灯底下。
+- 拖拽手感 / 红绿灯浮在侧边栏上的真机观感，归 A12 手测顺带确认。
+
+---
+
 ### 2026-10-06（第 44 次）— 半露加深：附着模式滑入比 0.5 → 0.8（tuckRatio）
 
 **用户说**：「secondary dock和原生dock的重叠更高一点从0.5更换成0.8」。

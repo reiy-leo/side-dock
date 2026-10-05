@@ -436,7 +436,10 @@ struct AppSettings: Codable {
 
 > **2026-10-06 第 2 轮（侧边栏 + 数据 + 关于）**：
 > - **侧边栏选项卡**：`NavigationSplitView` 左栏四项（通用 / 桌面 / 数据 / 关于，系统设置风格），
->   删除 NSToolbar 标签页装配；报警横幅移到内容列顶部。
+>   删除 NSToolbar 标签页装配；报警横幅移到内容列顶部。**同日再修订（用户要求）**：窗口
+>   **去掉 titlebar**（`fullSizeContentView` + `titleVisibility = .hidden` + `titlebarAppearsTransparent`），
+>   侧边栏材质贯通到窗口顶、红绿灯浮在侧边栏上（与系统设置同款）；`.titled` 保留——
+>   红绿灯与顶部隐藏拖拽区靠它，`window.title` 只给「窗口」菜单与辅助功能用。
 > - **「数据」页**：导出配置（与 config.json 同构 JSON，`ConfigStore.encode`）；
 >   导入配置（**与启动加载同一套** `normalizePayload` 归一化/迁移；整份替换并落盘；次级条与绑定
 >   即时生效，**不自动应用原生 Dock**；冻结开关方向变了会按同一入口对齐——防"两套内容并排"）；

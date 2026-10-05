@@ -70,8 +70,14 @@ enum SettingsWindowFactory {
         let window = NSWindow(contentViewController: NSHostingController(
             rootView: SettingsView(state: state, tabModel: tabModel)
         ))
+        // 系统设置风格（2026-10-06 用户要求）：去掉 titlebar，侧边栏贯通到窗口顶。
+        // 仍保留 .titled —— 红绿灯与顶部隐藏拖拽区靠它；fullSizeContentView 让内容
+        // 占满全高，侧边栏材质（NavigationSplitView 左列）因此延伸进原 titlebar 区。
+        // title 只给「窗口」菜单与辅助功能用，界面上不再显示。
         window.title = "MultiDock 设置"
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
         // 关掉后仍保留实例，再次打开时复用，避免状态丢失。
         window.isReleasedWhenClosed = false
         // 与 `SettingsView` 根视图的 `.frame(width:height:)` 保持一致，
