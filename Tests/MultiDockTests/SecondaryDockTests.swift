@@ -66,8 +66,8 @@ final class SecondaryDockLayoutTests: XCTestCase {
         let (revealed, tucked) = SecondaryDockLayout.placement(barSize: barSize, face: face)
         // 展开贴 Dock 顶边上方：y = 53 + 4；水平居中：(1920-192)/2 = 864。
         XCTAssertEqual(revealed, CGRect(x: 864, y: 57, width: 192, height: 56))
-        // 半露 = 向下平移半个条厚（28），下半截被原生 Dock 挡住。
-        XCTAssertEqual(tucked, CGRect(x: 864, y: 29, width: 192, height: 56))
+        // 半露 = 向下平移 0.8 个条厚（56 × 0.8 = 44.8 → 45），只露顶部 ~12 pt。
+        XCTAssertEqual(tucked, CGRect(x: 864, y: 12, width: 192, height: 56))
     }
 
     func testRightPlacementPeeksTowardScreenInterior() {
@@ -82,8 +82,8 @@ final class SecondaryDockLayoutTests: XCTestCase {
         let (revealed, tucked) = SecondaryDockLayout.placement(barSize: barSize, face: face)
         // 展开贴 Dock 内侧面左侧：x = 1844 - 4 - 56 = 1784；贴屏幕底角：y = 4。
         XCTAssertEqual(revealed, CGRect(x: 1784, y: 4, width: 56, height: 192))
-        // 半露 = 向右平移半个条宽（28），右半截滑进 Dock 身后。
-        XCTAssertEqual(tucked, CGRect(x: 1812, y: 4, width: 56, height: 192))
+        // 半露 = 向右平移 0.8 个条宽（45），右大半截滑进 Dock 身后。
+        XCTAssertEqual(tucked, CGRect(x: 1829, y: 4, width: 56, height: 192))
     }
 
     func testLeftPlacementMirrorsRight() {
@@ -95,7 +95,8 @@ final class SecondaryDockLayoutTests: XCTestCase {
         let barSize = SecondaryDockLayout.barSize(itemCount: 4, iconSize: 36, isVertical: true)
         let (revealed, tucked) = SecondaryDockLayout.placement(barSize: barSize, face: face)
         XCTAssertEqual(revealed, CGRect(x: 80, y: 4, width: 56, height: 192))
-        XCTAssertEqual(tucked, CGRect(x: 52, y: 4, width: 56, height: 192))
+        // 半露 = 向左平移 0.8 个条宽（45）。
+        XCTAssertEqual(tucked, CGRect(x: 35, y: 4, width: 56, height: 192))
     }
 
     func testOversizedBarIsClampedIntoScreen() {
@@ -337,7 +338,7 @@ final class SecondaryDockControllerTests: XCTestCase {
         XCTAssertEqual(presenter.frontCount, 1)
         let barSize = SecondaryDockLayout.barSize(itemCount: 3, iconSize: 36, isVertical: false)
         let expected = SecondaryDockLayout.placement(barSize: barSize, face: bottomFace())
-        XCTAssertEqual(presenter.lastFrame, expected.tucked, "默认只露一半")
+        XCTAssertEqual(presenter.lastFrame, expected.tucked, "默认半露（滑入 0.8 个条厚）")
         XCTAssertEqual(presenter.lastAnimated, false, "几何定位不走动画")
     }
 

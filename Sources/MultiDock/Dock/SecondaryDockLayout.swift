@@ -29,8 +29,9 @@ struct DockFaceGeometry: Equatable, Sendable {
 ///
 /// 摆放力学（用户规格：条在原生 Dock「下方」，默认半露、hover 全出）：
 /// - 条贴在 Dock 的**内侧面**（bottom → 上方；right → 左侧；left → 右侧）；
-/// - **半露** = 整条向 Dock 方向滑进去一半 —— 本条窗口层级低于 Dock（19 < 20），
-///   滑进去的那一半被原生 Dock 的像素自然挡住，看起来就是「从原生 Dock 底下探出一半」；
+/// - **半露** = 整条向 Dock 方向滑进去条厚的 `tuckRatio`（2026-10-06 用户调整：0.5 → 0.8，
+///   与原生 Dock 重叠更多、只露一条薄边）—— 本条窗口层级低于 Dock（19 < 20），
+///   滑进去的部分被原生 Dock 的像素自然挡住，看起来就是「从原生 Dock 底下探出一条边」；
 /// - **hover 全出** = 向屏幕内侧滑出整条（内侧是普通窗口地盘，永远有空间）。
 enum SecondaryDockLayout {
 
@@ -40,6 +41,10 @@ enum SecondaryDockLayout {
     static let screenMargin: CGFloat = 4
     /// 内缩小于这个值视为「探测不到 Dock」（自动隐藏滑走后内缩 ≈ 0）。
     static let hiddenInsetThreshold: CGFloat = 8
+    /// 半露滑入占比：`tucked` 相对 `revealed` 向 Dock 方向滑入多少个条厚。
+    /// 2026-10-06 用户调整：0.5（滑入一半）→ 0.8（与原生 Dock 重叠更多，约只露 20% 条厚）。
+    /// **独立贴边不用它**：那边的半露按用户规格固定为「滑出屏幕一半」（`standalonePlacement`）。
+    static let tuckRatio: CGFloat = 0.8
 
     /// 从屏幕与可见区内缩推断原生 Dock 的方位。探测不到返回 nil。
     static func detectDockFace(screen: CGRect, visible: CGRect) -> DockFaceGeometry? {
@@ -67,7 +72,8 @@ enum SecondaryDockLayout {
 
     /// 计算条的展开（hover）与半露（默认）两个 frame。
     ///
-    /// 半露的定义：`tucked` 相对 `revealed` 向 Dock 方向平移**半个条厚**。
+    /// 半露的定义：`tucked` 相对 `revealed` 向 Dock 方向平移 `tuckRatio` 个条厚
+    /// （滑入量取整到整点，半露边不落在半像素上）。
     static func placement(barSize: CGSize, face: DockFaceGeometry) -> (revealed: CGRect, tucked: CGRect) {
         let screen = face.screen
         let size = CGSize(
@@ -77,7 +83,7 @@ enum SecondaryDockLayout {
         switch face.orientation {
         case .bottom:
             // 横条，水平居中（原生 Dock 的面板也是水平居中的），贴 Dock 顶边上方；
-            // 半露 = 向下平移半个条高，下半截被 Dock 挡住。
+            // 半露 = 向下平移 0.8 个条高，只在 Dock 上缘外露出薄薄一条。
             let x = clamp(
                 (screen.midX - size.width / 2).rounded(),
                 low: screen.minX + screenMargin,
@@ -87,7 +93,7 @@ enum SecondaryDockLayout {
                 origin: CGPoint(x: x, y: face.visible.minY + faceGap),
                 size: size
             )
-            let tucked = revealed.offsetBy(dx: 0, dy: -size.height / 2)
+            let tucked = revealed.offsetBy(dx: 0, dy: -tuckOffset(size.height))
             return (revealed, tucked)
         case .right:
             // 竖条，贴屏幕底角、右缘贴 Dock 内侧面；半露 = 向右滑进 Dock 身后。
@@ -95,7 +101,7 @@ enum SecondaryDockLayout {
                 origin: CGPoint(x: face.visible.maxX - faceGap - size.width, y: screen.minY + screenMargin),
                 size: size
             )
-            let tucked = revealed.offsetBy(dx: size.width / 2, dy: 0)
+            let tucked = revealed.offsetBy(dx: tuckOffset(size.width), dy: 0)
             return (revealed, tucked)
         case .left:
             // 竖条，贴屏幕底角、左缘贴 Dock 内侧面；半露 = 向左滑进 Dock 身后。
@@ -103,9 +109,15 @@ enum SecondaryDockLayout {
                 origin: CGPoint(x: face.visible.minX + faceGap, y: screen.minY + screenMargin),
                 size: size
             )
-            let tucked = revealed.offsetBy(dx: -size.width / 2, dy: 0)
+            let tucked = revealed.offsetBy(dx: -tuckOffset(size.width), dy: 0)
             return (revealed, tucked)
         }
+    }
+
+    /// 半露的滑入量：条厚 × `tuckRatio`，取整到整点（0.8 × 56 = 44.8 这类浮点值
+    /// 会把半露边摆在半像素上，整条边发虚）。
+    private static func tuckOffset(_ thickness: CGFloat) -> CGFloat {
+        (thickness * tuckRatio).rounded()
     }
 
     /// Dock 在屏上实际占用的条带（screen 与 visible 的差集）。
