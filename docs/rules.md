@@ -25,6 +25,7 @@ MULTIDOCK_UI_SNAPSHOT=1 swift test --disable-sandbox --filter UISnapshotTests
 - **真实 Dock 验收默认跳过**（`DockAcceptanceTests`，靠环境变量开启）。它会写 `com.apple.dock` 并重启 Dock 几十次，跑完把操作前的全量域写回去；中间产物落在 `/tmp/multidock-acceptance-*.plist`。**跑的时候别手动改 Dock**，否则会报假失败。
 - 想更保险就先手工备份：`defaults export com.apple.dock /tmp/dock-backup.plist`。
 - **写 Swift 小工具时注意 stdout 缓冲**：重定向到文件时是块缓冲，观察类脚本要 `setvbuf(stdout, nil, _IONBF, 0)`，否则一行都看不到（`check-toast-window.sh` 已这么处理）。
+- **长驻脚本的周期任务用 `Timer.scheduledTimer`，别用 `DispatchSourceTimer(queue: .main)`**：后者挂的是 GCD main queue，在 `RunLoop.main.run()` 驱动的长驻脚本里**一次都不 fire**（实验 25 第一轮全哑、23 条通知全到而轮询零触发，真机复现）。要 GCD timer 就必须 `dispatchMain()`（那就没有 RunLoop/通知了）。
 - 反复调用的 Swift 探测工具要**编译一次缓存复用**（`swiftc -O -o /tmp/... `），别每次 `swift file.swift` —— 那是每次都完整编译，几十毫秒级轮询根本跑不动。
 - **测 Dock 重启耗时别用 `pgrep` 轮询**：单次约 110 ms，会把测量结果整个污染掉（实测把 70 ms 测成 400 ms）。用 `NSRunningApplication`（0.6 ms）或 `proc_listpids`（0.02 ms）。
 - 打包脚本用的是 `codesign --force --sign -`，不是计划原文写的 `--deep`（Apple 已废弃 `--deep`）。
@@ -356,9 +357,11 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
     `CGSSetWindowWorkspace`（15.8.1 不存在）、每空间独立窗口，全部真人手测证伪——
     特权来自**进程身份**，窗口属性无解。**现行已按用户拍板（2026-10-05）实现方案 ②**：
     常态配方 `[.moveToActiveSpace, .stationary, .fullScreenAuxiliary, .ignoresCycle]`——
-    单空间归属，切换瞬间条留在旧空间（不滑）；`SecondaryDockWindow.pullToActiveSpace()` =
-    置透明 → 临时 `.canJoinAllSpaces` + `orderFrontRegardless`（在当前空间重新注册）→
-    16 ms 后设回单空间 → 0.18 s 淡入（连切时复位任务自取消）。调度闸门在
+    单空间归属，切换瞬间条留在旧空间（随过渡渐隐，≈0.25 倍屏宽时归零，时机由系统决定、
+    我们改不了——实验 25）；`SecondaryDockWindow.pullToActiveSpace()` = 置透明、frame 跳到
+    沉没位（`visibleFrame` 底边以下，拉回当拍跳变无视觉）→ 临时 `.canJoinAllSpaces` +
+    `orderFrontRegardless`（在当前空间重新注册）→ 16 ms 后设回单空间 → **0.12 s 升回原位
+    + 同步淡显**（实验 25 用户规格：切换后总感知 ≤ 0.15 s；连切时复位任务自取消）。调度闸门在
     `SecondaryDockController.spaceDidChange`：仅「换了空间 && 切换前后都在显示」才拉
     （同一空间重复事件 / 全屏进出 / 从隐藏恢复都不拉，防叠淡入闪烁）。判据教训：`CGWindowList`
     「在屏」证明不了「动画期间不滑动」，这类命题只能真人手势实测。

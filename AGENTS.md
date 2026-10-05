@@ -68,7 +68,7 @@ macOS 多桌面（Space）工具。**当前产品形态（2026-10-04 起，用�
 
 ### 决策演变（一句话版；细节在 `docs/PLAN.md` 与 `docs/spikes.md`）
 
-v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 notifyd 热重载 / 切桌面靠 300 ms 轮询 / Finder 无表示）→ **v3.2** 桌面命名 + toast（P2.5）→ **v3.3** 节流错开 + PID 身份闸门 + 预应用"同一拍" + `DockEditTarget` 统一入口 → **v3.4** 自愈债务继承 + 备份只恢复白名单键 + `mru-spaces` 唯一写例外 → **v3.5** 退出单开窄路 + 「带上限的等」必须轮询可观察标志 + 测试隔离用户日志 → **实验 17（2026-10-03/04）**：CoreDock 通道结案——外观 setter 可用但语义未定，条目键无第三方通道（B15），主路径维持 SIGHUP → **实验 20（2026-10-04）**：自动隐藏三明治——重启藏进「滑走 → 隐形重启 → 滑回」，切桌面无黑屏闪烁 → **v3.6（2026-10-04）**：次级 Dock 条（硬约束 2 修订批准的自绘例外；几何源 = `visibleFrame` 内缩，实验 21）→ **v3.6.1（2026-10-04 同日）**：冻结原生切换**转正为默认**（原生 Dock 全桌面一致、切桌面零重启）→ **v3.6.2（2026-10-04 同日）**：次级条 sticky 固定几何 + 与原生 Dock 同步显隐（实验 22）→ **实验 23→24（2026-10-04 同日晚间）**：「切桌面时次级条不随桌面滑」在零权限下**无解**（窗口层级 / Dock tags / `CGSSetWindowWorkspace`（已不存在）/ 多窗全证伪；硬限制 = 特权来自进程身份），唯一不滑的折中是 `.moveToActiveSpace`「切换瞬间消失、到位再出现」→ **v3.6.3（2026-10-05）**：用户拍板方案 ②——次级条切 `.moveToActiveSpace` 单空间配方，切换回调 `pullToActiveSpace()` 拉回当前空间 + 0.18 s 淡入，「滑动 vs 消失再出现」销账 → **约束修订（2026-10-05）**：解除硬约束「零权限」——权限不再一票否决、按功能收益逐案评估（现行实现不变、仍零权限；权限也解决不了实验 24 的窗口钉住问题）。
+v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 notifyd 热重载 / 切桌面靠 300 ms 轮询 / Finder 无表示）→ **v3.2** 桌面命名 + toast（P2.5）→ **v3.3** 节流错开 + PID 身份闸门 + 预应用"同一拍" + `DockEditTarget` 统一入口 → **v3.4** 自愈债务继承 + 备份只恢复白名单键 + `mru-spaces` 唯一写例外 → **v3.5** 退出单开窄路 + 「带上限的等」必须轮询可观察标志 + 测试隔离用户日志 → **实验 17（2026-10-03/04）**：CoreDock 通道结案——外观 setter 可用但语义未定，条目键无第三方通道（B15），主路径维持 SIGHUP → **实验 20（2026-10-04）**：自动隐藏三明治——重启藏进「滑走 → 隐形重启 → 滑回」，切桌面无黑屏闪烁 → **v3.6（2026-10-04）**：次级 Dock 条（硬约束 2 修订批准的自绘例外；几何源 = `visibleFrame` 内缩，实验 21）→ **v3.6.1（2026-10-04 同日）**：冻结原生切换**转正为默认**（原生 Dock 全桌面一致、切桌面零重启）→ **v3.6.2（2026-10-04 同日）**：次级条 sticky 固定几何 + 与原生 Dock 同步显隐（实验 22）→ **实验 23→24（2026-10-04 同日晚间）**：「切桌面时次级条不随桌面滑」在零权限下**无解**（窗口层级 / Dock tags / `CGSSetWindowWorkspace`（已不存在）/ 多窗全证伪；硬限制 = 特权来自进程身份），唯一不滑的折中是 `.moveToActiveSpace`「切换瞬间消失、到位再出现」→ **v3.6.3（2026-10-05）**：用户拍板方案 ②——次级条切 `.moveToActiveSpace` 单空间配方，切换回调 `pullToActiveSpace()` 拉回当前空间 + 0.18 s 淡入，「滑动 vs 消失再出现」销账 → **约束修订（2026-10-05）**：解除硬约束「零权限」——权限不再一票否决、按功能收益逐案评估（现行实现不变、仍零权限；权限也解决不了实验 24 的窗口钉住问题）→ **实验 25（2026-10-05）**：「随幅度渐进沉入原生 Dock」（v3.7）spike 证伪——过渡期间改 frame 无视觉效果、空间 ID 翻转只在过渡结束后（16 ms 轮询也抢不到）；**采纳其可感知残余**：拉回出场从「0.18 s 原地淡入」改为「沉没位置位 + 0.12 s 升起 + 同步淡显」（切换后总感知 ≈ 0.14 s），见 `docs/spikes.md` 实验 25。
 
 ---
 
@@ -85,8 +85,9 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 - **次级条**：贴在原生 Dock 内侧、层级 19 半露 / hover 全出；固定几何（槽位 = 各桌面生效配置
   最大条目数、图标尺寸 = 默认 Dock）；与原生 Dock 同步显隐（原生挂起/隐藏时条也藏，碰边显出时条同步出来）。
   **空间归属 = 方案 ②（v3.6.3，实验 24 折中，2026-10-05 用户拍板）**：窗口用 `.moveToActiveSpace`
-  单空间配方——手势切换瞬间**条留在旧空间（不滑）**，切换回调 `pullToActiveSpace()` 拉回当前空间
-  并 0.18 s 淡入；连切时复位任务自取消，同一空间重复事件不重复拉。真机手感（淡入节奏、空窗感知）待 A11 手测。
+  单空间配方——手势切换瞬间**条留在旧空间（随过渡渐隐）**，切换回调 `pullToActiveSpace()` 拉回当前空间，
+  **沉没位置位 + 0.12 s 升回原位并同步淡显**（切换后总感知 ≈ 0.14 s，实验 25 用户规格 ≤ 0.15 s）；
+  连切时复位任务自取消，同一空间重复事件不重复拉。真机手感待 A11 手测。
 - **Dock 重启**（仅未冻结模式、手动应用、启动对齐会走到）：SIGHUP 主路径 + 自动隐藏三明治（无黑屏）；`kickstart` 催办兜底。
 - **A8（偶发慢重启）**：修法「不等，催」已落地（26–31 s → ~1–3.5 s）；**成因未直接观测**，七个假说已证伪——**别再按它们改代码**，`minimumSpacing` 保持 1 s、`dockPID()` 的 LS 优先不要动。下次偶发按 `docs/spikes.md` 实验 15/16.4 判定规则读 `multidock.log`（先看 `最长间隔 M ms`），**别主动复现**。冻结默认后此风险实际暴露面大幅缩小（切桌面不再重启）。
 - **A6 / A7 已销账**：退出还原 53–54 s → **0.01 s**；正常路径重启 35–126 ms（已被用户真机日志确认）。
@@ -107,7 +108,7 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 | Dock 重载 | `Dock/DockReloader.swift`、`Dock/DockAutoHide.swift` | SIGHUP → SIGTERM → kickstart 三级降级；节流错开（`minimumSpacing` 1 s）；PID 身份闸门；「不等，催」（nudge 500 ms）；自动隐藏三明治（无闪烁重启） |
 | 手动改动回存 | `Dock/DockWatcher.swift`、`Dock/DockEditHistory.swift` | 可比指纹变化才回存（Dock 不在时不采样）；回存落点 = 当前桌面 override / 默认 Dock（冻结时一律默认 Dock）；内存撤销栈（每目标 5 层） |
 | Dock 存活监视 | `Dock/DockPresenceMonitor.swift` | 连续缺失 8 轮（4 s）才 kickstart，60 轮报警；纯逻辑 + 注入可单测 |
-| 次级 Dock 条 | `Dock/SecondaryDockLayout.swift`、`Dock/DockFaceProviding.swift`、`UI/SecondaryDock{StripView,Window,Controller}.swift` | 几何源 `visibleFrame` 内缩（**Dock 条不是独立 CG 窗口**）；层级 19 半露 / hover 全出；固定几何（`sizingSlots`）；同步显隐（face + 显出带 + 400 ms 宽限，200 ms 轮询）；空间拉回 = 方案 ②（`.moveToActiveSpace` 单空间配方 + `pullToActiveSpace()` 拉回淡入）；依赖全注入可单测 |
+| 次级 Dock 条 | `Dock/SecondaryDockLayout.swift`、`Dock/DockFaceProviding.swift`、`UI/SecondaryDock{StripView,Window,Controller}.swift` | 几何源 `visibleFrame` 内缩（**Dock 条不是独立 CG 窗口**）；层级 19 半露 / hover 全出；固定几何（`sizingSlots`）；同步显隐（face + 显出带 + 400 ms 宽限，200 ms 轮询）；空间拉回 = 方案 ②（`.moveToActiveSpace` 单空间配方 + `pullToActiveSpace()` 沉没位置位后 0.12 s 升起，实验 25）；依赖全注入可单测 |
 | 桌面（Space） | `Spaces/SkyLightBridge.swift`、`SpaceProvider.swift`、`SpaceObserver.swift`、`SpaceSwitcher.swift`、`DesktopNaming.swift`、`ScreenNaming.swift` | dlopen 私有 API + 降级；300 ms 轮询 + 通知快速通道；循环切换；命名（≤10 字素簇）；显示器名解析 |
 | 持久化 | `Store/ConfigStore.swift`、`Store/BaselineStore.swift` | 原子写 `config.json`；基准快照 + 会话标记 + 备份轮转（20 份） |
 | 菜单栏 / 设置 UI | `UI/MenuBarController.swift`、`UI/SettingsView.swift`、`UI/DesktopListView.swift`、`UI/DockStripEditor.swift`、`UI/DockAppearanceEditor.swift`、`UI/DebugPanelView.swift` | 原生风格工具栏标签页；顶部报警横幅；拖拽编辑条（Finder/启动台锁最前）；其他项只搬不造 |
@@ -123,9 +124,10 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 - A1–A3：改名输入框、两个应用/还原按钮、图标条拖拽（逻辑侧均有单测/验收覆盖，只差真人点一次）。
 - A5：菜单栏连击（连切 5 次只显示最终名字）。
 - A11：**次级条手感**——hover 滑出/收回、点击图标启动、半露观感（亮/暗）、
-  **自动隐藏下碰边 Dock 与条是否同步显出/收回**、**方案 ② 切桌面观感**（手势切换「消失再淡入」
-  的节奏与空窗感知；菜单栏点击切换应无感知；连击不闪）。（「钉在原地」已被实验 24 证伪为零权限
-  无解；用户 2026-10-05 拍板方案 ② 并已实现，剩真机手感核对。）
+  **自动隐藏下碰边 Dock 与条是否同步显出/收回**、**方案 ② 切桌面观感**（手势切换「消失再升起」
+  ——渐隐时机由系统过渡决定（≈0.25 倍屏宽，实验 25），切换结束后条从原生 Dock 底部
+  0.12 s 升起回位；菜单栏点击切换应无感知；连击不闪）。（「钉在原地」「随幅度沉入」已被
+  实验 24/25 证伪；用户 2026-10-05 拍板方案 ② + 升起编排并已实现，剩真机手感核对。）
 
 **等条件**：
 

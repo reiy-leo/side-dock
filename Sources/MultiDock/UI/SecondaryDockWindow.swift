@@ -43,8 +43,11 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     /// 拉回瞬间的临时配方：跨空间可见，`orderFrontRegardless` 借它在当前空间重新注册。
     private static let crossSpaceBehavior: NSWindow.CollectionBehavior =
         [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
-    /// 拉回后的淡入时长——与 hover 滑动（`setFrame` 动画 0.18 s）同款节奏。
-    private static let pullFadeDuration = 0.18
+    /// 拉回后的升起时长（实验 25：从原生 Dock 底部探回 + 同步淡显，替代原地 alpha 淡入；
+    /// 加上检测/拉回开销，切换结束后总感知 ≈ 0.14 s，压进用户规格的 0.15 s 内）。
+    private static let pullRiseDuration = 0.12
+    /// 沉没位余量：整条沉到原生 Dock 上缘（`visibleFrame` 底边）以下再多留的距离。
+    private static let sinkMargin: CGFloat = 6
 
     private let window: SecondaryDockPanelWindow
     private let container: NSVisualEffectView
@@ -120,14 +123,28 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         window.orderOut(nil)
     }
 
-    /// 拉回当前活动空间并淡入（`spike-pull-nsworkspace` 实证配方）：
-    /// 1. 置透明 → 切到临时跨空间配方 → `orderFrontRegardless` 在当前空间重新注册；
-    /// 2. 下一拍（16 ms，spike 实证 10 ms 即够，留一帧余量）设回单空间配方；
-    /// 3. 0.18 s easeInEaseOut 淡入（与 hover 滑动同款节奏）。
+    /// 拉回当前活动空间并从原生 Dock 底部升起（实验 25 实证编排）：
+    /// 1. 记录原位 → 置透明、frame 一次跳到沉没位（整条在 `visibleFrame` 底边以下，
+    ///    此刻窗口还属旧空间，跳变无视觉）；
+    /// 2. 切到临时跨空间配方 → `orderFrontRegardless` 在当前空间重新注册；
+    /// 3. 下一拍（16 ms，spike 实证 10 ms 即够，留一帧余量）设回单空间配方；
+    /// 4. 0.12 s easeInEaseOut 升回原位并同步淡显（alpha 与 frame 同一动画组——
+    ///    即便 Dock 在左/右侧、沉没位不被遮挡，也只是无方向感的淡入，不会破相）。
     /// 连击时 `pullResetTask` 先取消上一拍未生效的复位，防止旧任务把新空间的配方改回去。
     func pullToActiveSpace() {
         pullResetTask?.cancel()
+        let targetFrame = window.frame
+        let visibleBottom = (window.screen ?? NSScreen.main)?.visibleFrame.minY ?? 0
         window.alphaValue = 0
+        window.setFrame(
+            NSRect(
+                x: targetFrame.minX,
+                y: visibleBottom - targetFrame.height - Self.sinkMargin,
+                width: targetFrame.width,
+                height: targetFrame.height
+            ),
+            display: false
+        )
         window.collectionBehavior = Self.crossSpaceBehavior
         orderFront()
         pullResetTask = Task { [weak self] in
@@ -136,8 +153,9 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
             self.window.collectionBehavior = Self.singleSpaceBehavior
         }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = Self.pullFadeDuration
+            context.duration = Self.pullRiseDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().setFrame(targetFrame, display: true)
             window.animator().alphaValue = 1
         }
     }

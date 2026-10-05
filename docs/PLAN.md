@@ -651,10 +651,12 @@ struct AppSettings: Codable {
   一毫米不挪**（用户原话：「不要随桌面滚动，sticky 到原生 Dock 固定位置」）。未冻结时
   维持按本桌面撑开的原规格。
 - **空间归属 = 方案 ②（2026-10-05 用户拍板，实验 24 折中）**：窗口用 `.moveToActiveSpace`
-  单空间配方——手势切换瞬间条**留在旧空间（新空间不可见，不滑）**，切换完成回调把窗口拉回
-  当前空间并 0.18 s 淡入；程序化切换（菜单栏点击）经 `SpaceSwitcher.switchTo →
-  observer.refreshNow()` 当拍拉回，没有 300 ms 空窗。拉回闸门：仅「换了空间且切换前后都在
-  显示」才拉（同一空间重复事件 / 全屏进出 / 从隐藏恢复不拉）。
+  单空间配方——手势切换瞬间条**留在旧空间（随系统过渡渐隐，≈0.25 倍屏宽时归零——渐隐时机
+  由 WindowServer 决定，实验 25 证实改不了）**，切换完成回调把窗口拉回当前空间：
+  **沉没位置位（`visibleFrame` 底边以下，跳变无视觉）→ 0.12 s 升回原位 + 同步淡显**
+  （用户规格：切换后总感知 ≤ 0.15 s；实验 25 采纳的残余）；程序化切换（菜单栏点击）经
+  `SpaceSwitcher.switchTo → observer.refreshNow()` 当拍拉回，没有 300 ms 空窗。拉回闸门：仅
+  「换了空间且切换前后都在显示」才拉（同一空间重复事件 / 全屏进出 / 从隐藏恢复不拉）。
 - **显隐与原生 Dock 同步（2026-10-04 用户修订）**：原生 Dock 隐藏 → 条隐藏；Dock 显出 →
   条同步显示。信号 = face（`visibleFrame` 内缩）为主，自动隐藏生效中（face == nil）用
   「光标在显出带」启发式补判（实验 22：Dock 实际显隐没有零权限直读信号）；几何轮询 200 ms。
@@ -681,7 +683,7 @@ struct AppSettings: Codable {
 | --- | --- | --- |
 | 纯几何 | `Dock/SecondaryDockLayout.swift` | `detectDockFace`（三向内缩 → 方位）+ `placement`（展开/半露两 frame）+ `barSize` + `dockArea`（显出带判定，实验 22）；全纯函数 |
 | 几何源 | `Dock/DockFaceProviding.swift` | `ScreenInsetDockFaceProvider` 扫全部 `NSScreen`，取内缩最大的屏 |
-| 呈现 | `UI/SecondaryDockWindow.swift` | Toast 配方 + 三处不同：可交互、层级 19、SwiftUI 图标条；材质 `.popover` + maskImage 圆角；**方案 ②：单空间配方 + `pullToActiveSpace()`（置透明 → 临时跨空间 → orderFront → 16 ms 设回 → 0.18 s 淡入）** |
+| 呈现 | `UI/SecondaryDockWindow.swift` | Toast 配方 + 三处不同：可交互、层级 19、SwiftUI 图标条；材质 `.popover` + maskImage 圆角；**方案 ②：单空间配方 + `pullToActiveSpace()`（置透明 + frame 跳沉没位 → 临时跨空间 → orderFront → 16 ms 设回 → 0.12 s 升回原位 + 同步淡显，实验 25）** |
 | 内容 | `UI/SecondaryDockStripView.swift` | 条目模型（含 `sizingSlots` 固定几何）+ `SecondaryDockContentBuilder`（纯函数）+ SwiftUI 视图 |
 | 调度 | `UI/SecondaryDockController.swift` | 状态机（半露/展开/隐藏）+ **显隐同步（face + 显出带 + 400 ms 宽限）**+ 200 ms 几何轮询 + hover 防抖 + 鼠标位置安全网 + **空间切换拉回闸门**（换空间且前后都显示才拉）；依赖全注入可单测 |
 
