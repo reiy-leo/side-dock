@@ -1,7 +1,11 @@
 import AppKit
 import CoreGraphics
 
-/// 切换桌面时的中上部提示窗口（`docs/PLAN.md` §3.10）。
+/// 胶囊 HUD 提示窗口（`docs/PLAN.md` §3.10）。
+///
+/// **2026-10-06 起职责收缩**：桌面名称改走 `DesktopNameOverlayWindow`（iPhone 锁屏式大字），
+/// 本窗口只服务**系统级告知**（自愈还原「已自动还原上次未还原的 Dock」、「Dock 已恢复」）——
+/// 这类消息必须压在任何壁纸上都可读，胶囊底 + HUD 材质正合适。
 ///
 /// **下面每一条属性错了都会出问题**，不是可选的润色：
 /// - `collectionBehavior` 少了 `.canJoinAllSpaces` → 窗口只在自己所在的空间显示，切过去反而看不见，功能等于失效
@@ -12,7 +16,7 @@ import CoreGraphics
 ///
 /// 不需要任何系统权限：这就是本 App 自己的一个窗口。
 @MainActor
-final class DesktopNameToastWindow: ToastPresenting {
+final class HudToastWindow: ToastPresenting {
 
     private let window: ToastWindow
     private let label: NSTextField
@@ -75,7 +79,7 @@ final class DesktopNameToastWindow: ToastPresenting {
     }
 
     func show(text: String, displayUUID: String?) {
-        guard let screen = Self.screen(for: displayUUID) else { return }
+        guard let screen = ScreenMatching.resolve(displayUUID) else { return }
         label.stringValue = text
 
         let available = screen.visibleFrame
@@ -129,6 +133,17 @@ final class DesktopNameToastWindow: ToastPresenting {
     /// SkyLight 的 `Display Identifier` 与 `CGDisplayCreateUUIDFromDisplayID` 实测逐字符相同
     /// （见 `AGENTS.md` §4），所以这条映射是可靠的。
     private static func screen(for displayUUID: String?) -> NSScreen? {
+        ScreenMatching.resolve(displayUUID)
+    }
+}
+
+/// `displayUUID` → `NSScreen` 的共享映射（胶囊 HUD 与锁屏式名称窗口都要按目标显示器落位）。
+///
+/// SkyLight 的 `Display Identifier` 与 `CGDisplayCreateUUIDFromDisplayID` 实测逐字符相同
+/// （见 `AGENTS.md` §4），所以这条映射是可靠的。
+@MainActor
+enum ScreenMatching {
+    static func resolve(_ displayUUID: String?) -> NSScreen? {
         let screens = NSScreen.screens
         guard let first = screens.first else { return nil }
         let fallback = NSScreen.main ?? first
@@ -194,7 +209,8 @@ private final class ToastEdgeView: NSView {
 }
 
 /// 显式禁掉「能成为 key / main」——无边框窗口默认就不行，写出来是为了让人一眼看到这条硬约束。
-private final class ToastWindow: NSWindow {
+/// 胶囊 HUD 与锁屏式名称窗口（`DesktopNameOverlayWindow`）共用这一个子类。
+final class ToastWindow: NSWindow {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }

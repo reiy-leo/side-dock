@@ -25,7 +25,7 @@ protocol SecondaryDockPresenting: AnyObject {
 
 /// 右键菜单的条目集合（2026-10-06）：屏幕位置快捷切换。**纯函数**。
 ///
-/// 与设置页 `DesktopListView.positionOptions(for:)` 同一口径：可选位置
+/// 与设置页 `DockBarsTab.positionOptions(for:)` 同一口径：可选位置
 /// （台前调度开着避开左）之外，栏当前存着的位置即使不在可选清单里也要插回去 ——
 /// 勾标如实展示现状，用户至少能从「左侧（台前调度占用的那边）」改走。
 enum SecondaryDockContextMenuBuilder {
@@ -45,7 +45,7 @@ enum SecondaryDockContextMenuBuilder {
 
 /// 贴在原生 Dock 内侧的次级条窗口。
 ///
-/// 窗口层配方沿用 `DesktopNameToastWindow`（那条配方每一条都是踩过坑的）：
+/// 窗口层配方沿用 `HudToastWindow`（那条配方每一条都是踩过坑的）：
 /// borderless、`canBecomeKey` / `canBecomeMain` = false（绝不抢焦点）、用 `orderFrontRegardless()` 显示。
 /// 与 toast 的三点不同：
 /// - **空间归属用 `.moveToActiveSpace`（实验 24 折中方案，2026-10-05 用户拍板）**：

@@ -1066,13 +1066,15 @@ final class SecondaryDockFreezeTests: XCTestCase {
         XCTAssertTrue(legacy.freezeNativeDockSwitching, "冻结默认开（2026-10-04：原生 Dock 不逐桌面重启）")
         XCTAssertEqual(legacy.defaultDockAppCount, 10, "默认 Dock 显示 10 个最近添加的应用")
         XCTAssertTrue(legacy.dockBars.isEmpty, "栏列表为空 = 待迁移")
+        XCTAssertEqual(legacy.desktopNamePlacement, .top, "名称展示默认顶部（同旧版「中上部」）")
 
-        // 往返保持（冻结翻到 false 这一侧，与默认值相反的方向才算验过）。
+        // 往返保持（各字段翻到与默认值相反的方向才算验过）。
         var settings = AppSettings()
         settings.showSecondaryDock = false
         settings.freezeNativeDockSwitching = false
         settings.defaultDockAppCount = 7
         settings.dockBars = [DockBar(name: "工作", position: .right)]
+        settings.desktopNamePlacement = .bottom
         let data = try JSONEncoder().encode(settings)
         let restored = try JSONDecoder().decode(AppSettings.self, from: data)
         XCTAssertEqual(restored, settings)

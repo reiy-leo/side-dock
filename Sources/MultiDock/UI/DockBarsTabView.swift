@@ -1,23 +1,20 @@
 import SwiftUI
 
-/// 桌面 Tab：**Dock 栏列表**（2026-10-05 用户规格重写）。
+/// 应用栏 Tab：**Dock 栏列表**（2026-10-06 用户规格：原「桌面」页拆分——栏的编辑在这里，
+/// 桌面命名与名称展示在「桌面」页）。
 ///
 /// 模型：栏是主实体 —— 每根栏有名字、屏幕位置（底部/左/右，台前调度占用的一侧自动避开）、
 /// 绑定的桌面（下拉，带缩略图）与图标（1...15）。一个桌面同时只挂一根栏。
 /// 没绑栏的桌面在冻结模式下只有原生 Dock（默认 Dock = 最近添加的应用）可看。
 ///
 /// 编辑器永远**横向**显示（不管栏在屏幕上是横是竖）；默认露出 8 个槽位，超出走滚动。
-/// 桌面命名（切换提示 toast 用）保留在本页底部 —— 命名是桌面的属性，不是栏的。
-struct DesktopListView: View {
+struct DockBarsTab: View {
     @Bindable var state: AppState
 
     @State private var selection: UUID?
     /// 栏名草稿。**不直接绑到模型**：中文输入法组字期间改写绑定值会打断候选词。
     @State private var barNameDrafts: [UUID: String] = [:]
-    /// 桌面命名草稿（同上）。
-    @State private var desktopNameDrafts: [String: String] = [:]
     @FocusState private var focusedBar: UUID?
-    @FocusState private var focusedDesktop: String?
     @State private var confirmingUnbind = false
 
     private var selectedBar: DockBar? {
@@ -29,8 +26,6 @@ struct DesktopListView: View {
             barList
             Divider()
             editor
-            Divider()
-            desktopNamesSection
         }
         .onAppear {
             syncDrafts()
@@ -46,10 +41,6 @@ struct DesktopListView: View {
             // 失焦即提交，避免用户改完直接点别处导致改动丢失。
             guard let previous else { return }
             commitBarName(previous)
-        }
-        .onChange(of: focusedDesktop) { previous, _ in
-            guard let previous, let space = state.desktops.first(where: { $0.id == previous }) else { return }
-            commitDesktopName(space)
         }
     }
 
@@ -242,66 +233,6 @@ struct DesktopListView: View {
         }
     }
 
-    // MARK: - 桌面命名（toast 用）
-
-    private var desktopNamesSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("桌面名称（切换提示用）")
-                    .font(.headline)
-                Spacer()
-                Button("刷新桌面列表") { state.refreshDesktops() }
-                    .controlSize(.small)
-                Text("自动每 300 ms 刷新")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-
-            if state.desktops.isEmpty {
-                Text(state.spaceProviderAvailable ? "未识别到桌面" : "桌面功能不可用")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 8)
-            } else {
-                ScrollView {
-                    VStack(spacing: 4) {
-                        ForEach(state.desktops) { space in
-                            desktopNameRow(space)
-                        }
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 8)
-                }
-                .frame(maxHeight: 110)
-            }
-        }
-    }
-
-    private func desktopNameRow(_ space: DesktopSpace) -> some View {
-        let draft = desktopNameDrafts[space.id] ?? state.customName(for: space) ?? ""
-        let isActive = space.id == state.activeSpace?.id
-        return HStack(spacing: 6) {
-            Image(systemName: isActive ? "largecircle.fill.circle" : "circle")
-                .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
-                .help(isActive ? "当前桌面" : "")
-            SpaceThumbnailView(spaceID: space.id, width: 24, height: 15)
-            TextField("桌面 \(space.ordinal)", text: desktopNameDraftBinding(for: space))
-                .textFieldStyle(.roundedBorder)
-                .focused($focusedDesktop, equals: space.id)
-                .onSubmit { commitDesktopName(space) }
-            Text("\(draft.count)/\(DesktopNaming.maxLength)")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(draft.count > DesktopNaming.maxLength ? Color.orange : Color.secondary)
-            Text(state.dockBar(for: space)?.name ?? "未绑定栏")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(width: 80, alignment: .trailing)
-        }
-    }
-
     // MARK: - 草稿与提交
 
     private func barNameDraftBinding(for bar: DockBar) -> Binding<String> {
@@ -319,32 +250,12 @@ struct DesktopListView: View {
         barNameDrafts[id] = state.dockBar(id: id)?.name ?? ""
     }
 
-    private func desktopNameDraftBinding(for space: DesktopSpace) -> Binding<String> {
-        Binding(
-            get: { desktopNameDrafts[space.id] ?? state.customName(for: space) ?? "" },
-            set: { desktopNameDrafts[space.id] = $0 }
-        )
-    }
-
-    /// 提交桌面名：归一化（去空白、截断到 10）并落盘，草稿对齐成归一化后的结果。
-    private func commitDesktopName(_ space: DesktopSpace) {
-        let raw = desktopNameDrafts[space.id] ?? state.customName(for: space) ?? ""
-        state.setCustomName(raw, for: space)
-        desktopNameDrafts[space.id] = state.customName(for: space) ?? ""
-    }
-
     private func syncDrafts() {
         var bars: [UUID: String] = [:]
         for bar in state.dockBars {
             bars[bar.id] = bar.name
         }
         barNameDrafts = bars
-
-        var desktops: [String: String] = [:]
-        for space in state.desktops {
-            desktops[space.id] = state.customName(for: space) ?? ""
-        }
-        desktopNameDrafts = desktops
     }
 
     // MARK: - 绑定

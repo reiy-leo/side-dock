@@ -3,6 +3,44 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 49 次）— 「桌面」拆五页 + 桌面名称锁屏式展示 + 位置可选
+
+**用户说**：「multidock设置中，"桌面"拆分成"应用栏"和"桌面"，桌面只能设置桌面名称，
+选择桌面名称展示的位置，桌面名称采用类似iPhone锁屏那样的字体效果」。
+
+**做了什么**：
+
+1. **侧边栏拆五页**（`UI/SettingsView.swift`）：通用 / **应用栏** / **桌面** / 数据 / 关于。
+   原「桌面」页（`DesktopListView.swift`，已删）拆成两个新文件：
+   - `UI/DockBarsTabView.swift`（`DockBarsTab`）＝原 Dock 栏列表 + 编辑器整块搬来（零内容变化）；
+   - `UI/DesktopsTabView.swift`（`DesktopsTab`）＝桌面命名行（活动圆标 + 缩略图 + 输入框 +
+     `n/10`）+ 「名称展示」节（开关 + 位置分段）。原通用页的「桌面切换」toast 开关移入本页。
+2. **锁屏式名称窗口**（`UI/DesktopNameOverlay.swift`，新）：64 pt **极细白字**
+   （`.thin`）+ 图层投影，**无底无框**压在壁纸上；窗口层配方与旧胶囊逐条相同
+   （borderless / 不抢焦点 / 不挡点击 / statusBar / 跨空间）；位置三档
+   （顶部默认 = 锁屏时钟位 / 中部 / 底部），几何纯函数 `frameOrigin` 可单测。
+3. **位置设置**：`DesktopNamePlacement`（top/middle/bottom）+ `AppSettings.desktopNamePlacement`
+   （手写解码补 `decodeIfPresent`，默认 `.top`）；provider 实时读——改档位下次展示生效。
+4. **双通路 toast**（`UI/ToastPresenter.swift`）：名称 → `namePresenter`（锁屏窗）；
+   系统告知（自愈等）→ 胶囊 HUD（`DesktopNameToastWindow` 更名 **`HudToastWindow`**，
+   职责收缩）。当前通路记账（`currentSink`），接替时旧窗立即收、`dismissNow` 只收当前通路。
+   `ScreenMatching` 抽出共享显示器映射。
+5. **AppDelegate**：`attachToast` 建两个窗口接线（`toastWindow` + `nameOverlayWindow`）。
+6. **测试**：+9（路由 5：名称/告知/预览/接替/只收当前；几何 3：三档落点；解码往返扩项 1）
+   —— **423 全绿**；五页 UI 快照（`app-bars`/`desktop` 新增两张）亮暗逐张核对。
+7. **重打包** `build/MultiDock.app`；文档：AGENTS 约束 4/5 + 模块地图 + 现行行为 + A13、
+   PLAN §3.7 第 5 轮 + §3.10 修订、rules.md 拆页新坑 4 条、check-toast-window.sh 注释。
+
+**影响 / 未解决**：
+
+- 名称展示**新样式与位置**未真人看过——A13 手测：改名的锁屏大字观感（亮壁纸可读性）、
+  三档位置落点、开关生效、调试面板「测试 toast」预览走的是锁屏窗。
+- 顶部档位仍是 80 pt（旧版值）；若观感偏高/偏低，调 `DesktopNameOverlayWindow.topInset`。
+- 底部档位与次级条薄边（64 pt 间距）的观感要 A13 顺带看一眼。
+- 上一会话（第 48 次）侧边栏「关于」钉底、本会话第 47 次通用页删节均已在基线内，无冲突。
+
+---
+
 ### 2026-10-06（第 48 次）— 侧边栏布局：「关于」钉列底 + 主 tabs 远离窗顶
 
 **用户说**：「“关于”显示在侧边栏底部，侧边栏的tabs距离顶部更远一点」。

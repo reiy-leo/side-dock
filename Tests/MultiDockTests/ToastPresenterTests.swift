@@ -239,4 +239,97 @@ final class ToastPresenterTests: XCTestCase {
         XCTAssertEqual(messages.value, ["toast 显示「名字2」", "toast 隐藏"],
                        "显示与隐藏各记一行，便于核对 1 秒时长")
     }
+
+    // MARK: - 双通路路由（2026-10-06：名称走锁屏式窗口，系统告知走胶囊 HUD）
+
+    func testNameToastRoutesToNamePresenter() {
+        let pill = FakeToast()
+        let name = FakeToast()
+        let presenter = ToastPresenter(
+            presenter: pill,
+            namePresenter: name,
+            displayName: { "名字\($0.ordinal)" }
+        )
+
+        presenter.handleActiveSpaceChanged(space(1))
+        presenter.handleActiveSpaceChanged(space(2))
+
+        XCTAssertEqual(name.texts, ["名字2"], "桌面名称走锁屏式窗口通路")
+        XCTAssertTrue(pill.shown.isEmpty, "胶囊 HUD 不该收到桌面名称")
+    }
+
+    func testAnnounceRoutesToPillPresenter() {
+        let pill = FakeToast()
+        let name = FakeToast()
+        let presenter = ToastPresenter(
+            presenter: pill,
+            namePresenter: name,
+            displayName: { "名字\($0.ordinal)" }
+        )
+
+        presenter.announce("已自动还原上次未还原的 Dock")
+
+        XCTAssertEqual(pill.texts, ["已自动还原上次未还原的 Dock"], "系统级告知走胶囊 HUD")
+        XCTAssertTrue(name.shown.isEmpty)
+    }
+
+    func testManualShowRoutesToNamePresenterAndRespectsEnabled() {
+        let pill = FakeToast()
+        let name = FakeToast()
+        let enabled = Box(false)
+        let presenter = ToastPresenter(
+            presenter: pill,
+            namePresenter: name,
+            displayName: { "名字\($0.ordinal)" },
+            isEnabled: { enabled.value }
+        )
+
+        presenter.show(text: "测试提示")
+        XCTAssertTrue(name.shown.isEmpty, "开关关着时手动预览也不弹")
+
+        enabled.value = true
+        presenter.show(text: "测试提示")
+        XCTAssertEqual(name.texts, ["测试提示"], "调试面板的「测试 toast」预览的是名称展示")
+        XCTAssertTrue(pill.shown.isEmpty)
+    }
+
+    func testSwitchingSinksSupersedesTheOtherWindow() async throws {
+        // 告知 → 名称：胶囊的计时随取消作废，必须立即收掉，否则胶囊一直挂着。
+        let pill = FakeToast()
+        let name = FakeToast()
+        let presenter = ToastPresenter(
+            presenter: pill,
+            namePresenter: name,
+            duration: .milliseconds(150),
+            displayName: { "名字\($0.ordinal)" }
+        )
+
+        presenter.announce("Dock 已恢复")
+        presenter.handleActiveSpaceChanged(space(1))
+        presenter.handleActiveSpaceChanged(space(2))
+
+        XCTAssertEqual(pill.hideCount, 1, "被名称提示接替时胶囊立即收起")
+        XCTAssertEqual(name.texts, ["名字2"])
+
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(name.hideCount, 1, "名称提示按自己的计时收起")
+        XCTAssertEqual(pill.hideCount, 1, "胶囊不该被名称提示的计时器再收一次")
+    }
+
+    func testDismissNowHidesOnlyCurrentSink() {
+        let pill = FakeToast()
+        let name = FakeToast()
+        let presenter = ToastPresenter(
+            presenter: pill,
+            namePresenter: name,
+            displayName: { "名字\($0.ordinal)" }
+        )
+
+        presenter.handleActiveSpaceChanged(space(1))
+        presenter.handleActiveSpaceChanged(space(2))
+        presenter.dismissNow()
+
+        XCTAssertEqual(name.hideCount, 1)
+        XCTAssertEqual(pill.hideCount, 0, "没收过的通路不该被拍灭")
+    }
 }

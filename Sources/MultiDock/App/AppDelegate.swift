@@ -12,7 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var state: AppState!
     private var lifecycle: LifecycleController!
     private var menuBar: MenuBarController!
-    private var toastWindow: DesktopNameToastWindow!
+    private var toastWindow: HudToastWindow!
+    /// 桌面名称的锁屏式展示窗口（与胶囊 HUD 分工，见 `ToastPresenter`）。
+    private var nameOverlayWindow: DesktopNameOverlayWindow!
     private var secondaryDockWindow: SecondaryDockWindow!
     private var secondaryDockController: SecondaryDockController?
     /// 切桌面前置手势监视器（实验 26）：type 30 → 次级条预隐藏。
@@ -52,14 +54,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observeScreenChanges()
     }
 
-    /// toast 的接线：窗口在这里建，调度逻辑在 `ToastPresenter`，状态与命名解析仍归 `AppState`。
+    /// toast 的接线：窗口在这里建（胶囊 HUD + 锁屏式名称窗口两条通路），
+    /// 调度逻辑在 `ToastPresenter`，状态与命名解析仍归 `AppState`。
     /// 必须在 `state.start()`（观察器启动）之前接上，否则首次桌面变化会漏掉。
     private func attachToast(to state: AppState) {
-        let window = DesktopNameToastWindow()
+        let window = HudToastWindow()
         toastWindow = window
+        let nameOverlay = DesktopNameOverlayWindow(placementProvider: { [weak state] in
+            state?.settings.desktopNamePlacement ?? .top
+        })
+        nameOverlayWindow = nameOverlay
         state.attachToastPresenter(
             ToastPresenter(
                 presenter: window,
+                namePresenter: nameOverlay,
                 displayName: { [weak state] space in
                     state?.displayName(for: space) ?? space.displayName
                 },

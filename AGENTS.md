@@ -48,7 +48,7 @@ macOS 多桌面（Space）工具。**当前产品形态（2026-10-04 起，用�
   「默认 Dock」节整节删除，改值需手编 config.json）；**大小/放大/自动隐藏/特效/最小化到应用全部
   跟随系统，App 不写任何外观键**（还原路径仍会把基准里的外观键写回，无痕闭环）。
 - 菜单栏常驻图标：单击切下一个桌面、`⇧`+单击切上一个、右键/⌥+左键打开菜单；
-  切换后中上部弹 1 秒 toast 显示桌面名。
+  切换后按「桌面」页设定的位置展示 1 秒桌面名（默认顶部、iPhone 锁屏式大字，2026-10-06）。
 - 可选项：关掉冻结开关即回到「逐桌面原生 Dock」老模式（届时切桌面才重启原生 Dock，走无闪烁三明治）。
 
 - 用户：个人自用，本地运行，**不做公证、不上 Mac App Store、不签名**（ad-hoc 即可）。
@@ -68,14 +68,18 @@ macOS 多桌面（Space）工具。**当前产品形态（2026-10-04 起，用�
    配置上，由启动对齐 + 开关两方向共同保证）。规格见 `docs/PLAN.md` §3.12，实测见
    `docs/spikes.md` 实验 21/22。
 3. **菜单栏交互**：左键单击 = 切到下一个桌面（循环）；**⇧+左键 = 切到上一个桌面**；右键 / ⌥+左键 = 下拉菜单（桌面列表 + 上一个/下一个 + 设置 + 退出）。左键行为可在设置里改成"打开菜单"（此时 ⇧+左键也一并打开菜单，不留隐形的第二行为）。**切桌面过程本身没有动画，且做不到**（`docs/spikes.md` 实验 7，别再试）。
-4. **设置窗口四个侧边栏选项卡**（2026-10-06 用户指定，系统设置风格；v1 为工具栏两页）：
-   **通用**（应用/还原/基准、菜单栏、toast、次级条与冻结开关、退出、自愈、mru；
-   原「默认 Dock」节——数量步进器 + 最近应用预览——**2026-10-06 用户指令删除**）、
-   **桌面**（Dock 栏列表 + 桌面命名）、**数据**（导出/导入配置 + 备份与还原）、
+4. **设置窗口五个侧边栏选项卡**（2026-10-06 用户指定，系统设置风格；v1 为工具栏两页，
+   同日「桌面」拆出「应用栏」成五页）：
+   **通用**（应用/还原/基准、菜单栏、次级条与冻结开关、退出、自愈、mru；
+   原「默认 Dock」节——数量步进器 + 最近应用预览——**2026-10-06 用户指令删除**，
+   原桌面切换 toast 开关**移去「桌面」页**）、
+   **应用栏**（Dock 栏列表：增删改名/绑定桌面/屏幕位置/图标编辑）、
+   **桌面**（桌面命名 + 名称展示：开关、位置 顶部/中部/底部——**2026-10-06 用户指令**）、
+   **数据**（导出/导入配置 + 备份与还原）、
    **关于**（图标/名称/版本/GitHub 仓库/更新检查，走 GitHub Releases API，零权限）。
-   **侧边栏布局（2026-10-06 用户指令）**：主 tabs（通用/桌面/数据）顶部一组、与窗顶再留
-   26 pt 让位；**「关于」钉在侧边栏底部**（单行原生小 List 承载，规格见 PLAN §3.7 第 4 轮）。
-5. **桌面命名 + 切换提示**：设置 → 桌面里可以给每个桌面起名，**最长 10 个字符**（仅存本地，macOS 15 没有系统接口）；**切换桌面后在屏幕中上部弹一条 toast 显示该名字，1 秒后自动消失**。toast 不抢焦点、不挡点击、不需要权限。规格见 `docs/PLAN.md` §3.10。
+   **侧边栏布局（2026-10-06 用户指令）**：主 tabs（通用/应用栏/桌面/数据）顶部一组、
+   与窗顶再留 26 pt 让位；**「关于」钉在侧边栏底部**（单行原生小 List 承载，规格见 PLAN §3.7 第 4 轮）。
+5. **桌面命名 + 名称展示**：设置 → 桌面里可以给每个桌面起名，**最长 10 个字符**（仅存本地，macOS 15 没有系统接口）；**切换桌面后展示该名字，1 秒后自动消失**——2026-10-06 起为 **iPhone 锁屏式大字**（`DesktopNameOverlayWindow`：64 pt 极细白字压壁纸 + 柔和投影，无底无框），位置可选**顶部/中部/底部**（`desktopNamePlacement`，默认顶部 = 锁屏时钟位 = 旧版「中上部」）。**系统级告知**（自愈还原等）仍走胶囊 HUD（`HudToastWindow`），与名称展示分窗分通路（`ToastPresenter` 双通路，接替时旧窗立即收）。不抢焦点、不挡点击、不需要权限。规格见 `docs/PLAN.md` §3.10。
 
    > **已解除的约束（2026-10-05，用户指令）**：原第 5 条「不需要任何系统权限（辅助功能/屏幕录制/root），方案要权限先回来确认」——辅助功能等系统权限不再一票否决，**按功能收益逐案评估**后可用（例如 Dockset 式全局手势切换）。**现行实现仍是零权限**：没有具体功能承载前，代码不引入任何权限请求。注意这不改变实验 24 的结论：**权限解决不了「条随桌面滑」**（钉住特权来自进程身份，不是权限）。
 
@@ -85,14 +89,14 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 「数据」= 导出/导入配置（导入与加载同一套归一化/迁移，不自动应用 Dock）+ 备份还原迁入；
 「关于」= 图标/版本/GitHub 仓库链接/更新检查（GitHub Releases API，发布读取器可注入，未配置不碰网络）；
 版本取 `Support/Info.plist`（**发版记得改**） → **v4（2026-10-06，用户规格）**：**设置窗口重构**——默认 Dock 改为「最近添加的应用」（1–15 可调，默认 10，config 只存个数）；外观键（大小/放大/自动隐藏/特效/最小化到应用）**跟随系统、应用路径不再写入**（还原经 `extraEntries` 收尾）；桌面 Tab 改为 **Dock 栏列表**（默认 5 根，旧 override 自动迁移），每栏绑定桌面（缩略图下拉）+ 位置（台前调度避左）+ 1–15 个图标（编辑器横向 8 槽滚动）；次级条支持独立贴边。见 `docs/PLAN.md` §3.7 顶部与 §3.12、`docs/spikes.md` 实验 26。**同日第 2 轮（用户拍板）**：
-不排除系统 App；重扫只在打开设置窗口时发生（不自动应用）；台前调度 / 原生 Dock 位置变化经 2 s 环境轮询实时反映到设置页。 → **实验 27（2026-10-06，手势预隐藏）**：type 30（切桌面前置手势指纹，listen-only `CGEventTap` 零权限）一到就预隐藏次级条——三/四指横扫**第一拍即隐**（不再随桌面滑）；600 ms 内翻转确认则沉没位升起，无切换（误扫/打断/MC/Launchpad）分步渐回 + 安全网兜底（animator alpha 实测随机静默失效，alpha 渐变一律分步直设）。见 `docs/spikes.md` 实验 27。→ **通用页删「默认 Dock」节（2026-10-06 同日，用户指令）**：数量步进器与最近应用预览从设置 UI 下线（重扫时机随之去掉「改数量」；数量仍存 config.json，改值需手编；内容照旧自动生成，「应用」节按钮原样保留）。
+不排除系统 App；重扫只在打开设置窗口时发生（不自动应用）；台前调度 / 原生 Dock 位置变化经 2 s 环境轮询实时反映到设置页。 → **实验 27（2026-10-06，手势预隐藏）**：type 30（切桌面前置手势指纹，listen-only `CGEventTap` 零权限）一到就预隐藏次级条——三/四指横扫**第一拍即隐**（不再随桌面滑）；600 ms 内翻转确认则沉没位升起，无切换（误扫/打断/MC/Launchpad）分步渐回 + 安全网兜底（animator alpha 实测随机静默失效，alpha 渐变一律分步直设）。见 `docs/spikes.md` 实验 27。→ **通用页删「默认 Dock」节（2026-10-06 同日，用户指令）**：数量步进器与最近应用预览从设置 UI 下线（重扫时机随之去掉「改数量」；数量仍存 config.json，改值需手编；内容照旧自动生成，「应用」节按钮原样保留）。 → **拆五页 + 锁屏名称展示（2026-10-06 同日，用户指令）**：「桌面」拆成**「应用栏」**（Dock 栏编辑原样搬去）与**「桌面」**（只管命名 + 名称展示）；桌面 Tab 新增展示开关与位置（顶部/中部/底部，`desktopNamePlacement` 默认顶部）；名称展示改 **iPhone 锁屏式**大号极细白字（`DesktopNameOverlayWindow`），系统告知留在胶囊 HUD——`ToastPresenter` 双通路。
 
 ---
 
 ## 3. 当前状态（2026-10-06）
 
 **计划里的功能全部落地并实测通过**（P0–P5++ + 实验 17–27 的后续演进）。代码会真改用户 Dock；
-无痕原则由 `LifecycleController` 退出还原 + 会话标记兜底。**414 个测试全绿**（v4 重构 + 侧边栏/数据/关于 +26、手势预隐藏 +11、右键位置菜单 +8）；
+无痕原则由 `LifecycleController` 退出还原 + 会话标记兜底。**423 个测试全绿**（v4 重构 + 侧边栏/数据/关于 +26、手势预隐藏 +11、右键位置菜单 +8、拆五页+锁屏名称展示 +9）；
 真机 Dock 验收 9/9 绿（2026-10-04 基线；v4 的内容键口径待下次真机验收复核）。
 
 **现行行为（均有真机日志/验收实证）**：
@@ -104,10 +108,15 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
   外观键只在还原路径随基准写回（`apply(extraEntries:)`）。
 - **启动**：自愈（若有欠账）→ 冻结对齐（重扫默认 Dock 并对齐，内容一致时指纹短路不重启）。
   退出时还原基准（含外观键）→ 下次启动再对齐（一次约 0.4 s 的隐形重启，若内容已一致则完全不动）。
-- **Dock 栏（v4）**：桌面 Tab 里增删改名（≤10 字素簇）、绑定桌面（一桌面一栏，缩略图下拉）、
+- **Dock 栏（v4）**：**应用栏 Tab**（2026-10-06 由「桌面」页拆出）里增删改名（≤10 字素簇）、绑定桌面（一桌面一栏，缩略图下拉）、
   设位置（底/左/右；台前调度开着避开左，读 `com.apple.WindowManager GloballyEnabled`）；
   每栏 1–15 个图标。没绑栏的桌面不显示条；冻结模式下原生 Dock 的手动改动**不回存**
   （默认内容是自动生成的），未冻结模式回存进活动桌面绑定的栏。
+- **桌面名称展示（2026-10-06）**：**桌面 Tab** = 命名列表（每桌面一行，≤10 字素簇，仅存本地）
+  + 「名称展示」开关与位置（顶部/中部/底部）。样式为 **iPhone 锁屏式**——64 pt 极细白字
+  压壁纸、柔和投影、无底无框；位置存 `desktopNamePlacement`（默认顶部 = 锁屏时钟位）。
+  系统级告知（自愈还原）仍走胶囊 HUD——**双通路**（`ToastPresenter` 名称/告知各一窗，
+  接替时旧窗立即收）；1 秒自动消失、跨空间、不抢焦点、不挡点击、零权限。
 - **次级条**：层级 19 半露 / hover 全出（半露滑入 `tuckRatio`=0.8 个条厚，2026-10-06 用户
   从 0.5 调深——与原生 Dock 重叠更多、只露一条薄边；**独立贴边不吃此参数**，那边按规格
   滑出屏幕一半）；**条宽随该桌面内容撑开**；图标尺寸**跟随系统**
@@ -148,10 +157,10 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 | 次级 Dock 条 | `Dock/SecondaryDockLayout.swift`、`Dock/DockFaceProviding.swift`、`UI/SecondaryDock{StripView,Window,Controller}.swift` | 几何源 `visibleFrame` 内缩（**Dock 条不是独立 CG 窗口**）；层级 19 半露 / hover 全出；**条宽随本桌面内容撑开**（图标尺寸跟随系统实时 tilesize）；附着模式同步显隐（face + 显出带 + 400 ms 宽限，200 ms 轮询）；**位置 ≠ Dock 方位 → 独立贴边**（半露 = 滑出屏幕一半，与 Dock 显隐无关）；空间拉回 = 方案 ②（沉没位 + 0.12 s 升起，实验 25）；**手势预隐藏**（type 30 → α=0 + 600 ms 超时分步渐回 + 安全网兜底，实验 27；alpha 渐变一律分步直设——animator 随机静默失效）；**右键菜单**（`NSHostingView` 子类接管 rightMouseDown → 纯函数 builder 每次现建 → 选中带栏 ID 回 `AppState`，2026-10-06）；依赖全注入可单测 |
 | 桌面（Space） | `Spaces/SkyLightBridge.swift`、`SpaceProvider.swift`、`SpaceObserver.swift`、`SpaceSwitcher.swift`、`SpaceTransitionGestureMonitor.swift`、`DesktopNaming.swift`、`ScreenNaming.swift` | dlopen 私有 API + 降级；300 ms 轮询 + 通知快速通道；循环切换；命名（≤10 字素簇）；显示器名解析；**切桌面前置手势监视**（listen-only CGEventTap 只听 type 30，零权限，实验 27） |
 | 持久化 | `Store/ConfigStore.swift`、`Store/BaselineStore.swift` | 原子写 `config.json`；基准快照 + 会话标记 + 备份轮转（20 份） |
-| 菜单栏 / 设置 UI | `UI/MenuBarController.swift`、`UI/SettingsView.swift`、`UI/DesktopListView.swift`、`UI/DockBarEditor.swift`、`UI/DataView.swift`、`UI/AboutView.swift`、`UI/SpaceThumbnail.swift`、`UI/DebugPanelView.swift` | 侧边栏四选项卡（通用/桌面/数据/关于，`NavigationSplitView`；主 tabs 顶部一组、留 26 pt 顶部让位，**「关于」钉列底**——`safeAreaInset(edge:.bottom)` 内嵌单行原生 sidebar 小 List，与主 List 共用 selection 绑定，2026-10-06）；**无 titlebar**（`fullSizeContentView` + 隐藏标题 + 透明 titlebar，侧边栏贯通到窗口顶、红绿灯浮在侧边栏上；`.titled` 保留给红绿灯/顶部拖拽/「窗口」菜单）；顶部报警横幅；数据页 = 导出/导入（与加载同一套归一化）+ 备份还原；关于页 = 版本/GitHub 链接/更新检查（发布读取器可注入，未配置不碰网络）；桌面 Tab = Dock 栏列表（绑定下拉缩略图在控件外、位置分段、横向编辑器 8 槽滚动 1–15）+ 桌面命名小节 |
-| toast | `UI/ToastPresenter.swift`、`UI/DesktopNameToast.swift` | 纯逻辑调度 + 无边框窗口；跨空间、不抢焦点、零权限 |
+| 菜单栏 / 设置 UI | `UI/MenuBarController.swift`、`UI/SettingsView.swift`、`UI/DockBarsTabView.swift`、`UI/DesktopsTabView.swift`、`UI/DockBarEditor.swift`、`UI/DataView.swift`、`UI/AboutView.swift`、`UI/SpaceThumbnail.swift`、`UI/DebugPanelView.swift` | 侧边栏五选项卡（通用/应用栏/桌面/数据/关于，`NavigationSplitView`；主 tabs 顶部一组、留 26 pt 顶部让位，**「关于」钉列底**——`safeAreaInset(edge:.bottom)` 内嵌单行原生 sidebar 小 List，与主 List 共用 selection 绑定，2026-10-06）；**无 titlebar**（`fullSizeContentView` + 隐藏标题 + 透明 titlebar，侧边栏贯通到窗口顶、红绿灯浮在侧边栏上；`.titled` 保留给红绿灯/顶部拖拽/「窗口」菜单）；顶部报警横幅；数据页 = 导出/导入（与加载同一套归一化）+ 备份还原；关于页 = 版本/GitHub 链接/更新检查（发布读取器可注入，未配置不碰网络）；**应用栏 Tab**（`DockBarsTab`，原「桌面」页拆出）= Dock 栏列表（绑定下拉缩略图在控件外、位置分段、横向编辑器 8 槽滚动 1–15）；**桌面 Tab**（`DesktopsTab`）= 桌面命名（LabeledContent 行，输入框标题走 `prompt:` 防 Form 提成行标签）+ 名称展示（开关 / 位置分段） |
+| 桌面名称展示 | `UI/DesktopNameOverlay.swift`、`UI/ToastPresenter.swift`、`UI/DesktopNameToast.swift` | **双通路调度**：桌面名 → `DesktopNameOverlayWindow`（iPhone 锁屏式：64 pt 极细白字 + 图层投影，无底无框；位置 顶部/中部/底部 纯几何 `frameOrigin` 可单测）；系统告知（自愈等）→ `HudToastWindow` 胶囊 HUD（原 `DesktopNameToastWindow` 更名，HUD 材质 + 描边，属性清单逐条是踩坑项）；接替时旧窗立即收、只收当前通路；跨空间、不抢焦点、零权限；`ScreenMatching` 共享显示器映射 |
 | 脚本 | `scripts/build-app.sh`、`check-toast-window.sh`、`check-fullscreen-filter.swift`、`preview-toast.swift`、`spike-*.swift`、`measure-*.swift`、`spike-secondary-dock-sync.swift` | 打包；零权限验收工具；各实验复现脚本 |
-| 测试 | `Tests/MultiDockTests/` | **414 个测试，全绿**（其中 9 个真实 Dock 验收 + 2 个 UI 快照默认跳过，需显式开启） |
+| 测试 | `Tests/MultiDockTests/` | **423 个测试，全绿**（其中 9 个真实 Dock 验收 + 2 个 UI 快照默认跳过，需显式开启） |
 | 文档 | `docs/PLAN.md`（设计）、`docs/spikes.md`（27 个实验）、`docs/facts.md`（环境事实）、`docs/rules.md`（约定与陷阱台账） | 本文件为入口 |
 
 ### 未完成 / 待办（全部只剩"等人"或"等复现"）
@@ -173,7 +182,13 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
   绑定另一根栏到同一桌面时先前的栏自动让出（未绑定）。**加右键菜单（2026-10-06）**：条上右键
   弹「屏幕位置」菜单，勾标当前、点选另一项条立即换边；台前调度开着时菜单里没有「左」。
   **加侧边栏布局（2026-10-06 第 48 次）**：「关于」钉列底（点它上方三行应全不选）、
-  主 tabs 与窗顶留白的真人观感。逻辑侧已单测覆盖，差真人点一次。
+  主 tabs 与窗顶留白的真人观感。
+- **A13（2026-10-06 拆五页 + 锁屏名称，新）**：① 侧边栏五页切换正常（应用栏只有栏编辑、
+  桌面只有命名与名称展示）；② 桌面页改名 → 切桌面看**锁屏式大字**（默认顶部位置，
+  白字压壁纸是否清楚、投影是否自然）；③ 位置切「中部/底部」各切一次桌面看落点；
+  ④ 关掉「切换桌面时显示桌面名称」后切桌面**不**出名字；⑤ 调试面板「测试 toast」
+  预览的是锁屏式名称（不是胶囊）。逻辑侧已单测覆盖（路由 5 例 + 几何 4 例），差真人看一眼。
+  若大字在亮壁纸上不够清楚，调 `DesktopNameOverlayWindow` 的投影参数（字号/投影已留常量头部）。
 
 **等条件**：
 
@@ -202,7 +217,7 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 
 ```bash
 swift build -c release --disable-sandbox   # 编译（--disable-sandbox 必须加）
-swift test --disable-sandbox               # 414 个测试（9 个真实 Dock 验收 + 2 个 UI 快照默认跳过）
+swift test --disable-sandbox               # 423 个测试（9 个真实 Dock 验收 + 2 个 UI 快照默认跳过）
 ./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
 open build/MultiDock.app                   # 运行（必须在 .app 里跑，菜单栏图标才正常）
 MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests  # 真机 Dock 验收（先备份！）
@@ -288,10 +303,10 @@ MULTIDOCK_UI_SNAPSHOT=1 swift test --disable-sandbox --filter UISnapshotTests   
 ## 7. 给下一个 session 的建议顺序
 
 1. 读本入口 → 需要设计细节读 `docs/PLAN.md`（§3 机制、§3.10 命名与 toast、§3.12 次级条）；动实验读 `docs/spikes.md`（**27 个实验**，多数结论推翻过计划的原始假设）。
-2. 跑基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，应 **414 全绿、零警告**。
+2. 跑基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，应 **423 全绿、零警告**。
 3. **动 Dock 代码前把 §5 的 17 条致命陷阱过一遍**，并查 `docs/facts.md` 对应行。踩节流 → Dock 消失一秒多；踩 `-1` → 杀掉用户全部进程；踩同步 kickstart → 冻住两分钟；踩任务组坑 → 一堆"假上限"等待；踩见证位坑 → 功能静默不接线而单测全绿；踩 animator alpha → 条永久消失。**别把"等 30 秒"当耐心**——A8 的教训是"等"换不到东西、"催"才行（实验 16）。
 4. 动 Dock 的验收：`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`；**先 `defaults export com.apple.dock` 备份，中途别手动改 Dock**。退出码非 0 可能只是 SwiftPM 沙箱消息，判据看 `Executed N tests, with 0 failures`。UI 改动的验收：`MULTIDOCK_UI_SNAPSHOT=1 ... --filter UISnapshotTests` 出 PNG 人工核对。
-5. 剩余待办（按顺序）：**A11 次级条手感手测**（含手势预隐藏五项——横扫第一拍即隐、打断 600 ms 渐回、MC/Launchpad ≤1 s 回来、两指横扫不误隐、⌃→ 对照；加方案 ② 切桌面观感与 hover/点击）→ **A12 Dock 栏位置/绑定手测**（v4 新 UI）→ **A1–A3/A5** 回归手测 → **B5 多显示器**（等用户插外接屏）→ **B9/B10**（注销/重登录）→ **B8** 小实测 → **A8** 只等复现（读日志，别折腾）。
+5. 剩余待办（按顺序）：**A11 次级条手感手测**（含手势预隐藏五项——横扫第一拍即隐、打断 600 ms 渐回、MC/Launchpad ≤1 s 回来、两指横扫不误隐、⌃→ 对照；加方案 ② 切桌面观感与 hover/点击）→ **A13 拆五页 + 锁屏名称手测**（五页切换、改名看大字、位置三档、开关生效、测试 toast 通路）→ **A12 Dock 栏位置/绑定手测**（v4 新 UI + 双通路右键菜单）→ **A1–A3/A5** 回归手测 → **B5 多显示器**（等用户插外接屏）→ **B9/B10**（注销/重登录）→ **B8** 小实测 → **A8** 只等复现（读日志，别折腾）。
 6. 改了代码必须重新 `./scripts/build-app.sh` 才算装上去（A6 被"修复前二进制"骗过一次）；复验前先转走旧日志。
 7. **工程提醒：同一个文件不要在同一条消息里发两个编辑**——实测会静默丢掉其中一个。一个文件一次改一处。
 

@@ -263,6 +263,25 @@ enum ClickAction: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// 桌面名称（切换提示）在屏幕上的摆放位置。水平恒居中，只选纵向档位（2026-10-06 用户规格）。
+/// 默认 `.top` —— 与旧版「中上部」一致，也是 iPhone 锁屏时钟的位置。
+enum DesktopNamePlacement: String, Codable, Sendable, CaseIterable {
+    /// 可见区顶部往下一段距离（类 iPhone 锁屏）。
+    case top
+    /// 可见区正中。
+    case middle
+    /// 可见区底部往上一段距离。
+    case bottom
+
+    var displayName: String {
+        switch self {
+        case .top: return "顶部"
+        case .middle: return "中部"
+        case .bottom: return "底部"
+        }
+    }
+}
+
 /// Dock 重载方式。P0 结论：不存在热重载，主路径为 SIGHUP（约 101 ms 不可用）。
 enum ReloadStrategy: String, Codable, Sendable, CaseIterable {
     /// 自动：SIGHUP 为主，SIGTERM + kickstart 兜底。
@@ -289,8 +308,10 @@ struct AppSettings: Codable, Hashable, Sendable {
     var autoCaptureUserEdits = true
     /// 重载方式。
     var reloadStrategy: ReloadStrategy = .auto
-    /// 切换桌面时在屏幕中上部弹 1 秒的桌面名提示（`docs/PLAN.md` §3.10）。
+    /// 切换桌面时展示桌面名（2026-10-06 起为 iPhone 锁屏式大字，见 `DesktopNameOverlayWindow`）。
     var showToastOnDesktopSwitch = true
+    /// 桌面名称的展示位置（顶部/中部/底部，水平恒居中）。默认顶部（类 iPhone 锁屏，同旧版「中上部」）。
+    var desktopNamePlacement: DesktopNamePlacement = .top
     /// 次级 Dock 条：贴着原生 Dock 内侧半露、hover 滑出、随桌面秒换内容的自绘图标条。
     var showSecondaryDock = true
     /// 冻结原生 Dock 的逐桌面切换：开启后切桌面不再写偏好/重启 Dock，
@@ -307,7 +328,8 @@ struct AppSettings: Codable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case restoreOnQuit, clickAction, autoApplyOnEdit, autoCaptureUserEdits, reloadStrategy
-        case showToastOnDesktopSwitch, showSecondaryDock, freezeNativeDockSwitching
+        case showToastOnDesktopSwitch, desktopNamePlacement
+        case showSecondaryDock, freezeNativeDockSwitching
         case dockBars, defaultDockAppCount
     }
 
@@ -327,6 +349,8 @@ struct AppSettings: Codable, Hashable, Sendable {
         reloadStrategy = try container.decodeIfPresent(ReloadStrategy.self, forKey: .reloadStrategy) ?? .auto
         showToastOnDesktopSwitch =
             try container.decodeIfPresent(Bool.self, forKey: .showToastOnDesktopSwitch) ?? true
+        desktopNamePlacement =
+            try container.decodeIfPresent(DesktopNamePlacement.self, forKey: .desktopNamePlacement) ?? .top
         showSecondaryDock = try container.decodeIfPresent(Bool.self, forKey: .showSecondaryDock) ?? true
         freezeNativeDockSwitching =
             try container.decodeIfPresent(Bool.self, forKey: .freezeNativeDockSwitching) ?? true

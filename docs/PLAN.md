@@ -13,7 +13,7 @@
 - **设置 → 通用**：编辑「默认 Dock」——拖入/拖出应用、拖拽排序，Finder 与 Launchpad 固定不可移除；
   默认 Dock 的大小与位置；次级条 / 冻结开关；应用与还原。
 - **设置 → 桌面**：列出所有桌面，每个桌面单独设置 Dock 位置/大小与 Dock 中的应用（同样可拖入拖出），或选择沿用默认 Dock；**每个桌面还可以起一个名字，最长 10 个字符**（仅存本地，见 §3.10）。
-- **切换桌面提示（toast）**：切换到另一个桌面时，在屏幕**中上部**浮出一条提示显示该桌面的名字，**1 秒后自动消失**。不抢焦点、不挡点击、不需要任何权限（见 §3.10）。
+- **切换桌面提示（toast）**：切换到另一个桌面时展示该桌面的名字，**1 秒后自动消失**——2026-10-06 起为 **iPhone 锁屏式大字**（不可关？可关，见 §3.10 开关），位置可设顶部/中部/底部（默认顶部）。不抢焦点、不挡点击、不需要任何权限（见 §3.10）。
 
 **无痕原则（硬约束）**：App 绝不永久改变用户的 Dock。首次运行会把你当前的 Dock 完整存为**基准快照**，App 退出时自动还原到该基准；即使被强杀或崩溃，下次启动也会检测并还原。安装后什么都不做时，Dock 与装之前完全一致。
 
@@ -469,6 +469,36 @@ struct AppSettings: Codable {
 >   反之亦然。亮 / 暗快照确认两段 List 的 sidebar 材质连贯无接缝。
 >   见 `Tests/MultiDockTests/UISnapshotTests.swift`（`MULTIDOCK_UI_SNAPSHOT=1` 出 PNG）。
 
+> **2026-10-06 第 5 轮（用户指令）：「桌面」拆成「应用栏」+「桌面」；桌面名称锁屏式展示**
+> - **侧边栏五页**：通用 / **应用栏** / **桌面** / 数据 / 关于。
+>   - **应用栏**（`UI/DockBarsTabView.swift`，`DockBarsTab`）：原「桌面」页的 Dock 栏编辑
+>     整块搬来，内容零变化（栏列表 / 绑定下拉 / 位置分段 / 图标编辑器 / 孤儿栏解绑）。
+>   - **桌面**（`UI/DesktopsTabView.swift`，`DesktopsTab`）：**只管桌面本身**——
+>     桌面命名（每桌面一行：活动圆标 + 壁纸缩略图 + 输入框 + `n/10` 计数）+
+>     **名称展示**（开关「切换桌面时显示桌面名称」+ 位置分段）。
+>     命名行用分组 Form 的 `LabeledContent` 形状（行标签 = 圆标 + 缩略图 + 「桌面 N」）；
+>     ⚠️ `TextField` 的标题在分组 Form 里会被提升成行首加粗标签，**标题必须走 `prompt:`**。
+>   - 原通用页的「桌面切换」toast 开关一并移入「桌面」页（通用页只留次级条/冻结那节）。
+> - **名称展示 = iPhone 锁屏式**（`UI/DesktopNameOverlay.swift`，`DesktopNameOverlayWindow`）：
+>   64 pt **极细白字**（`.systemFont(ofSize: 64, weight: .thin)`，白色）直接压在壁纸上，
+>   **无底无框**；文字**图层投影**（`layer.shadow*`，从字形 alpha 生成随字形走；
+>   不用 `NSShadow`——画进 cell 方向语义反直觉）。窗口层配方与旧胶囊逐条相同
+>   （borderless、`canBecomeKey/Main = false`、`ignoresMouseEvents`、`level = .statusBar`、
+>   `.canJoinAllSpaces + .fullScreenAuxiliary + .stationary + .ignoresCycle`、`orderFrontRegardless`、
+>   `animationBehavior = .none`）；文字超宽按固定字号截尾（最长 10 字素簇，常见屏放得下）。
+> - **展示位置三档**（`desktopNamePlacement`，默认 `.top`）：顶部（`visibleFrame.maxY − 80`，
+>   与旧版同款、天然避开菜单栏、即锁屏时钟位）/ 中部（垂直居中）/ 底部
+>   （`visibleFrame.minY + 64`，避开次级条薄边）。水平恒居中。
+>   **几何是纯函数** `frameOrigin(for:visibleFrame:size:)`，单测直接打（不碰真窗口）；
+>   位置在 `show()` 时从 provider 实时读——切档位下一次展示立即生效，不必重建窗口。
+> - **双通路**（`ToastPresenter`）：桌面名称 → `namePresenter`（锁屏窗）；
+>   系统级告知（自愈还原 / Dock 已恢复）→ `presenter`（**胶囊 HUD**，原
+>   `DesktopNameToastWindow` 更名 `HudToastWindow`，职责收缩为"必须压在任何壁纸上可读"的告知）。
+>   超时/`dismissNow` **只收当前通路**；两通路接替时旧窗立即收掉（否则胶囊会挂着等不到
+>   自己的计时器）。不传 `namePresenter` 时回落到 `presenter`（测试替身与旧行为兼容）。
+> - **验收**：423 测试全绿（+路由 5 例 / 几何 3 例 + 解码往返扩项）；五页 UI 快照亮暗各
+>   一套出 PNG 逐张核对（应用栏 / 桌面 / 通用 / 数据 / 关于 + 次级条）。
+
 > **P5++ 实现记录（2026-09-18）**：应用摘要现在**也进调试面板**（§3.4 第 6 条要求"调试面板可见"，早先只在设置页）。
 > 调试面板新增「最近一次应用」一组：`结果摘要`（含重载方式与耗时）+ `内容指纹`（前两行 + 总长度，便于对照日志）+
 > `写入时刻`（绝对时间 + 距今秒数）+ `本次运行改过 Dock` + `回存闸门`。
@@ -640,14 +670,28 @@ struct AppSettings: Codable {
 
 #### toast
 
+> **2026-10-06 修订（用户指令）：名称展示 = iPhone 锁屏式，双通路**
+> 桌面名称不再走胶囊 HUD，改为**锁屏式大字**（`DesktopNameOverlayWindow`）：
+> 64 pt 极细白字 + 图层投影、无底无框，压在壁纸上；**位置三档**（顶部/中部/底部，
+> `desktopNamePlacement` 默认顶部）。胶囊 HUD（原 `DesktopNameToastWindow` 更名
+> `HudToastWindow`）收缩为**系统级告知**专用（自愈还原等"必须压在任何壁纸上可读"的消息），
+> 其外观规格（下面两节）原样保留、继续有效。调度侧 `ToastPresenter` 双通路，
+> 超时/收起只作用当前通路，接替时旧窗立即收。名称/告知的原「开关」语义不变。
+
 **触发点只有一个：`SpaceObserver.onActiveSpaceChanged`。** 它是单一事实源——轮询每 300 ms 读活动空间，与切换来源无关，所以**用户自己用触控板/快捷键/Mission Control 切桌面也会弹 toast**，不只是 App 发起的切换。App 自己发起的切换在切换后立刻 `observer.refreshNow()`（必要时 50 ms 再补一次）把延迟压到最低，轮询兜底最坏 300 ms。
 
 **只在「用户桌面 → 另一个用户桌面」时弹**：要求上一次通知值也是非 nil 的桌面。这一条同时干掉两个噪音源：① App 刚启动的首次采样；② 从全屏 App 空间退回桌面（`activeSpace` 先变 nil 再变回，会被误判成切桌面）。
 
 - 内容：该桌面的名字（自定义名或「桌面 N」）。
-- 位置：**所在显示器的中上部**——`visibleFrame.maxY - 80`、水平居中。显示器由 `displayUUID` 映射到 `NSScreen`（§1 已实测可行）；映射失败回落 `NSScreen.main`。
+- 位置（2026-10-06 修订）：**所在显示器的三档可选**——顶部（`visibleFrame.maxY − 80`，
+  默认、即锁屏时钟位、旧版同款）/ 中部（垂直居中）/ 底部（`visibleFrame.minY + 64`，
+  避开次级条薄边）；水平恒居中。几何为纯函数 `DesktopNameOverlayWindow.frameOrigin`，可单测。
+  显示器由 `displayUUID` 映射到 `NSScreen`（§1 已实测可行；共享 `ScreenMatching.resolve`）；
+  映射失败回落 `NSScreen.main`。
 - 停留 **1 秒**自动消失。1 秒内又切桌面 → **取消上一次计时，直接换文字并重新计时**（既不排队弹两条，也不会被旧计时器提前收走）。
-- 计时/去重逻辑放在纯逻辑的 `ToastPresenter`（协议 + 可注入时钟），AppKit 部分单独放 `DesktopNameToast`，这样行为可以单测——和 `SpaceProviding` 隔离私有 API 是同一套路。
+- 计时/去重逻辑放在纯逻辑的 `ToastPresenter`（协议 + 可注入时钟），AppKit 部分在
+  `DesktopNameOverlay`（名称）/ `DesktopNameToast`（胶囊 HUD），这样行为可以单测——
+  和 `SpaceProviding` 隔离私有 API 是同一套路。
 
 **窗口属性（缺一条都会出问题）**：
 

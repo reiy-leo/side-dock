@@ -438,6 +438,21 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
    `(() -> NSMenu?)?`，调用处先在辅助方法里把双可选展平再 `guard let`（见
    `SecondaryDockHostingView.menuForRightClick`）。
 
+### 2026-10-06 拆五页 + 锁屏式名称展示的新坑
+
+1. **分组 `Form` 里 `TextField` 的标题会被提升成行首加粗标签**（系统设置风格）——
+   想保留"框内占位符"必须用 `TextField("", text:, prompt: Text("…"))`，标题字符串
+   不能非空（`DesktopsTab` 桌面名输入框踩过）。行标签要左侧内容就把整行包成
+   `LabeledContent { 控件 } label: { … }`，别用 HStack 硬拼 Form 行。
+2. **窗口更名要全局搜调用点**：`DesktopNameToastWindow` → `HudToastWindow` 改完，
+   旧名残留一处（`ScreenMatching.screen`）编译才暴露——协议/类型更名后 `rg` 全仓确认。
+3. **双通路 toast 的收起只作用当前通路**（`ToastPresenter.currentSink`）：接替时旧窗
+   立即 `hide()`（否则旧窗挂着等不到计时器）；`dismissNow` 不能顺手把两条通路都拍灭——
+   测试 `testDismissNowHidesOnlyCurrentSink` 钉住。
+4. **锁屏大字的投影别用 `NSShadow`**：`NSShadow` 画进 cell，方向/模糊语义与图层
+   反直觉；用 `label.layer.shadow*`（从字形位图 alpha 生成，随字形走）。
+   位置几何做成纯函数 `frameOrigin` 再单测，别把 `visibleFrame` 几何埋进 `show()`。
+
 ---
 
 

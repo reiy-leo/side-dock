@@ -15,6 +15,11 @@
 #   onscreen == true（orderOut 后窗口还会在 CG 列表里滞留数秒，不滤掉会晚报「消失」）
 #   高度 >= 30（排除菜单栏图标，它只有 ~24 高）
 #   水平居中（|窗口中心 - 主屏中心| < 60pt）——菜单栏图标在屏幕角落，天然被排除
+#
+# 2026-10-06 起桌面名用锁屏式大字窗口（DesktopNameOverlayWindow，高约 128），
+# 胶囊 HUD（HudToastWindow，高 32，系统级告知用）——两个都命中上面的判别式，
+# 切桌面时应看到前者出现/消失；顶部档位的中心 y 也会不同（几何单测见
+# Tests/MultiDockTests/DesktopNameOverlayTests.swift）。
 
 set -euo pipefail
 

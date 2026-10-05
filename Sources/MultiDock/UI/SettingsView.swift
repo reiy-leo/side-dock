@@ -9,9 +9,10 @@ final class SettingsTabModel {
     var tab: SettingsTab = .general
 }
 
-/// 设置窗口的四个页（2026-10-06 起侧边栏呈现，系统设置风格）。
+/// 设置窗口的五个页（2026-10-06 起侧边栏呈现，系统设置风格；同日「桌面」拆出「应用栏」）。
 enum SettingsTab: Hashable {
     case general
+    case appBars
     case desktop
     case data
     case about
@@ -39,7 +40,8 @@ struct SettingsView: View {
                 WarningBanner(state: state)
                 switch tabModel.tab {
                 case .general: GeneralTab(state: state)
-                case .desktop: DesktopListView(state: state)
+                case .appBars: DockBarsTab(state: state)
+                case .desktop: DesktopsTab(state: state)
                 case .data: DataView(state: state)
                 case .about: AboutTab(state: state)
                 }
@@ -62,6 +64,7 @@ struct SettingsView: View {
         List(selection: tabSelection) {
             Section {
                 Label("通用", systemImage: "gearshape").tag(SettingsTab.general)
+                Label("应用栏", systemImage: "dock.rectangle").tag(SettingsTab.appBars)
                 Label("桌面", systemImage: "rectangle.3.group").tag(SettingsTab.desktop)
                 Label("数据", systemImage: "externaldrive").tag(SettingsTab.data)
             }
@@ -86,7 +89,7 @@ struct SettingsView: View {
     private var tabSelection: Binding<SettingsTab> {
         Binding(
             get: { tabModel.tab },
-            set: { tabModel.tab = $0 ?? tabModel.tab }
+            set: { tabModel.tab = $0 }
         )
     }
 }
@@ -213,17 +216,9 @@ private struct GeneralTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Section("桌面切换") {
-                Toggle("切换桌面时显示桌面名称", isOn: toastBinding)
-                Text("在桌面所在显示器的中上部显示该桌面的名字，1 秒后自动消失。不抢焦点、不挡点击。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
             Section("次级 Dock 条") {
                 Toggle("显示次级 Dock 条", isOn: secondaryDockBinding)
-                Text("每个桌面可以绑定一根 Dock 栏（在「桌面」页配置）：默认只露一半，鼠标移上去滑出全条，点击图标启动。位置可以贴屏幕底边或侧边（台前调度占用的一侧会自动避开）。")
+                Text("每个桌面可以绑定一根 Dock 栏（在「应用栏」页配置）：默认只露一半，鼠标移上去滑出全条，点击图标启动。位置可以贴屏幕底边或侧边（台前调度占用的一侧会自动避开）。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -359,16 +354,6 @@ private struct GeneralTab: View {
         Binding(
             get: { state.settings.reloadStrategy },
             set: { value in state.updateSettings { $0.reloadStrategy = value } }
-        )
-    }
-
-    private var toastBinding: Binding<Bool> {
-        Binding(
-            get: { state.settings.showToastOnDesktopSwitch },
-            set: { value in
-                state.updateSettings { $0.showToastOnDesktopSwitch = value }
-                if !value { state.toastPresenter?.dismissNow() }
-            }
         )
     }
 
