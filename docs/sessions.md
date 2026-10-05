@@ -3,6 +3,38 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 46 次）— 次级条右键菜单：屏幕位置快捷切换
+
+**用户说**：「secondary dock右键菜单显示：屏幕位置快捷toggle」。
+
+**做了什么**：
+
+1. **窗口层**（`UI/SecondaryDockWindow.swift`）：`NSHostingView` 子类接管 `rightMouseDown`
+   （SwiftUI 手势只管左键，菜单不依赖内容层）→ 每次右键现建 `NSMenu`（`popUpContextMenu`
+   不依赖 key window，本窗口 `canBecomeKey = false` 实测可用）。条目集合
+   `SecondaryDockContextMenuBuilder`（纯函数，与设置页 `positionOptions(for:)` 同口径：
+   台前调度开着避开左；栏存着不可选的位置也如实插回清单展示现状）。target 对象由窗口
+   存储属性常驻持有（NSMenuItem 对 target 是 assign 不保活）。
+2. **内容快照**（`UI/SecondaryDockStripView.swift` + `App/AppState.swift`）：
+   `SecondaryDockContentSnapshot` 加 `barID`（右键菜单要知道改哪根栏）；
+   `AppState.secondaryDockContent(for:)` 填充。
+3. **落点**（`App/AppState.swift`）：新增 `setDockBarPosition(id:to:)` —— 与设置页位置
+   分段同一 `dockBarEdited` 通路（落盘 + 刷新条 + 按开关应用），栏不存在/位置没变静默忽略。
+4. **接线**（`App/AppDelegate.swift`）：`availablePositionsProvider` 读
+   `AppState.availableBarPositions`（2 s 环境轮询保鲜）；`onPositionSelected` 落
+   `setDockBarPosition`。
+5. **测试**：新增 `SecondaryDockContextMenuTests` 八例（条目纯逻辑三例、窗口装配见证两例
+   ——含走真 target/action 分发链防静默断线、AppState 落点三例）；**414 全绿**。
+6. **重打包** `build/MultiDock.app`；文档：PLAN §3.12 交互规格/机制表/验收、AGENTS §3
+   现行行为 + 模块地图 + 测试数、rules.md 次级条新坑三条、A12 加手测项。
+
+**影响 / 未解决**：
+
+- 菜单只在条可见部分可右键（半露时是那条薄边）；选中后条立即换边（走既有 refresh 路径）。
+- 真机手感（半露薄边上右键的可达性、菜单弹出位置）归 A12 手测顺带确认。
+
+---
+
 ### 2026-10-06（第 45 次）— 设置窗口去 titlebar：侧边栏贯通到窗口顶（系统设置同款）
 
 **用户说**：「侧边栏贯通titlebar，去掉titlebar」。

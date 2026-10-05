@@ -327,6 +327,16 @@ final class AppState {
         refreshAfterBarChange(bar)
     }
 
+    /// 次级条右键菜单改位置（2026-10-06）：与设置页同一落点（`dockBarEdited`）——
+    /// 落盘、刷新条、按开关应用全在里面。栏不存在或位置没变就静默忽略
+    /// （快照可能滞后一拍，菜单上带的栏 ID 过期是正常态）。
+    func setDockBarPosition(id: UUID, to position: DockBarPosition) {
+        guard let current = dockBar(id: id), current.position != position else { return }
+        var updated = current
+        updated.position = position
+        dockBarEdited(updated, reason: "位置改为\(position.displayName)（次级条右键菜单）")
+    }
+
     private func refreshAfterBarChange(_ bar: DockBar) {
         secondaryDock?.refresh()
         guard let spaceID = bar.spaceID,
@@ -1204,6 +1214,7 @@ final class AppState {
             iconSize: iconSize
         ) else { return nil }
         snapshot.position = bar.position
+        snapshot.barID = bar.id
         return snapshot
     }
 

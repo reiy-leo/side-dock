@@ -423,6 +423,21 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
    `hide()` 要清预隐藏态并把 alpha 分步拉回 1，否则下次 `orderFront` 摊上隐形窗口；
    `spaceDidChange` 翻转要取消超时任务、清预隐藏标记与退避计数。
 
+### 2026-10-06 次级条右键菜单的新坑（屏幕位置快捷切换）
+
+1. **`NSMenuItem` 的 target 是 assign（不保活）**——拿临时对象当 target 会在菜单弹出前
+   析构，动作静默失联（编译通过、其他单测全绿）。target 必须由窗口存储属性常驻持有
+   （`SecondaryDockWindow.menuTarget`）；「菜单装没接上」这类断线用走真 target/action
+   分发链的见证测试防（`SecondaryDockContextMenuTests`）。
+2. **`NSHostingView` 上右键走 AppKit 原路**——SwiftUI 手势只管左键（`onTapGesture`），
+   别在内容层找右键配方；子类化 hosting view 接管 `rightMouseDown` 显式 popUp 最确定
+   （本窗口 `canBecomeKey = false`，`popUpContextMenu` 不依赖 key window，实测可用）。
+   菜单要**每次右键现建**——当前位置勾标、台前调度避左都随当下状态，缓存一份会过期。
+3. **可选返回值的闭包字面量赋给可选闭包属性不会自动包可选**：属性 `(() -> NSMenu)?` 配
+   字面量 `{ self?.make() }` 报「cannot convert NSMenu? to NSMenu」。别硬转——属性声明成
+   `(() -> NSMenu?)?`，调用处先在辅助方法里把双可选展平再 `guard let`（见
+   `SecondaryDockHostingView.menuForRightClick`）。
+
 ---
 
 

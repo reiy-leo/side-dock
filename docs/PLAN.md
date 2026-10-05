@@ -718,6 +718,14 @@ struct AppSettings: Codable {
   条同步显示。信号 = face（`visibleFrame` 内缩）为主，自动隐藏生效中（face == nil）用
   「光标在显出带」启发式补判（实验 22：Dock 实际显隐没有零权限直读信号）；几何轮询 200 ms。
 - 点击条目 → `NSWorkspace.open`（已运行则激活）；运行指示点常驻槽位不跳动。
+- **右键菜单 = 屏幕位置快捷切换（2026-10-06 用户规格）**：条上右键弹原生 `NSMenu`
+  （底部/左侧/右侧，勾标当前位置）。**每次右键现建**——可用位置与设置页同口径
+  （台前调度开着避开左，`SecondaryDockContextMenuBuilder` 纯函数）；栏存着不可选的位置
+  （如台前调度开启前存成左）也如实插回清单展示现状、能改走。选择经内容快照带的 `barID`
+  落 `AppState.setDockBarPosition` —— **与设置页位置分段同一 `dockBarEdited` 通路**
+  （落盘 + 刷新条 + 按开关应用）。窗口层实现：`NSHostingView` 子类接管 `rightMouseDown`
+  （SwiftUI 手势只管左键，菜单不依赖内容层）；`NSMenuItem` 的 target 是 assign 不保活，
+  target 对象必须由窗口存储属性常驻持有（rules.md 次级条新坑）。
 
 **内容与冻结开关（用户从三个方案里选定「随桌面 + 冻结开关」）**：
 
@@ -755,8 +763,8 @@ struct AppSettings: Codable {
 | --- | --- | --- |
 | 纯几何 | `Dock/SecondaryDockLayout.swift` | `detectDockFace`（三向内缩 → 方位）+ `placement`（展开/半露两 frame）+ `barSize` + `dockArea`（显出带判定，实验 22）；全纯函数 |
 | 几何源 | `Dock/DockFaceProviding.swift` | `ScreenInsetDockFaceProvider` 扫全部 `NSScreen`，取内缩最大的屏 |
-| 呈现 | `UI/SecondaryDockWindow.swift` | Toast 配方 + 三处不同：可交互、层级 19、SwiftUI 图标条；材质 `.popover` + maskImage 圆角；**方案 ②：单空间配方 + `pullToActiveSpace()`（置透明 + frame 跳沉没位 → 临时跨空间 → orderFront → 16 ms 设回 → 0.12 s 升回原位 + 同步淡显，实验 25）** |
-| 内容 | `UI/SecondaryDockStripView.swift` | 条目模型 + `SecondaryDockContentBuilder`（纯函数）+ SwiftUI 视图 |
+| 呈现 | `UI/SecondaryDockWindow.swift` | Toast 配方 + 三处不同：可交互、层级 19、SwiftUI 图标条；材质 `.popover` + maskImage 圆角；**方案 ②：单空间配方 + `pullToActiveSpace()`（置透明 + frame 跳沉没位 → 临时跨空间 → orderFront → 16 ms 设回 → 0.12 s 升回原位 + 同步淡显，实验 25）**；**右键菜单**：`NSHostingView` 子类接管 `rightMouseDown` → `SecondaryDockContextMenuBuilder`（纯函数，每次右键现建）→ `NSMenu.popUpContextMenu`，选中经 `onPositionSelected(barID, position)` 回 `AppState` |
+| 内容 | `UI/SecondaryDockStripView.swift` | 条目模型（快照带 `position` + `barID`）+ `SecondaryDockContentBuilder`（纯函数）+ SwiftUI 视图 |
 | 调度 | `UI/SecondaryDockController.swift` | 状态机（半露/展开/隐藏/手势预隐藏）+ **显隐同步（face + 显出带 + 400 ms 宽限）**+ 200 ms 几何轮询 + hover 防抖 + 鼠标位置安全网 + **空间切换拉回闸门**（换空间且前后都显示才拉）+ **手势预隐藏**（30 → α=0 + 600 ms 超时分步渐回 + 连击续命 + 安全网兜底，实验 27）；依赖全注入可单测 |
 | 手势监视 | `Spaces/SpaceTransitionGestureMonitor.swift` | listen-only `CGEventTap`，mask 只含 type 30（切桌面前置手势指纹，零权限，实验 27）；创建失败 3 s 重试、`.tapDisabledByTimeout` 自愈；回调走 `spaceTransitionGestureDetected()` |
 
@@ -767,10 +775,13 @@ struct AppSettings: Codable {
 **验收**：次级条相关单测（几何三方位 / 半露 / clamp / dockArea / 内容构建 / 状态机 / 条宽随内容 /
 同步显隐 / **空间拉回五例**——切空间拉一次、连切各拉一次、重复事件不拉、进全屏不拉、出全屏不拉 /
 **手势预隐藏十一例**——预隐藏+收回、超时渐回、连击续命、翻转取消超时、未显示不触发、hover 抑制、
-安全网愈卡半透明 / 愈孤儿 / 健康跳过 / 预隐藏豁免 / 未愈退避；全仓 **406 全绿**）；快照
+安全网愈卡半透明 / 愈孤儿 / 健康跳过 / 预隐藏豁免 / 未愈退避；**右键位置菜单八例**——条目纯逻辑
+三例（全量勾标 / 避左 / 不可选现状插回）、窗口装配见证两例（快照勾标 + target/action 分发带栏 ID、
+每次右键现建）、`AppState` 落点三例（落盘带来源日志 / 同位置与过期 ID 静默忽略 / 快照带 `barID`）；
+全仓 **414 全绿**）；快照
 `secondary-dock-{light,dark}.png`；真机 window-dump
 核验 `layer=19` 半露 frame 逐像素吻合（实验 21）、启动对齐日志、切桌面零重启日志（v3.6.1/2）；
-hover/点击/方案 ② 与手势预隐藏切桌面手感归入用户手测（A11）。
+hover/点击/右键菜单/方案 ② 与手势预隐藏切桌面手感归入用户手测（A11/A12）。
 
 ---
 

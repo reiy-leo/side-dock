@@ -20,6 +20,8 @@ struct SecondaryDockContentSnapshot {
     /// 这份内容对应的 Dock 栏位置（2026-10-05：每栏可设位置）。
     /// 附着原生 Dock（与 Dock 方位同侧）走贴 Dock 几何；否则独立贴边。
     var position: DockBarPosition = .bottom
+    /// 这份内容来自哪根栏（2026-10-06：右键菜单改位置要知道改谁）。
+    var barID: UUID? = nil
 }
 
 /// 从一套 `DockConfig` 构建条目。**纯函数**（`runningBundleIDs` 由调用方注入），

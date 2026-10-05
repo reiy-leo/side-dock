@@ -97,6 +97,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.onHoverChange = { [weak controller] inside in
             controller?.hoverChanged(inside)
         }
+        // 右键菜单（2026-10-06）：屏幕位置快捷切换。可选位置读 AppState 的环境缓存
+        // （台前调度开着避开左），选择经快照里的栏 ID 落 `AppState.setDockBarPosition`。
+        window.availablePositionsProvider = { [weak state] in
+            state?.availableBarPositions ?? DockBarPosition.available(stageManagerActive: false)
+        }
+        window.onPositionSelected = { [weak state] barID, position in
+            guard let barID else { return }
+            state?.setDockBarPosition(id: barID, to: position)
+        }
         state.attachSecondaryDock(controller)
         controller.start()
         observeSecondaryDockConfiguration(state, controller: controller)

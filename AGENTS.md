@@ -88,7 +88,7 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 ## 3. 当前状态（2026-10-06）
 
 **计划里的功能全部落地并实测通过**（P0–P5++ + 实验 17–27 的后续演进）。代码会真改用户 Dock；
-无痕原则由 `LifecycleController` 退出还原 + 会话标记兜底。**406 个测试全绿**（v4 重构 + 侧边栏/数据/关于 +26、手势预隐藏 +11）；
+无痕原则由 `LifecycleController` 退出还原 + 会话标记兜底。**414 个测试全绿**（v4 重构 + 侧边栏/数据/关于 +26、手势预隐藏 +11、右键位置菜单 +8）；
 真机 Dock 验收 9/9 绿（2026-10-04 基线；v4 的内容键口径待下次真机验收复核）。
 
 **现行行为（均有真机日志/验收实证）**：
@@ -118,6 +118,9 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
   沉没位升起编排接管，无切换则分步渐回（6 步 × 20 ms；animator alpha 实测随机静默失效，
   alpha 一律分步直设）；安全网（挂 200 ms 几何轮询）兜底 animator 卡死 / 孤儿窗口
   （MC、Launchpad 场景 ≤1 s 回来），条件模式无关（不能按「frame 出屏」判故障）。
+  **右键菜单（2026-10-06）**：条上右键弹「屏幕位置」菜单（底/左/右，勾标当前；台前调度
+  开着避开左、与设置页同口径；栏存着不可选的位置也如实插回展示），每次右键现建；选择
+  经快照带的栏 ID 落 `setDockBarPosition`（与设置页同一 `dockBarEdited` 通路），立即生效。
 - **Dock 重启**（仅未冻结模式、手动应用、启动对齐会走到）：SIGHUP 主路径 + 自动隐藏三明治（无黑屏）；`kickstart` 催办兜底。
 - **A8（偶发慢重启）**：修法「不等，催」已落地（26–31 s → ~1–3.5 s）；**成因未直接观测**，七个假说已证伪——**别再按它们改代码**，`minimumSpacing` 保持 1 s、`dockPID()` 的 LS 优先不要动。下次偶发按 `docs/spikes.md` 实验 15/16.4 判定规则读 `multidock.log`（先看 `最长间隔 M ms`），**别主动复现**。冻结默认后此风险实际暴露面大幅缩小（切桌面不再重启）。
 - **A6 / A7 已销账**：退出还原 53–54 s → **0.01 s**；正常路径重启 35–126 ms（已被用户真机日志确认）。
@@ -138,13 +141,13 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 | Dock 重载 | `Dock/DockReloader.swift`、`Dock/DockAutoHide.swift` | SIGHUP → SIGTERM → kickstart 三级降级；节流错开（`minimumSpacing` 1 s）；PID 身份闸门；「不等，催」（nudge 500 ms）；自动隐藏三明治（无闪烁重启） |
 | 手动改动回存 | `Dock/DockWatcher.swift`、`Dock/DockEditHistory.swift` | 可比指纹变化才回存（Dock 不在时不采样）；回存落点 = 当前桌面 override / 默认 Dock（冻结时一律默认 Dock）；内存撤销栈（每目标 5 层） |
 | Dock 存活监视 | `Dock/DockPresenceMonitor.swift` | 连续缺失 8 轮（4 s）才 kickstart，60 轮报警；纯逻辑 + 注入可单测 |
-| 次级 Dock 条 | `Dock/SecondaryDockLayout.swift`、`Dock/DockFaceProviding.swift`、`UI/SecondaryDock{StripView,Window,Controller}.swift` | 几何源 `visibleFrame` 内缩（**Dock 条不是独立 CG 窗口**）；层级 19 半露 / hover 全出；**条宽随本桌面内容撑开**（图标尺寸跟随系统实时 tilesize）；附着模式同步显隐（face + 显出带 + 400 ms 宽限，200 ms 轮询）；**位置 ≠ Dock 方位 → 独立贴边**（半露 = 滑出屏幕一半，与 Dock 显隐无关）；空间拉回 = 方案 ②（沉没位 + 0.12 s 升起，实验 25）；**手势预隐藏**（type 30 → α=0 + 600 ms 超时分步渐回 + 安全网兜底，实验 27；alpha 渐变一律分步直设——animator 随机静默失效）；依赖全注入可单测 |
+| 次级 Dock 条 | `Dock/SecondaryDockLayout.swift`、`Dock/DockFaceProviding.swift`、`UI/SecondaryDock{StripView,Window,Controller}.swift` | 几何源 `visibleFrame` 内缩（**Dock 条不是独立 CG 窗口**）；层级 19 半露 / hover 全出；**条宽随本桌面内容撑开**（图标尺寸跟随系统实时 tilesize）；附着模式同步显隐（face + 显出带 + 400 ms 宽限，200 ms 轮询）；**位置 ≠ Dock 方位 → 独立贴边**（半露 = 滑出屏幕一半，与 Dock 显隐无关）；空间拉回 = 方案 ②（沉没位 + 0.12 s 升起，实验 25）；**手势预隐藏**（type 30 → α=0 + 600 ms 超时分步渐回 + 安全网兜底，实验 27；alpha 渐变一律分步直设——animator 随机静默失效）；**右键菜单**（`NSHostingView` 子类接管 rightMouseDown → 纯函数 builder 每次现建 → 选中带栏 ID 回 `AppState`，2026-10-06）；依赖全注入可单测 |
 | 桌面（Space） | `Spaces/SkyLightBridge.swift`、`SpaceProvider.swift`、`SpaceObserver.swift`、`SpaceSwitcher.swift`、`SpaceTransitionGestureMonitor.swift`、`DesktopNaming.swift`、`ScreenNaming.swift` | dlopen 私有 API + 降级；300 ms 轮询 + 通知快速通道；循环切换；命名（≤10 字素簇）；显示器名解析；**切桌面前置手势监视**（listen-only CGEventTap 只听 type 30，零权限，实验 27） |
 | 持久化 | `Store/ConfigStore.swift`、`Store/BaselineStore.swift` | 原子写 `config.json`；基准快照 + 会话标记 + 备份轮转（20 份） |
 | 菜单栏 / 设置 UI | `UI/MenuBarController.swift`、`UI/SettingsView.swift`、`UI/DesktopListView.swift`、`UI/DockBarEditor.swift`、`UI/DataView.swift`、`UI/AboutView.swift`、`UI/SpaceThumbnail.swift`、`UI/DebugPanelView.swift` | 侧边栏四选项卡（通用/桌面/数据/关于，`NavigationSplitView`）；**无 titlebar**（`fullSizeContentView` + 隐藏标题 + 透明 titlebar，侧边栏贯通到窗口顶、红绿灯浮在侧边栏上；`.titled` 保留给红绿灯/顶部拖拽/「窗口」菜单）；顶部报警横幅；数据页 = 导出/导入（与加载同一套归一化）+ 备份还原；关于页 = 版本/GitHub 链接/更新检查（发布读取器可注入，未配置不碰网络）；桌面 Tab = Dock 栏列表（绑定下拉缩略图在控件外、位置分段、横向编辑器 8 槽滚动 1–15）+ 桌面命名小节 |
 | toast | `UI/ToastPresenter.swift`、`UI/DesktopNameToast.swift` | 纯逻辑调度 + 无边框窗口；跨空间、不抢焦点、零权限 |
 | 脚本 | `scripts/build-app.sh`、`check-toast-window.sh`、`check-fullscreen-filter.swift`、`preview-toast.swift`、`spike-*.swift`、`measure-*.swift`、`spike-secondary-dock-sync.swift` | 打包；零权限验收工具；各实验复现脚本 |
-| 测试 | `Tests/MultiDockTests/` | **406 个测试，全绿**（其中 9 个真实 Dock 验收 + 2 个 UI 快照默认跳过，需显式开启） |
+| 测试 | `Tests/MultiDockTests/` | **414 个测试，全绿**（其中 9 个真实 Dock 验收 + 2 个 UI 快照默认跳过，需显式开启） |
 | 文档 | `docs/PLAN.md`（设计）、`docs/spikes.md`（27 个实验）、`docs/facts.md`（环境事实）、`docs/rules.md`（约定与陷阱台账） | 本文件为入口 |
 
 ### 未完成 / 待办（全部只剩"等人"或"等复现"）
@@ -163,7 +166,9 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
   实验 24/25 证伪；方案 ② + 升起编排 + 手势预隐藏均已实现，剩真机手感核对。）
 - **A12（v4 新增，2026-10-06）**：**Dock 栏位置切换手测**——设置里把某根栏从「底部」改「右侧」，
   次级条应立即改贴右缘（半露 = 滑出屏幕一半、hover 滑回）；台前调度开着时位置按钮里没有「左」；
-  绑定另一根栏到同一桌面时先前的栏自动让出（未绑定）。逻辑侧已单测覆盖，差真人点一次。
+  绑定另一根栏到同一桌面时先前的栏自动让出（未绑定）。**加右键菜单（2026-10-06）**：条上右键
+  弹「屏幕位置」菜单，勾标当前、点选另一项条立即换边；台前调度开着时菜单里没有「左」。
+  逻辑侧已单测覆盖，差真人点一次。
 
 **等条件**：
 
@@ -192,7 +197,7 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 
 ```bash
 swift build -c release --disable-sandbox   # 编译（--disable-sandbox 必须加）
-swift test --disable-sandbox               # 406 个测试（9 个真实 Dock 验收 + 2 个 UI 快照默认跳过）
+swift test --disable-sandbox               # 414 个测试（9 个真实 Dock 验收 + 2 个 UI 快照默认跳过）
 ./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
 open build/MultiDock.app                   # 运行（必须在 .app 里跑，菜单栏图标才正常）
 MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests  # 真机 Dock 验收（先备份！）
@@ -277,7 +282,7 @@ MULTIDOCK_UI_SNAPSHOT=1 swift test --disable-sandbox --filter UISnapshotTests   
 ## 7. 给下一个 session 的建议顺序
 
 1. 读本入口 → 需要设计细节读 `docs/PLAN.md`（§3 机制、§3.10 命名与 toast、§3.12 次级条）；动实验读 `docs/spikes.md`（**27 个实验**，多数结论推翻过计划的原始假设）。
-2. 跑基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，应 **406 全绿、零警告**。
+2. 跑基线：`swift build -c release --disable-sandbox && swift test --disable-sandbox && ./scripts/build-app.sh`，应 **414 全绿、零警告**。
 3. **动 Dock 代码前把 §5 的 17 条致命陷阱过一遍**，并查 `docs/facts.md` 对应行。踩节流 → Dock 消失一秒多；踩 `-1` → 杀掉用户全部进程；踩同步 kickstart → 冻住两分钟；踩任务组坑 → 一堆"假上限"等待；踩见证位坑 → 功能静默不接线而单测全绿；踩 animator alpha → 条永久消失。**别把"等 30 秒"当耐心**——A8 的教训是"等"换不到东西、"催"才行（实验 16）。
 4. 动 Dock 的验收：`MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests`；**先 `defaults export com.apple.dock` 备份，中途别手动改 Dock**。退出码非 0 可能只是 SwiftPM 沙箱消息，判据看 `Executed N tests, with 0 failures`。UI 改动的验收：`MULTIDOCK_UI_SNAPSHOT=1 ... --filter UISnapshotTests` 出 PNG 人工核对。
 5. 剩余待办（按顺序）：**A11 次级条手感手测**（含手势预隐藏五项——横扫第一拍即隐、打断 600 ms 渐回、MC/Launchpad ≤1 s 回来、两指横扫不误隐、⌃→ 对照；加方案 ② 切桌面观感与 hover/点击）→ **A12 Dock 栏位置/绑定手测**（v4 新 UI）→ **A1–A3/A5** 回归手测 → **B5 多显示器**（等用户插外接屏）→ **B9/B10**（注销/重登录）→ **B8** 小实测 → **A8** 只等复现（读日志，别折腾）。

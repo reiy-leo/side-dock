@@ -23,6 +23,26 @@ protocol SecondaryDockPresenting: AnyObject {
     var currentAlpha: CGFloat { get }
 }
 
+/// 右键菜单的条目集合（2026-10-06）：屏幕位置快捷切换。**纯函数**。
+///
+/// 与设置页 `DesktopListView.positionOptions(for:)` 同一口径：可选位置
+/// （台前调度开着避开左）之外，栏当前存着的位置即使不在可选清单里也要插回去 ——
+/// 勾标如实展示现状，用户至少能从「左侧（台前调度占用的那边）」改走。
+enum SecondaryDockContextMenuBuilder {
+    struct Item: Equatable {
+        let position: DockBarPosition
+        let isCurrent: Bool
+    }
+
+    static func items(current: DockBarPosition, available: [DockBarPosition]) -> [Item] {
+        var options = available
+        if !options.contains(current) {
+            options.insert(current, at: 0)
+        }
+        return options.map { Item(position: $0, isCurrent: $0 == current) }
+    }
+}
+
 /// 贴在原生 Dock 内侧的次级条窗口。
 ///
 /// 窗口层配方沿用 `DesktopNameToastWindow`（那条配方每一条都是踩过坑的）：
@@ -39,7 +59,7 @@ protocol SecondaryDockPresenting: AnyObject {
 /// - `ignoresMouseEvents = false` —— 条要接收点击与 hover；
 /// - `level = 19` —— **低于** Dock 的 20：半露时滑进 Dock 身后的部分被 Dock 像素挡住，
 ///   视觉上就是「从原生 Dock 底下探出来」；
-/// - 内容是可交互的 SwiftUI 图标条（点击启动，hover 滑出）。
+/// - 内容是可交互的 SwiftUI 图标条（点击启动，hover 滑出；**右键弹屏幕位置菜单**，2026-10-06）。
 @MainActor
 final class SecondaryDockWindow: SecondaryDockPresenting {
 
@@ -60,7 +80,7 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
 
     private let window: SecondaryDockPanelWindow
     private let container: NSVisualEffectView
-    private var hosting: NSHostingView<SecondaryDockStripView>!
+    private var hosting: SecondaryDockHostingView!
     /// 「设回单空间配方」的延迟任务；连切时取消上一拍未生效的，防止堆积。
     private var pullResetTask: Task<Void, Never>?
     /// 分步 alpha 渐变任务（实验 26 26f）。`window.animator().alphaValue` 在本窗口实测
@@ -74,6 +94,18 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     var onActivate: (SecondaryDockItem) -> Void = { _ in }
     /// hover 进/出。由 `AppDelegate` 接到 `SecondaryDockController.hoverChanged(_:)`。
     var onHoverChange: (Bool) -> Void = { _ in }
+    /// 右键菜单选中了新位置（栏 ID, 目标位置）。由 `AppDelegate` 接到
+    /// `AppState.setDockBarPosition`（2026-10-06）。
+    var onPositionSelected: (UUID?, DockBarPosition) -> Void = { _, _ in }
+    /// 可选位置清单（台前调度开着避开左）。由 `AppDelegate` 接到 `AppState.availableBarPositions`
+    /// （环境缓存，2 s 轮询保鲜；菜单每次右键现建，最多滞后一拍）。
+    var availablePositionsProvider: () -> [DockBarPosition] = { DockBarPosition.allCases }
+
+    /// 右键菜单的 target。NSMenuItem 对 target 是 assign（不保活），必须由窗口存储属性常驻持有。
+    private let menuTarget = SecondaryDockMenuTarget()
+    /// 最近一次内容的位置与所属栏（右键菜单的勾标与落点）。
+    private var currentPosition: DockBarPosition = .bottom
+    private var currentBarID: UUID?
 
     /// 工厂与测试共用：`SecondaryDockWindowFactory` 直接走这条装配路径，
     /// 快照验出来的才是真窗口。
@@ -100,13 +132,21 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         container.blendingMode = .behindWindow
         container.state = .active
 
-        hosting = NSHostingView(rootView: makeStrip(items: [], isVertical: false, iconSize: 36))
+        hosting = SecondaryDockHostingView(rootView: makeStrip(items: [], isVertical: false, iconSize: 36))
         hosting.autoresizingMask = [.width, .height]
+        hosting.menuProvider = { [weak self] in self?.makeContextMenu() }
         container.addSubview(hosting)
         window.contentView = container
+
+        menuTarget.onSelect = { [weak self] position in
+            guard let self else { return }
+            self.onPositionSelected(self.currentBarID, position)
+        }
     }
 
     func updateContent(_ content: SecondaryDockContentSnapshot, isVertical: Bool) {
+        currentPosition = content.position
+        currentBarID = content.barID
         hosting.rootView = makeStrip(
             items: content.items,
             isVertical: isVertical,
@@ -193,6 +233,29 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     var isOnActiveSpace: Bool { window.isOnActiveSpace }
     var currentAlpha: CGFloat { window.alphaValue }
 
+    /// 右键菜单：屏幕位置快捷切换（2026-10-06）。**每次右键现建**（`SecondaryDockHostingView`
+    /// 的 `rightMouseDown` 调进来），当前位置勾标与台前调度避左都按当下状态。internal =
+    /// 测试见证位：装配与 target 分发必须可断言（rules.md「见证位」教训）。
+    func makeContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.title = "屏幕位置"
+        for item in SecondaryDockContextMenuBuilder.items(
+            current: currentPosition,
+            available: availablePositionsProvider()
+        ) {
+            let menuItem = NSMenuItem(
+                title: item.position.displayName,
+                action: #selector(SecondaryDockMenuTarget.positionChosen(_:)),
+                keyEquivalent: ""
+            )
+            menuItem.target = menuTarget
+            menuItem.representedObject = item.position.rawValue
+            menuItem.state = item.isCurrent ? .on : .off
+            menu.addItem(menuItem)
+        }
+        return menu
+    }
+
     /// 分步直设 alpha（实验 26 26f）。被取消时停在中间值 —— 调用方
     ///（hideForSpaceTransition / pullToActiveSpace 开头）随即直设 0，无残留。
     private func fadeAlpha(to target: CGFloat, steps: Int = 6, intervalMs: Int = 20) {
@@ -233,6 +296,42 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
 private final class SecondaryDockPanelWindow: NSWindow {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+}
+
+/// 承载 SwiftUI 内容并接管右键。条上的 SwiftUI 手势只管左键（`onTapGesture`），
+/// 右键走 AppKit 原路 —— 在这里显式 popUp 位置菜单，不依赖内容层、不怕 SwiftUI 手势抢事件。
+@MainActor
+private final class SecondaryDockHostingView: NSHostingView<SecondaryDockStripView> {
+    /// 每次右键现建菜单（当前位置勾标、台前调度避左都按当下状态）。
+    /// 返回值用 `NSMenu?`：窗口层拿不到菜单（理论不可达）时回落 AppKit 默认行为。
+    var menuProvider: (() -> NSMenu?)?
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard let menu = menuForRightClick() else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    /// 单独展平一层：`menuProvider?()` 对可选返回值会产生双可选。
+    private func menuForRightClick() -> NSMenu? {
+        guard let provider = menuProvider else { return nil }
+        return provider()
+    }
+}
+
+/// 右键菜单的 target。**NSMenuItem 对 target 是 assign（不保活）**——临时对象会在
+/// 菜单弹出前析构、动作静默失联，所以由窗口的存储属性常驻持有（见 `SecondaryDockWindow.menuTarget`）。
+@MainActor
+private final class SecondaryDockMenuTarget: NSObject {
+    var onSelect: ((DockBarPosition) -> Void)?
+
+    @objc func positionChosen(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+            let position = DockBarPosition(rawValue: raw) else { return }
+        onSelect?(position)
+    }
 }
 
 /// 供 `UISnapshotTests` 离屏渲染用的装配入口。**必须**与真实窗口同一条路径，
