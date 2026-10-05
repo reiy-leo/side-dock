@@ -77,7 +77,10 @@ final class StartupSelfHealTests: XCTestCase {
                 process: FakeDockProcess(),
                 pollInterval: .seconds(60)
             ),
-            fileLog: makeTestFileLog()
+            fileLog: makeTestFileLog(),
+            // 默认 Dock = 「最近添加的应用」。测试注入一份固定内容（启动台 + Safari），
+            // 让 applyDefaultDock / 冻结对齐有东西可写。
+            recentAppsProvider: { _ in Self.defaultApps() }
         )
         // 冻结是产品默认值；自愈用例测的是还原链路本身，按「未冻结」跑。
         state.updateSettings { $0.freezeNativeDockSwitching = false }
@@ -109,17 +112,15 @@ final class StartupSelfHealTests: XCTestCase {
         )
     }
 
-    private func config(tilesize: Double = 52) -> DockConfig {
-        var config = DockConfig()
-        config.appearance.tilesize = tilesize
-        config.pinnedApps = DockStripRules.normalizedApps([
+    /// 默认 Dock 的注入内容：启动台 + Safari（`rebuildDefaultDock` 会做归一化补首）。
+    private static func defaultApps() -> [DockTile] {
+        DockStripRules.normalizedApps([
             DockTile.makeFileTile(
                 url: URL(fileURLWithPath: "/Applications/Safari.app", isDirectory: true),
                 label: "Safari",
                 bundleIdentifier: "com.apple.Safari"
             ),
         ])
-        return config
     }
 
     // MARK: - 启动自愈
@@ -240,7 +241,6 @@ final class StartupSelfHealTests: XCTestCase {
         fixture.state.start()
         defer { fixture.state.stop() }
 
-        fixture.state.updateSettings { $0.defaultDock = self.config(tilesize: 52) }
         fixture.state.applyDefaultDock()
         // `request()` 是同步建任务的，所以这里写盘还没发生。
         XCTAssertEqual(fixture.preferences.writeCount, 0)
@@ -292,10 +292,7 @@ final class StartupSelfHealTests: XCTestCase {
         fixture.state.start()
         defer { fixture.state.stop() }
 
-        fixture.state.updateSettings {
-            $0.defaultDock = self.config(tilesize: 52)
-            $0.reloadStrategy = .sigterm
-        }
+        fixture.state.updateSettings { $0.reloadStrategy = .sigterm }
         fixture.state.applyDefaultDock()
         // 让那笔应用真的起跑（跑到降级链里等着），才谈得上"在飞"。
         // 不 yield 的话它还躺在 pending 里，会被上界之外的第一步直接丢掉。
@@ -472,7 +469,14 @@ final class StartupSelfHealTests: XCTestCase {
         fixture.state.restoreBackup(entry)
         await fixture.state.dockController.waitForIdle()
 
-        XCTAssertEqual(fixture.preferences.snapshot["tilesize"]?.doubleValue, 44)
+        // 2026-10-05 起备份恢复只覆盖**内容键**：外观（tilesize 44 在备份里）不再写入，
+        // 大小跟随系统 —— 否则恢复备份会把用户系统设置的外观冲掉。
+        XCTAssertEqual(fixture.preferences.snapshot["tilesize"]?.doubleValue, 64,
+                       "外观键不随备份恢复（跟随系统）")
+        XCTAssertTrue(
+            fixture.preferences.snapshot["persistent-apps"]?.fingerprintToken.contains("Safari") ?? false,
+            "内容键（图标）恢复"
+        )
         XCTAssertEqual(fixture.preferences.snapshot["wvous-br-corner"], .int(7),
                        "白名单外的键绝不能被备份覆盖")
         XCTAssertEqual(fixture.preferences.snapshot["mod-count"], .int(22_538),

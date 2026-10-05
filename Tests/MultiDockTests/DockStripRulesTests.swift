@@ -267,13 +267,14 @@ final class AppSettingsCodingTests: XCTestCase {
         try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8))
     }
 
-    func testDecodingConfigWrittenBeforeDefaultDockExistedKeepsOtherSettings() throws {
+    func testDecodingConfigWrittenBeforeDockBarsExistedKeepsOtherSettings() throws {
         let settings = try decode(#"{"restoreOnQuit":false,"autoApplyOnEdit":false,"reloadStrategy":"sigterm"}"#)
 
         XCTAssertFalse(settings.restoreOnQuit)
         XCTAssertFalse(settings.autoApplyOnEdit)
         XCTAssertEqual(settings.reloadStrategy, .sigterm)
-        XCTAssertTrue(settings.defaultDock.pinnedApps.isEmpty, "老配置里没有默认 Dock，就是空的")
+        XCTAssertTrue(settings.dockBars.isEmpty, "老配置里没有 Dock 栏，就是空的")
+        XCTAssertEqual(settings.defaultDockAppCount, 10, "老配置里没有显示数量，用默认 10")
     }
 
     func testDecodingEmptyObjectYieldsDefaults() throws {
@@ -285,23 +286,34 @@ final class AppSettingsCodingTests: XCTestCase {
         XCTAssertTrue(settings.showToastOnDesktopSwitch)
     }
 
-    func testRoundTripPreservesDefaultDock() throws {
+    func testRoundTripPreservesDockBars() throws {
         var settings = AppSettings()
-        settings.defaultDock.pinnedApps = DockStripRules.normalizedApps([
-            DockStripRules.makeLaunchpadTile(),
-            DockTile.makeFileTile(
-                url: URL(fileURLWithPath: "/Applications/Xcode.app", isDirectory: true),
-                label: "Xcode",
-                bundleIdentifier: "com.apple.dt.Xcode"
+        settings.defaultDockAppCount = 7
+        settings.dockBars = [
+            DockBar(
+                name: "工作",
+                position: .right,
+                spaceID: "DISP#SPACE",
+                apps: DockStripRules.normalizedApps([
+                    DockStripRules.makeLaunchpadTile(),
+                    DockTile.makeFileTile(
+                        url: URL(fileURLWithPath: "/Applications/Xcode.app", isDirectory: true),
+                        label: "Xcode",
+                        bundleIdentifier: "com.apple.dt.Xcode"
+                    ),
+                ])
             ),
-        ])
-        settings.defaultDock.appearance.tilesize = 52
+            DockBar(name: "摸鱼"),
+        ]
 
         let data = try JSONEncoder().encode(settings)
         let restored = try JSONDecoder().decode(AppSettings.self, from: data)
 
         XCTAssertEqual(restored, settings)
-        XCTAssertEqual(restored.defaultDock.appearance.tilesize, 52)
-        XCTAssertEqual(restored.defaultDock.pinnedApps.map(\.label), ["启动台", "Xcode"])
+        XCTAssertEqual(restored.dockBars.count, 2)
+        XCTAssertEqual(restored.dockBars[0].position, .right)
+        XCTAssertEqual(restored.dockBars[0].apps.map(\.label), ["启动台", "Xcode"])
+        XCTAssertEqual(restored.dockBars[0].spaceID, "DISP#SPACE")
+        XCTAssertEqual(restored.dockBars[1].position, .bottom)
     }
 }

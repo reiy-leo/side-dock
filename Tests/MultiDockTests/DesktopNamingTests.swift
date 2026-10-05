@@ -120,7 +120,7 @@ final class DesktopNamingTests: XCTestCase {
 
     func testRenameDoesNotTouchExistingOverride() {
         let s = space()
-        let config = DockConfig(pinnedApps: [], otherItems: [], appearance: DockAppearance())
+        let config = DockConfig(pinnedApps: [])
         let existing = binding(for: s, name: "旧名", override: config)
 
         let updated = DesktopNaming.updatingBindings([existing], name: "新名", for: s)
@@ -132,20 +132,19 @@ final class DesktopNamingTests: XCTestCase {
     func testClearingNameRemovesBindingWithNoOverride() {
         let s = space()
         let updated = DesktopNaming.updatingBindings([binding(for: s, name: "工作")], name: "", for: s)
-        XCTAssertTrue(updated.isEmpty, "既没名字也没 Dock 设置的绑定该被删掉，不留空行")
+        XCTAssertTrue(updated.isEmpty, "没名字的绑定该被删掉，不留空行")
     }
 
-    func testClearingNameKeepsBindingWithOverride() {
+    func testClearingNameRemovesLegacyOverrideOnlyBinding() {
+        // 2026-10-05 起 override 已废弃（Dock 内容归 DockBar）：名字清掉后，
+        // 即使绑定里还挂着旧 override，整条也该删 —— override 不再构成"保留绑定"的理由。
         let s = space()
-        let config = DockConfig()
         let updated = DesktopNaming.updatingBindings(
-            [binding(for: s, name: "工作", override: config)],
+            [binding(for: s, name: "工作", override: DockConfig())],
             name: "  ",
             for: s
         )
-        XCTAssertEqual(updated.count, 1)
-        XCTAssertNil(updated.first?.customName)
-        XCTAssertEqual(updated.first?.override, config)
+        XCTAssertTrue(updated.isEmpty)
     }
 
     func testClearingWithoutExistingBindingIsNoop() {
@@ -174,12 +173,11 @@ final class DesktopNamingTests: XCTestCase {
         let messy = [
             binding(for: s, name: "一二三四五六七八九十甲乙"),   // 超长 → 截断
             binding(for: s, name: "   "),                       // 空 → 整条丢弃
-            binding(for: s, name: nil, override: DockConfig()), // 无名字但有 override → 保留
+            binding(for: s, name: nil, override: DockConfig()), // 无名字（override 已废弃）→ 丢弃
         ]
         let normalized = DesktopNaming.normalizedBindings(messy)
-        XCTAssertEqual(normalized.count, 2)
+        XCTAssertEqual(normalized.count, 1)
         XCTAssertEqual(normalized[0].customName, "一二三四五六七八九十")
-        XCTAssertNil(normalized[1].customName)
-        XCTAssertNotNil(normalized[1].override)
+        XCTAssertNil(normalized[0].override, "归一化要把废弃的 override 残留一并清掉")
     }
 }

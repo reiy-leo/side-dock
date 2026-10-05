@@ -55,23 +55,17 @@ enum DesktopNaming {
         return DesktopBinding.updating(bindings, for: space) { $0.customName = name }
     }
 
-    /// 改 Dock override。**只动 `override`，绝不碰 `customName`**。
+    /// 加载配置后统一归一化一遍：截断超长名，并清掉没有名字的绑定。
     ///
-    /// - Parameter config: nil = 该桌面「沿用默认 Dock」。
-    static func updatingBindings(
-        _ bindings: [DesktopBinding],
-        override config: DockConfig?,
-        for space: DesktopSpace
-    ) -> [DesktopBinding] {
-        DesktopBinding.updating(bindings, for: space) { $0.override = config }
-    }
-
-    /// 加载配置后统一归一化一遍：截断超长名，并清掉「既无名字又无 override」的空绑定。
+    /// `override` 已废弃（2026-10-05 逐桌面 Dock 改由 `DockBar` 承载）：
+    /// 迁移在 `AppState.loadConfiguration` 里先做（迁进栏后清空），
+    /// 走到这里还没被清掉的残留也一并抹掉，不再写回 config.json。
     static func normalizedBindings(_ bindings: [DesktopBinding]) -> [DesktopBinding] {
         var result: [DesktopBinding] = []
         for var binding in bindings {
             binding.customName = normalizedOrNil(binding.customName)
-            if binding.customName == nil, binding.override == nil { continue }
+            binding.override = nil
+            if binding.customName == nil { continue }
             result.append(binding)
         }
         return result

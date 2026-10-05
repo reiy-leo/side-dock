@@ -67,17 +67,26 @@ final class DockPreferencesTests: XCTestCase {
         XCTAssertEqual(merged["some-future-macos-key"], .string("keep me"))
     }
 
-    func testAppearanceEntriesStayInsideWhitelist() {
-        // DockAppearance 产出的键必须全部在白名单里，否则写不进去还不报错。
-        var appearance = DockAppearance()
-        appearance.autohideDelay = 0.5
-        appearance.autohideTimeModifier = 0.2
-        for key in appearance.domainEntries.keys {
+    func testApplyEntriesStayInsideWhitelistAndCoverOnlyContent() {
+        // 应用路径产出的键必须全部在白名单里，否则写不进去还不报错；
+        // 且**只产内容键** —— 外观（大小/自动隐藏等）跟随系统，App 不再写（2026-10-05）。
+        let config = DockConfig(pinnedApps: [
+            DockTile.makeFileTile(
+                url: URL(fileURLWithPath: "/Applications/X.app"),
+                label: "X",
+                bundleIdentifier: "com.example.x"
+            ),
+        ])
+        let entries = DockController.entries(for: config, restrictedTo: Set(realisticDomain.keys))
+        XCTAssertFalse(entries.isEmpty)
+        for key in entries.keys {
             XCTAssertTrue(
                 DockPreferences.whitelistedKeys.contains(key),
                 "\(key) 不在白名单里，配置会被静默丢弃"
             )
         }
+        XCTAssertEqual(Set(entries.keys), ["persistent-apps"],
+                       "只写内容键，不写任何外观键；域里没有 persistent-others 也不写它")
     }
 
     func testWhitelistAndExclusionListDoNotOverlap() {

@@ -1947,3 +1947,33 @@ swift scripts/spike-pull-nsworkspace.swift       # 纯 NSWorkspace 通知拉回
 swift scripts/spike-hide-show.swift              # 切换时 alpha 隐藏、结束恢复
 swift scripts/spike-hide-during-anim.swift       # 切换时 orderOut、150 ms 后拉回
 ```
+
+---
+
+## 实验 26：设置窗口重构的数据源探查——桌面缩略图与台前调度开关（2026-10-06，**结案**）
+
+**背景**：用户拍板设置窗口重构（v4 内容模型，见 `docs/PLAN.md` §3.7 顶部记录）：
+默认 Dock = 最近添加的应用（1–15 可调）；桌面 Tab 改为 Dock 栏列表（默认 5 根），
+每栏绑定桌面（**下拉带缩略图**）+ 位置（**避开台前调度占用的那边**）。两个 UI 依赖的数据源
+都要零权限，动手前先探查本机（macOS 15.8.1）。
+
+**探查与结论**：
+
+1. **台前调度开关 = `com.apple.WindowManager` 的 `GloballyEnabled`**（本机 = 1）。
+   `defaults read com.apple.WindowManager` 一发命中，零权限；`CFPreferencesCopyAppValue`
+   同读。Stage Manager 的最近使用窗口条固定占屏幕**左缘**（系统无换侧设置），
+   所以 `DockBarPosition.available(stageManagerActive:)` 开着时排除 `.left`。
+   读不到（键缺失/异常）按**未开启**处理（三个位置都给）——宁多给选项不误删功能。
+2. **桌面缩略图 = 空间的壁纸**，`~/Library/Application Support/com.apple.wallpaper/Store/Index.plist`
+   可读（零权限）：`Spaces → <spaceUUID> → Desktop → Content → Choices[].Files[].relative`
+   指向壁纸文件 URL；本机 `Spaces` 为空（各空间共用系统壁纸），回落
+   `AllSpacesAndDisplays/Desktop/.../Files[0].relative` = `Iridescence.heic`，
+   `NSImage(contentsOf:)` 直接加载成功（UI 快照里渲染正常）。连壁纸都拿不到时退化为
+   按 UUID 派生的稳定渐变色块。**真·Mission Control 式窗口缩略图做不到**：其他空间的
+   窗口内容系统根本不渲染（与实验 24「特权来自进程身份」同源），屏幕录制权限也换不来。
+3. **SwiftUI menu Picker 的坑（顺手记录）**：行标签塞自定义视图（HStack + 图片）会被渲染成
+   一块高亮色，关闭态不可用 —— 缩略图必须放 Picker 外面（`docs/rules.md` 新坑 #1）。
+
+**验收**：UI 快照（`MULTIDOCK_UI_SNAPSHOT=1 --filter UISnapshotTests`）——
+桌面 Tab 的桌面名称区渲染出真实壁纸缩略图；回归测试 `DockBarModelTests`（位置可用性 /
+迁移 / 扫描器排序）与 `SecondaryDockTests`（独立贴边几何、附着-独立切换）全绿。

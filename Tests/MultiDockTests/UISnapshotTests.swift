@@ -135,7 +135,11 @@ final class UISnapshotTests: XCTestCase {
                 backupsURL: directory.appendingPathComponent("backups", isDirectory: true)
             ),
             provider: FakeSpaceProvider(desktops: spaces, activeSpaceID: 6),
-            fileLog: makeTestFileLog()
+            fileLog: makeTestFileLog(),
+            recentAppsProvider: { limit in
+                Array(Self.previewApps().prefix(limit))
+            },
+            stageManagerActiveProvider: { false }
         )
         // 冻结是产品默认值；快照按「未冻结」的设置页文案出图，别让横幅文案跟着默认值漂移。
         state.updateSettings { $0.freezeNativeDockSwitching = false }
@@ -158,21 +162,32 @@ final class UISnapshotTests: XCTestCase {
         ]
     }
 
-    /// 让两个 Tab 都有内容可看：默认 Dock 几个真实 App（有图标）、
-    /// 第一个桌面有独立 Dock + 自定义名，第二个桌面沿用默认。
-    private func seed(_ state: AppState) {
-        var config = DockConfig()
-        config.pinnedApps = DockStripRules.normalizedApps([
+    /// 快照用的真实 App（有图标）。默认 Dock 与绑定栏都用它。
+    private static func previewApps() -> [DockTile] {
+        [
             DockStripRules.tile(forAppAt: "/System/Applications/Calculator.app"),
             DockStripRules.tile(forAppAt: "/System/Applications/Notes.app"),
             DockStripRules.tile(forAppAt: "/Applications/Safari.app"),
             DockStripRules.tile(forAppAt: "/System/Applications/Weather.app"),
-        ].compactMap { $0 })
-        state.setDockConfigInMemory(config, for: .defaultDock)
+        ].compactMap { $0 }
+    }
+
+    /// 让两个 Tab 都有内容可看：默认 Dock 是注入的最近应用（有真实图标）、
+    /// 第一个桌面绑了一根 Dock 栏 + 自定义名，第二个桌面沿用默认。
+    private func seed(_ state: AppState) {
+        state.rebuildDefaultDock(reason: "快照预览")
 
         guard let first = state.desktops.first else { return }
         state.setCustomName("工作", for: first)
-        state.copyDefaultToOverride(for: first)
+        state.updateSettings { $0.autoApplyOnEdit = false }
+        let id = state.addDockBar()
+        state.updateDockBarInMemory(DockBar(
+            id: id,
+            name: "工作栏",
+            position: .bottom,
+            spaceID: first.id,
+            apps: DockStripRules.normalizedApps(Self.previewApps())
+        ))
     }
 
     // MARK: - 离屏渲染

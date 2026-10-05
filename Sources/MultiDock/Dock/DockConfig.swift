@@ -169,94 +169,33 @@ struct DockTile: Codable, Hashable, Sendable {
     }
 }
 
-/// Dock 外观。只覆盖白名单里的键（计划 §3.2）。
-struct DockAppearance: Codable, Hashable, Sendable {
-    var orientation: String = "bottom"
-    var tilesize: Double = 36
-    var magnification: Bool = false
-    var largesize: Double = 128
-    var autohide: Bool = false
-    var autohideDelay: Double?
-    var autohideTimeModifier: Double?
-    var mineffect: String = "genie"
-    var minimizeToApplication: Bool = false
-    var showProcessIndicators: Bool = false
-
-    /// 与 `com.apple.dock` 的键名映射。**未设置的键（nil）不参与写入**，
-    /// 避免把用户没配过的键强行写成默认值。
-    var domainEntries: [String: PlistValue] {
-        var entries: [String: PlistValue] = [
-            "orientation": .string(orientation),
-            "tilesize": .double(tilesize),
-            "magnification": .bool(magnification),
-            "largesize": .double(largesize),
-            "autohide": .bool(autohide),
-            "mineffect": .string(mineffect),
-            "minimize-to-application": .bool(minimizeToApplication),
-            "show-process-indicators": .bool(showProcessIndicators),
-        ]
-        if let autohideDelay { entries["autohide-delay"] = .double(autohideDelay) }
-        if let autohideTimeModifier { entries["autohide-time-modifier"] = .double(autohideTimeModifier) }
-        return entries
-    }
-
-    /// 只保留 `present` 里存在的键。
-    ///
-    /// **为什么要过滤**：本机 `com.apple.dock` 的 34 个键里**没有** `show-process-indicators`、
-    /// `autohide-delay`、`autohide-time-modifier`（P0 实测，见 `docs/spikes.md`）。
-    /// 给一个系统上根本不存在的键写值，最好的情况是无声无息，最坏的情况是引入
-    /// 一个语义未知的键。所以**只写当前域里已经存在的键**；UI 层对应地把这些控件禁用掉，
-    /// 不做"能改但没反应"的假开关。
-    func domainEntries(restrictedTo present: Set<String>) -> [String: PlistValue] {
-        domainEntries.filter { present.contains($0.key) }
-    }
-
-    /// 本机 Dock 域里缺失、因而无法安全写入的外观键。
-    func unavailableKeys(in present: Set<String>) -> Set<String> {
-        Set(domainEntries.keys).subtracting(present)
-    }
-
-    /// 从真实域读取，缺键则用默认值兜底。
-    static func read(from domain: [String: PlistValue]) -> DockAppearance {
-        var appearance = DockAppearance()
-        if let v = domain["orientation"]?.stringValue { appearance.orientation = v }
-        if let v = domain["tilesize"]?.doubleValue { appearance.tilesize = v }
-        if let v = domain["magnification"]?.boolValue { appearance.magnification = v }
-        if let v = domain["largesize"]?.doubleValue { appearance.largesize = v }
-        if let v = domain["autohide"]?.boolValue { appearance.autohide = v }
-        appearance.autohideDelay = domain["autohide-delay"]?.doubleValue
-        appearance.autohideTimeModifier = domain["autohide-time-modifier"]?.doubleValue
-        if let v = domain["mineffect"]?.stringValue { appearance.mineffect = v }
-        if let v = domain["minimize-to-application"]?.boolValue { appearance.minimizeToApplication = v }
-        if let v = domain["show-process-indicators"]?.boolValue { appearance.showProcessIndicators = v }
-        return appearance
-    }
-}
-
-/// 一套 Dock 配置：图标 + 外观。
+/// 一套 Dock 配置：**只有内容**（图标 + 其他项）。
+///
+/// 2026-10-05 用户修订：大小 / 放大 / 自动隐藏 / 特效 / 最小化到应用等外观项**全部跟随系统**，
+/// App 不再提供设置、也不再写入任何外观键（原 `DockAppearance` 已删除）。
+/// 外观键只保留在**还原路径**上：退出还原 / 自愈仍会把基准快照里的外观键原样写回，
+/// 兼容旧版本可能留下的改动（无痕原则的收尾）。
 struct DockConfig: Codable, Hashable, Sendable {
     var pinnedApps: [DockTile] = []
     var otherItems: [DockTile] = []
-    var appearance = DockAppearance()
 
-    /// 归一化指纹。内容相同则整条应用流水线短路，**完全不重启 Dock**（计划 §3.4 第 2 条）。
+    /// 归一化指纹（内容口径）。内容相同则整条应用流水线短路，**完全不重启 Dock**（计划 §3.4 第 2 条）。
     var fingerprint: String { fingerprint(restrictedTo: nil) }
 
-    /// 只比较 `keys` 里的外观键（nil = 全部）。
+    /// 只比较 `keys` 里的键（nil = 全部）。
     ///
-    /// 写入后校验要用它：本机缺失的外观键不会被写，若把它们算进比对，
-    /// 就会出现"明明写成功了却判定失败"的假阴性。
+    /// 写入后校验要用它：只比对实际写进去的键，避免"明明写成功了却判定失败"的假阴性。
     func fingerprint(restrictedTo keys: Set<String>?) -> String {
         var parts: [String] = ["apps:" + pinnedApps.map(\.normalizedKey).joined(separator: ">")]
         parts.append("others:" + otherItems.map(\.normalizedKey).joined(separator: ">"))
-        let entries = appearance.domainEntries.filter { keys?.contains($0.key) ?? true }
-        parts.append("appearance:" + entries.keys.sorted()
-            .map { "\($0)=\(entries[$0]!.fingerprintToken)" }
-            .joined(separator: ","))
+        if keys != nil {
+            // 外观键已不再写入；`restrictedTo` 只会传入内容键，这里无需再过滤。
+            // 保留参数形态是为了与 `DockController` 的校验口径共用一套签名。
+        }
         return parts.joined(separator: "\n")
     }
 
-    /// 从真实 Dock 域读取一套配置（「从当前真实 Dock 抓取」用）。
+    /// 从真实 Dock 域读取一套配置（「从当前 Dock 抓取」用）。只取内容键。
     static func read(from domain: [String: PlistValue]) -> DockConfig {
         var config = DockConfig()
         if let apps = domain["persistent-apps"]?.arrayValue {
@@ -265,26 +204,23 @@ struct DockConfig: Codable, Hashable, Sendable {
         if let others = domain["persistent-others"]?.arrayValue {
             config.otherItems = others.compactMap { $0.dictionaryValue.map(DockTile.init(raw:)) }
         }
-        config.appearance = DockAppearance.read(from: domain)
         return config
     }
 }
 
-/// 一个桌面与一套 Dock 配置的绑定关系。
+/// 一个桌面与一套 Dock 配置的绑定关系（现在只承载**桌面命名**；Dock 内容由 `DockBar` 承载）。
 struct DesktopBinding: Codable, Hashable, Sendable {
     var displayUUID: String
     var spaceUUID: String
     /// 仅存本地：macOS 15 没有桌面命名接口（计划 §1）。
     var customName: String?
-    /// nil = 沿用默认 Dock。
+    /// ⚠️ **已废弃（2026-10-05）**：逐桌面 Dock 由 `DockBar` 承载。这个字段只在
+    /// 读取旧版 `config.json` 时用于迁移（迁进 `DockBar` 后立刻清空，不再写回）。
     var override: DockConfig?
 
     var id: String { "\(displayUUID)#\(spaceUUID)" }
 
-    /// 绑定列表的**唯一**改法：改一条（不存在就插入），改完若「既无名字又无 override」就删掉，不留空行。
-    ///
-    /// 抽出来是因为改名（`DesktopNaming`）与改 Dock（`AppState.setOverride`）用的是同一套
-    /// 插入/清理规则，两处各写一遍迟早会不一致（例如一边删空绑定、另一边不删）。
+    /// 绑定列表的**唯一**改法：改一条（不存在就插入），改完若没有名字了就删掉，不留空行。
     static func updating(
         _ bindings: [DesktopBinding],
         for space: DesktopSpace,
@@ -293,7 +229,7 @@ struct DesktopBinding: Codable, Hashable, Sendable {
         var result = bindings
         if let index = result.firstIndex(where: { $0.id == space.id }) {
             mutate(&result[index])
-            if result[index].customName == nil, result[index].override == nil {
+            if result[index].customName == nil {
                 result.remove(at: index)
             }
             return result
@@ -305,7 +241,7 @@ struct DesktopBinding: Codable, Hashable, Sendable {
             override: nil
         )
         mutate(&fresh)
-        guard fresh.customName != nil || fresh.override != nil else { return result }
+        guard fresh.customName != nil else { return result }
         result.append(fresh)
         return result
     }
@@ -362,12 +298,17 @@ struct AppSettings: Codable, Hashable, Sendable {
     /// 手动路径（「立即应用」「编辑后立即应用」）不受影响。
     /// 默认开（2026-10-04 用户决定：原生 Dock 全桌面一致，不逐桌面重启）。
     var freezeNativeDockSwitching = true
-    /// 默认 Dock（通用 Tab 编辑的那一套）。没有单独绑定的桌面就用它。
-    var defaultDock = DockConfig()
+    /// Dock 栏列表（桌面 Tab 编辑）。每栏可绑定一个桌面；没绑定栏的桌面在冻结模式下
+    /// 只有原生 Dock（默认 Dock）可看。默认 5 栏由加载时的迁移/补齐逻辑保证。
+    var dockBars: [DockBar] = []
+    /// 默认 Dock 显示「最近添加的应用」（/Applications + ~/Applications，按修改时间）
+    /// 的个数。范围 1...15，默认 10（2026-10-05 用户规格）。
+    var defaultDockAppCount = 10
 
     enum CodingKeys: String, CodingKey {
         case restoreOnQuit, clickAction, autoApplyOnEdit, autoCaptureUserEdits, reloadStrategy
-        case showToastOnDesktopSwitch, showSecondaryDock, freezeNativeDockSwitching, defaultDock
+        case showToastOnDesktopSwitch, showSecondaryDock, freezeNativeDockSwitching
+        case dockBars, defaultDockAppCount
     }
 
     init() {}
@@ -389,6 +330,8 @@ struct AppSettings: Codable, Hashable, Sendable {
         showSecondaryDock = try container.decodeIfPresent(Bool.self, forKey: .showSecondaryDock) ?? true
         freezeNativeDockSwitching =
             try container.decodeIfPresent(Bool.self, forKey: .freezeNativeDockSwitching) ?? true
-        defaultDock = try container.decodeIfPresent(DockConfig.self, forKey: .defaultDock) ?? DockConfig()
+        dockBars = try container.decodeIfPresent([DockBar].self, forKey: .dockBars) ?? []
+        defaultDockAppCount =
+            try container.decodeIfPresent(Int.self, forKey: .defaultDockAppCount) ?? 10
     }
 }

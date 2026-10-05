@@ -95,8 +95,8 @@ final class DockModelTests: XCTestCase {
         let a = makeTile(label: "A", url: "file:///Applications/A.app/")
         let b = makeTile(label: "B", url: "file:///Applications/B.app/")
 
-        let first = DockConfig(pinnedApps: [a, b], otherItems: [], appearance: DockAppearance())
-        let second = DockConfig(pinnedApps: [b, a], otherItems: [], appearance: DockAppearance())
+        let first = DockConfig(pinnedApps: [a, b])
+        let second = DockConfig(pinnedApps: [b, a])
 
         // 顺序不同就是不同配置 —— 否则"拖拽排序"会被指纹短路掉。
         XCTAssertNotEqual(first.fingerprint, second.fingerprint)
@@ -104,17 +104,26 @@ final class DockModelTests: XCTestCase {
 
     func testFingerprintIsStableForIdenticalContent() {
         let tiles = [makeTile(label: "A", url: "file:///Applications/A.app/")]
-        let one = DockConfig(pinnedApps: tiles, otherItems: [], appearance: DockAppearance())
-        let two = DockConfig(pinnedApps: tiles, otherItems: [], appearance: DockAppearance())
+        let one = DockConfig(pinnedApps: tiles)
+        let two = DockConfig(pinnedApps: tiles)
         XCTAssertEqual(one.fingerprint, two.fingerprint)
     }
 
-    func testAppearanceChangeChangesFingerprint() {
-        var changed = DockAppearance()
-        changed.tilesize = 64
-        let base = DockConfig(pinnedApps: [], otherItems: [], appearance: DockAppearance())
-        let resized = DockConfig(pinnedApps: [], otherItems: [], appearance: changed)
-        XCTAssertNotEqual(base.fingerprint, resized.fingerprint)
+    func testFingerprintCoversOtherItemsToo() {
+        // 其他项（文件夹/堆栈）同样参与指纹：内容变了必须重新应用。
+        let folder = DockTile(raw: [
+            "tile-type": .string("directory-tile"),
+            "tile-data": .dictionary([
+                "file-data": .dictionary([
+                    "_CFURLString": .string("file:///Users/x/Downloads/"),
+                    "_CFURLStringType": .int(15),
+                ]),
+                "file-label": .string("下载"),
+            ]),
+        ])
+        let without = DockConfig(pinnedApps: [])
+        let with = DockConfig(pinnedApps: [], otherItems: [folder])
+        XCTAssertNotEqual(without.fingerprint, with.fingerprint)
     }
 
     // MARK: - tile 合成

@@ -14,6 +14,12 @@ extension DockPreferenceAccessing {
     func readMRUSpaces() -> Bool? {
         readDomain()[DockPreferences.mruSpacesKey]?.boolValue
     }
+
+    /// 读单个键。默认实现同样走 `readDomain()`（替身零成本；真实实现全量拷一次
+    /// 也只有 0.1 ms 量级，次级条最多 5 次/秒的调用频率扛得住）。
+    func readValue(forKey key: String) -> PlistValue? {
+        readDomain()[key]
+    }
 }
 
 struct RealDockPreferences: DockPreferenceAccessing {
@@ -55,8 +61,6 @@ final class DockController {
         /// 校验尝试次数（1 = 一次过，2 = 重试过一次）。
         var verifyAttempts: Int
         var elapsed: TimeInterval
-        /// 因为当前域里没有而**被跳过的外观键**。
-        var skippedKeys: Set<String>
         /// 非致命问题的说明（例如备份失败）。
         var note: String?
         /// 本次应用内容的指纹。`.applied` 时用于写进会话标记（强杀自愈的判据）。
@@ -120,6 +124,12 @@ final class DockController {
 
     /// 读 `mru-spaces`。走注入点，不要在 `AppState` 里直接调 `DockPreferences`。
     func readMRUSpaces() -> Bool? { preferences.readMRUSpaces() }
+
+    /// 系统当前的 Dock 图标尺寸（只读**不写**，2026-10-05 起外观跟随系统）。
+    /// 域里没有这个键时返回 nil，调用方用默认值兜底。
+    func readSystemTileSize() -> Double? {
+        preferences.readValue(forKey: "tilesize")?.doubleValue
+    }
 
     /// 写 `mru-spaces`。写完之后要自己 `reloadOnly` 一次才生效。
     @discardableResult
@@ -247,12 +257,15 @@ final class DockController {
     ///   `SIGTERM` 那条有约 255 ms 的退出清理窗口、Dock 可能回写覆盖我们的写入，
     ///   而退出流程没有重试的机会去发现它。真机 2026-09-19：走完整 ladder 的退出还原
     ///   在 launchd 退避期间耗时 53–54 秒，用户看到的就是"退出时卡住、Dock 没了"。
+    /// - Parameter extraEntries: 随本次写入一并落盘的白名单键值（外观键，还原路径专用）。
+    ///   **只写不校验**：它们来自基准快照原值，Dock 只会原样吃下；内容键的校验口径不变。
     func apply(
         _ config: DockConfig,
         reason: String,
         strategy: ReloadStrategy = .auto,
         force: Bool = false,
-        forQuit: Bool = false
+        forQuit: Bool = false,
+        extraEntries: [String: PlistValue] = [:]
     ) async -> Outcome {
         let started = Date()
         func elapsed() -> TimeInterval { Date().timeIntervalSince(started) }
@@ -260,7 +273,7 @@ final class DockController {
         // 1. 内容相同 → 短路。两个桌面共用同一份 Dock 时，切桌面零开销、零闪烁。
         if !force, config.fingerprint == appliedFingerprint {
             return Outcome(result: .skippedIdentical, reason: reason, reload: nil, writtenKeys: 0,
-                           verifyAttempts: 0, elapsed: elapsed(), skippedKeys: [],
+                           verifyAttempts: 0, elapsed: elapsed(), note: nil,
                            fingerprint: config.fingerprint)
         }
 
@@ -277,10 +290,10 @@ final class DockController {
         //
         // 判据复用 `verify` 的同一套比较，所以「跳过」与「写下去之后立刻验过」**严格等价**，
         // 不会漏掉真正需要的写入。
-        if !force, liveAlreadyMatches(config) {
+        if !force, extraEntries.isEmpty, liveAlreadyMatches(config) {
             adoptLiveDockAsApplied()
             return Outcome(result: .skippedIdentical, reason: reason, reload: nil, writtenKeys: 0,
-                           verifyAttempts: 0, elapsed: elapsed(), skippedKeys: [],
+                           verifyAttempts: 0, elapsed: elapsed(), note: nil,
                            fingerprint: config.fingerprint)
         }
 
@@ -296,14 +309,19 @@ final class DockController {
         let domain = preferences.readDomain()
         guard !domain.isEmpty else {
             return Outcome(result: .failed, reason: "\(reason)（读不到 com.apple.dock 偏好域）", reload: nil,
-                           writtenKeys: 0, verifyAttempts: 0, elapsed: elapsed(), skippedKeys: [], note: note,
+                           writtenKeys: 0, verifyAttempts: 0, elapsed: elapsed(), note: note,
                            fingerprint: config.fingerprint)
         }
 
         let present = Set(domain.keys)
-        let entries = Self.entries(for: config, restrictedTo: present)
-        let skipped = config.appearance.unavailableKeys(in: present)
-        let comparableKeys = Set(entries.keys)
+        var entries = Self.entries(for: config, restrictedTo: present)
+        for (key, value) in extraEntries where present.contains(key) {
+            entries[key] = value
+        }
+        let comparableKeys = Set(Self.entries(for: config, restrictedTo: present).keys)
+        // 外观跟随系统（2026-10-05）：配置不再携带 autohide，三明治的"目标可见性"以
+        // 当前域里的实时值为准 —— 自动隐藏开着就别强推显出，关着才需要在重启后滑回来。
+        let liveAutohide = domain["autohide"]?.boolValue ?? false
 
         // 4. 写 → 重载 → 读回校验；不一致重试一次（SIGTERM 的清理窗口竞态，见 docs/spikes.md）。
         //    退出流程例外：一次写入 + 一发信号 + 一次校验，**不重试也不升级**（见 `apply` 的 `forQuit`）。
@@ -320,10 +338,10 @@ final class DockController {
             for attempt in 1...2 {
                 verifyAttempts = attempt
                 preferences.writeWhitelisted(entries)
-                // reveal = 目标配置要的可见性。配置要求隐藏（true）时不启用三明治：
+                // reveal = 目标可见性。域里 autohide 开着（true）时不启用三明治：
                 // 重启后的 Dock 本来就以隐藏态出现，不会闪。
                 reload = await reloader.reload(strategy: strategy,
-                                               sandwichRevealAutoHideTo: config.appearance.autohide ? nil : false)
+                                               sandwichRevealAutoHideTo: liveAutohide ? nil : false)
                 verified = verify(config, comparableKeys: comparableKeys)
                 if verified { break }
             }
@@ -342,7 +360,6 @@ final class DockController {
             writtenKeys: entries.count,
             verifyAttempts: verifyAttempts,
             elapsed: elapsed(),
-            skippedKeys: skipped,
             note: note,
             fingerprint: config.fingerprint,
             quitRestart: quitRestart
@@ -350,7 +367,11 @@ final class DockController {
     }
 
     /// 把配置摊成要写入的键值对。**只写 `present` 里存在的键**。
-    static func entries(for config: DockConfig, restrictedTo present: Set<String>) -> [String: PlistValue] {
+    ///
+    /// 2026-10-05 起**只产内容键**（persistent-apps / persistent-others）：
+    /// 大小 / 放大 / 自动隐藏 / 特效 / 最小化到应用全部跟随系统，App 不再写任何外观键。
+    /// 外观键只在**还原路径**上经 `apply` 的 `extraEntries` 回写（来自基准快照原值）。
+    nonisolated static func entries(for config: DockConfig, restrictedTo present: Set<String>) -> [String: PlistValue] {
         var entries: [String: PlistValue] = [:]
         if present.contains("persistent-apps") {
             entries["persistent-apps"] = .array(config.pinnedApps.map { .dictionary($0.raw) })
@@ -358,7 +379,6 @@ final class DockController {
         if present.contains("persistent-others") {
             entries["persistent-others"] = .array(config.otherItems.map { .dictionary($0.raw) })
         }
-        entries.merge(config.appearance.domainEntries(restrictedTo: present)) { _, new in new }
         return entries
     }
 

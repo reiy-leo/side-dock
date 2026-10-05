@@ -5,6 +5,12 @@ import AppKit
 ///
 /// 状态只有两个：半露（默认）与展开（hover）。窗口在「启用 + 在用户桌面 + 有内容」时显示，
 /// 全屏空间（`space == nil`）与关闭开关时隐藏 —— 与原生 Dock 的可见性行为对齐。
+///
+/// **摆放模式（2026-10-05：每根 Dock 栏可设位置）**：
+/// - **附着**（栏位置 == 原生 Dock 方位）：贴原生 Dock 内侧，半露被 Dock 挡住；
+///   显隐与原生 Dock 同步（自动隐藏时跟光标显出带，实验 22 启发式）。
+/// - **独立贴边**（栏位置 ≠ Dock 方位）：贴自己那一边的屏幕边缘，半露 = 滑出屏幕一半；
+///   与原生 Dock 的显隐**无关**（它本来就不在那条边上），常驻半露。
 @MainActor
 final class SecondaryDockController {
 
@@ -38,6 +44,10 @@ final class SecondaryDockController {
     private var isRevealed = false
     private var isShowing = false
     private var lastSpace: DesktopSpace?
+    /// 最近一次内容的位置。附着/独立的判定基准。
+    private var currentPosition: DockBarPosition = .bottom
+    /// 最近一次见到的 Dock 方位。face == nil（自动隐藏生效中）时用它判定附着/独立。
+    private var lastFaceOrientation: SecondaryDockOrientation?
     /// 最近一次见到的 Dock 占用条带。face == nil（自动隐藏生效中）时用它判定
     /// 光标是否在「显出带」里 ——Dock 的实际显隐没有零权限的直读信号（实验 22）。
     private var lastDockArea: CGRect?
@@ -88,7 +98,7 @@ final class SecondaryDockController {
         }
     }
 
-    /// 开关或配置（settings / bindings）变化后的统一入口。
+    /// 开关或配置（settings / bars）变化后的统一入口。
     func refresh() {
         applyCurrentState()
     }
@@ -101,8 +111,9 @@ final class SecondaryDockController {
         }
         let fresh = deps.faceProvider.currentFace()
         guard fresh != face else {
-            // 几何没变也要跟光标：自动隐藏生效中（face == nil），显出/收回完全由光标位置驱动。
-            if face == nil {
+            // 几何没变也要跟光标：自动隐藏生效中（face == nil）且条附着在 Dock 那条边上时，
+            // 显出/收回完全由光标位置驱动；独立贴边的条不参与这套同步。
+            if face == nil, isAttachedToDock {
                 evaluateHiddenStateVisibility(with: deps.content(lastSpace))
             }
             return
@@ -110,6 +121,7 @@ final class SecondaryDockController {
         face = fresh
         if let fresh {
             lastDockArea = SecondaryDockLayout.dockArea(of: fresh)
+            lastFaceOrientation = fresh.orientation
         }
         deps.log("次级 Dock 条：Dock 几何变化 → \(fresh.map { "\($0.orientation) 内缩 \($0.visible)" } ?? "探测不到")")
         applyCurrentState()
@@ -145,33 +157,70 @@ final class SecondaryDockController {
 
     // MARK: - 内部
 
+    /// 当前条是否「附着」在原生 Dock 那条边上（位置 == Dock 方位）。
+    /// face 探测不到时（自动隐藏生效中）用最近一次见到的方位兜底。
+    private var isAttachedToDock: Bool {
+        guard let orientation = face?.orientation ?? lastFaceOrientation else {
+            // 从没见过 Dock：默认 bottom 口径（原生 Dock 最常见的位置）。
+            return currentPosition == .bottom
+        }
+        return currentPosition.matches(orientation)
+    }
+
     private func applyCurrentState() {
         guard deps.isEnabled(), let space = lastSpace, let content = deps.content(space) else {
             hide()
             return
         }
-        guard let face else {
-            // Dock 没占屏幕（自动隐藏生效中 / 重启瞬态）：可见性与原生 Dock 同步——
-            // 光标在显出带里 = Dock 在屏（正在显出）→ 显示并照常换内容；不在 → 宽限后收起。
-            // 换内容不挪窗：frame 沿用最近一次 face 的摆放（tucked/revealed 一直保留着）。
-            evaluateHiddenStateVisibility(with: content)
-            return
-        }
+        currentPosition = content.position
         let barSize = SecondaryDockLayout.barSize(
             itemCount: content.items.count,
             iconSize: content.iconSize,
-            isVertical: face.orientation.isBarVertical
+            isVertical: content.position.isBarVertical
         )
-        let placement = SecondaryDockLayout.placement(barSize: barSize, face: face)
-        revealedFrame = placement.revealed
-        tuckedFrame = placement.tucked
-        currentIsVertical = face.orientation.isBarVertical
-        deps.presenter.updateContent(content, isVertical: currentIsVertical)
-        applyCurrentFrame(animated: false)
-        if !isShowing {
-            isShowing = true
-            deps.presenter.orderFront()
+        // 附着模式（face 在场且方位一致）：贴原生 Dock 内侧。
+        if let face, currentPosition.matches(face.orientation) {
+            let placement = SecondaryDockLayout.placement(barSize: barSize, face: face)
+            revealedFrame = placement.revealed
+            tuckedFrame = placement.tucked
+            currentIsVertical = currentPosition.isBarVertical
+            deps.presenter.updateContent(content, isVertical: currentIsVertical)
+            applyCurrentFrame(animated: false)
+            if !isShowing {
+                isShowing = true
+                deps.presenter.orderFront()
+            }
+            return
         }
+        // face == nil（Dock 自动隐藏生效中 / 重启瞬态）且这根栏本来就附着在 Dock 那条边上：
+        // 沿用最近一次的附着摆放，可见性交给显出带判定（实验 22 启发式）。
+        // ⚠️ 不能在这里落到独立贴边 —— 那会让跟随 Dock 隐藏的条在 Dock 滑走瞬间"常驻"。
+        let rememberedAttached = face == nil
+            && (lastFaceOrientation.map { currentPosition.matches($0) } ?? (currentPosition == .bottom))
+        if rememberedAttached {
+            currentIsVertical = currentPosition.isBarVertical
+            deps.presenter.updateContent(content, isVertical: currentIsVertical)
+            evaluateHiddenStateVisibility(with: content)
+            return
+        }
+        // 独立贴边：与原生 Dock 的几何无关（即便 face == nil 也照摆）。
+        if let screen = deps.faceProvider.currentScreenFrame() {
+            let placement = SecondaryDockLayout.standalonePlacement(
+                barSize: barSize,
+                position: currentPosition,
+                screen: screen
+            )
+            revealedFrame = placement.revealed
+            tuckedFrame = placement.tucked
+            currentIsVertical = currentPosition.isBarVertical
+            deps.presenter.updateContent(content, isVertical: currentIsVertical)
+            applyCurrentFrame(animated: false)
+            if !isShowing {
+                isShowing = true
+                deps.presenter.orderFront()
+            }
+        }
+        // 连屏幕都拿不到：沿用旧 frame，等下一个轮询拍。
     }
 
     private func applyCurrentFrame(animated: Bool) {
@@ -192,12 +241,14 @@ final class SecondaryDockController {
         deps.presenter.orderOut()
     }
 
-    // MARK: - 与原生 Dock 的可见性同步（自动隐藏）
+    // MARK: - 与原生 Dock 的可见性同步（自动隐藏；只对附着模式的条生效）
 
     /// Dock 的实际显隐没有零权限的直读信号（实验 22：typed setter 只翻旗标不改 work area，
     /// 探针窗口 occlusionState 不可靠，CGWindowList 在 15.8.1 看不到 Dock）。
     /// 用「光标是否在最近一次 Dock 占用条带（略外扩）里」近似：光标碰边 = Dock 显出，条跟着出来；
     /// 离开 = Dock 收回，条宽限后收回。
+    ///
+    /// **独立贴边的条不走这里**：它不在 Dock 那条边上，Dock 藏不藏与它无关（常驻半露）。
     private func evaluateHiddenStateVisibility(with content: SecondaryDockContentSnapshot?) {
         // 从没见过 Dock 几何就没有可用的 frame（零尺寸窗口），宁可继续藏着。
         guard tuckedFrame != nil else { return }

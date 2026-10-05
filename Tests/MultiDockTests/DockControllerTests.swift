@@ -152,14 +152,11 @@ final class DockControllerTests: XCTestCase {
         ]
     }
 
-    private func makeConfig(tilesize: Double = 48, apps: [String] = ["com.apple.Safari"]) -> DockConfig {
-        var config = DockConfig()
-        config.pinnedApps = apps.map {
+    private func makeConfig(apps: [String] = ["com.apple.Safari"]) -> DockConfig {
+        DockConfig(pinnedApps: apps.map {
             DockTile.makeFileTile(url: URL(fileURLWithPath: "/Applications/\($0).app"),
                                   label: $0, bundleIdentifier: $0)
-        }
-        config.appearance.tilesize = tilesize
-        return config
+        })
     }
 
     private func makeController(
@@ -214,16 +211,6 @@ final class DockControllerTests: XCTestCase {
         XCTAssertEqual(prefs.writes, 2, "force 必须绕过指纹短路")
     }
 
-    func testAppearanceOnlyDifferenceIsNotShortCircuited() async {
-        let prefs = FakePreferences(domain: baseDomain())
-        let controller = makeController(preferences: prefs)
-
-        _ = await controller.apply(makeConfig(tilesize: 36), reason: "36")
-        let second = await controller.apply(makeConfig(tilesize: 64), reason: "64")
-
-        XCTAssertEqual(second.result, .applied, "只改外观也必须重新应用")
-    }
-
     /// 短路第 1b 条：**真实 Dock 已经就是这份内容**时必须跳过，哪怕 `appliedFingerprint` 是空的。
     ///
     /// 这是 P4 后真机验收挖出来的 bug（`DockAcceptanceTests.testExternalDockChangeIsCapturedBackToActiveDesktop`）：
@@ -272,11 +259,11 @@ final class DockControllerTests: XCTestCase {
 
     /// 反向守卫：真实域与目标**不一致**时必须真的写、真的重启 —— 1b 不能把该写的也吞掉。
     func testDoesNotSkipWhenLiveDockDiffersFromConfig() async {
-        let prefs = FakePreferences(domain: baseDomain())   // 域里 tilesize = 36
+        let prefs = FakePreferences(domain: baseDomain())   // 域里 persistent-apps 是空的
         let process = FakeDockProcess()
         let controller = makeController(preferences: prefs, process: process)
 
-        let outcome = await controller.apply(makeConfig(tilesize: 64), reason: "域里是 36")
+        let outcome = await controller.apply(makeConfig(), reason: "域里没有这个 App")
 
         XCTAssertEqual(outcome.result, .applied)
         XCTAssertEqual(prefs.writes, 1)
@@ -327,28 +314,35 @@ final class DockControllerTests: XCTestCase {
 
     func testEntriesSkipKeysAbsentFromTheLiveDomain() {
         let config = makeConfig()
+        // 外观键已不参与写入（2026-10-05 起跟随系统）：present 里有没有它们都无所谓，
+        // 产出的键只可能是内容键。
         let present: Set<String> = ["persistent-apps", "orientation", "tilesize"]
 
         let entries = DockController.entries(for: config, restrictedTo: present)
 
-        XCTAssertEqual(Set(entries.keys), present)
-        XCTAssertFalse(entries.keys.contains("show-process-indicators"))
+        XCTAssertEqual(Set(entries.keys), ["persistent-apps"])
     }
 
-    func testMissingAppearanceKeysAreReportedAsSkippedNotWritten() async {
-        var config = makeConfig()
-        config.appearance.showProcessIndicators = true
-        config.appearance.autohideDelay = 0.5
-
+    /// 还原路径的外观键走 `extraEntries`：**白名单内的键**随应用一起写入，
+    /// 但不参与内容校验（值来自基准原值，Dock 只会原样吃下）。
+    func testExtraEntriesCarryAppearanceKeysOnRestore() async {
         let prefs = FakePreferences(domain: baseDomain())
         let controller = makeController(preferences: prefs)
-        let outcome = await controller.apply(config, reason: "缺键")
 
-        XCTAssertEqual(outcome.skippedKeys, ["show-process-indicators", "autohide-delay"],
-                       "本机没有的键要如实报告，UI 才能把对应控件禁用掉")
-        XCTAssertFalse(prefs.lastEntries?.keys.contains("show-process-indicators") ?? true)
-        XCTAssertFalse(prefs.lastEntries?.keys.contains("autohide-delay") ?? true)
-        XCTAssertTrue(outcome.succeeded, "缺几个外观键不该让整次应用失败")
+        let extras: [String: PlistValue] = [
+            "tilesize": .double(36),
+            "orientation": .string("left"),
+        ]
+        let outcome = await controller.apply(
+            makeConfig(),
+            reason: "还原到基准",
+            force: true,
+            extraEntries: extras
+        )
+
+        XCTAssertEqual(outcome.result, .applied, outcome.summary)
+        XCTAssertEqual(prefs.lastEntries?["tilesize"], .double(36), "外观键随还原写回（旧版本遗留的收尾）")
+        XCTAssertEqual(prefs.lastEntries?["orientation"], .string("left"))
     }
 
     /// `persistent-others` 走与 `persistent-apps` 完全相同的"域里没有就不写"规则。
@@ -357,7 +351,7 @@ final class DockControllerTests: XCTestCase {
     /// 现在能显示/排序/移除 —— 但绝不能凭空造条目（`docs/spikes.md` 实验 8）。
     func testEntriesSkipOtherItemsWhenTheKeyIsAbsentFromTheLiveDomain() {
         let config = makeConfig()
-        let present: Set<String> = ["persistent-apps", "orientation", "tilesize"]
+        let present: Set<String> = ["persistent-apps"]
 
         let entries = DockController.entries(for: config, restrictedTo: present)
 
@@ -433,18 +427,19 @@ final class DockControllerTests: XCTestCase {
         XCTAssertNil(controller.appliedFingerprint, "校验没过就不能记指纹，否则下次会被错误短路")
     }
 
+    /// 校验只比**实际写入的内容键**：域里其他键（外观、Dock 自己的计数器）变没变都无所谓 ——
+    /// 否则"明明写成功却判定失败"的假阴性会逼出无意义的重试与重启。
     func testVerificationIgnoresKeysThatWereNotWritten() async {
-        // 回归：曾经把"本机缺失的外观键"算进比对，导致明明写成功却判定失败。
-        var config = makeConfig()
-        config.appearance.showProcessIndicators = true
-        config.appearance.autohideDelay = 0.25
-
-        let prefs = FakePreferences(domain: baseDomain())
+        // 域里的外观键与目标不一致？无所谓，我们根本不写外观（跟随系统）。
+        var domain = baseDomain()
+        domain["tilesize"] = .double(999)
+        let prefs = FakePreferences(domain: domain)
         let controller = makeController(preferences: prefs)
-        let outcome = await controller.apply(config, reason: "缺键校验")
+
+        let outcome = await controller.apply(makeConfig(), reason: "外观不同但内容相同")
 
         XCTAssertEqual(outcome.result, .applied)
-        XCTAssertEqual(outcome.verifyAttempts, 1, "缺键不该触发重试")
+        XCTAssertEqual(outcome.verifyAttempts, 1, "外观键差异不该触发重试")
     }
 
     // MARK: - 失败与降级
@@ -501,15 +496,15 @@ final class DockControllerTests: XCTestCase {
             onOutcome: { outcomes.value.append($0) }
         )
 
-        controller.request(makeConfig(tilesize: 36), reason: "1", strategy: .auto)
-        controller.request(makeConfig(tilesize: 48), reason: "2", strategy: .auto)
-        controller.request(makeConfig(tilesize: 64), reason: "3", strategy: .auto)
+        controller.request(makeConfig(apps: ["A"]), reason: "1", strategy: .auto)
+        controller.request(makeConfig(apps: ["A", "B"]), reason: "2", strategy: .auto)
+        controller.request(makeConfig(apps: ["A", "B", "C"]), reason: "3", strategy: .auto)
         await controller.waitForIdle()
 
         XCTAssertEqual(prefs.writes, 1, "连击只对最终落点写一次")
         XCTAssertEqual(process.signals.count, 1)
         XCTAssertEqual(outcomes.value.map(\.reason), ["3"])
-        XCTAssertEqual(prefs.lastEntries?["tilesize"], .double(64), "落点必须是最新那一次")
+        XCTAssertEqual(prefs.lastEntries?["persistent-apps"]?.arrayValue?.count, 3, "落点必须是最新那一次")
     }
 
     func testRequestArrivingDuringApplyIsRunAfterwards() async {
@@ -523,15 +518,15 @@ final class DockControllerTests: XCTestCase {
             onOutcome: { outcomes.value.append($0) }
         )
 
-        controller.request(makeConfig(tilesize: 36), reason: "A", strategy: .auto)
+        controller.request(makeConfig(apps: ["A"]), reason: "A", strategy: .auto)
         // 让 drain 先跑起来并卡在重启等待里。
         try? await Task.sleep(for: .milliseconds(30))
-        controller.request(makeConfig(tilesize: 64), reason: "B", strategy: .auto)
+        controller.request(makeConfig(apps: ["A", "B"]), reason: "B", strategy: .auto)
         await controller.waitForIdle()
 
         XCTAssertEqual(outcomes.value.map(\.reason), ["A", "B"])
         XCTAssertEqual(prefs.writes, 2)
-        XCTAssertEqual(prefs.snapshot["tilesize"], .double(64), "最终落点必须是 B")
+        XCTAssertEqual(prefs.snapshot["persistent-apps"]?.arrayValue?.count, 2, "最终落点必须是 B")
     }
 
     func testOutcomeIsDeliveredToTheCallback() async {
@@ -618,7 +613,7 @@ final class DockControllerTests: XCTestCase {
         let process = FakeDockProcess(pid: 100, restartsOn: [], kickstartRestarts: false)
         let controller = makeController(preferences: prefs, process: process)
 
-        controller.request(makeConfig(tilesize: 60), reason: "在飞", strategy: .auto)
+        controller.request(makeConfig(apps: ["A", "B"]), reason: "在飞", strategy: .auto)
         let started = ContinuousClock.now
         let settled = await controller.waitForIdle(upTo: .milliseconds(20))
         let elapsed = started.duration(to: ContinuousClock.now)
@@ -639,7 +634,7 @@ final class DockControllerTests: XCTestCase {
         let prefs = FakePreferences(domain: baseDomain())
         let controller = makeController(preferences: prefs)
 
-        controller.request(makeConfig(tilesize: 60), reason: "排队", strategy: .auto)
+        controller.request(makeConfig(apps: ["A", "B"]), reason: "排队", strategy: .auto)
         controller.dropPendingRequests()
         await controller.waitForIdle()
 

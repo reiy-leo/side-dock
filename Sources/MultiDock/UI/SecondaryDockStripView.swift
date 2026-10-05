@@ -17,6 +17,9 @@ struct SecondaryDockItem: Identifiable {
 struct SecondaryDockContentSnapshot {
     var items: [SecondaryDockItem]
     var iconSize: CGFloat
+    /// 这份内容对应的 Dock 栏位置（2026-10-05：每栏可设位置）。
+    /// 附着原生 Dock（与 Dock 方位同侧）走贴 Dock 几何；否则独立贴边。
+    var position: DockBarPosition = .bottom
 }
 
 /// 从一套 `DockConfig` 构建条目。**纯函数**（`runningBundleIDs` 由调用方注入），

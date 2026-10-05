@@ -219,7 +219,10 @@ private final class FakeSecondaryDockPresenter: SecondaryDockPresenting {
 @MainActor
 private final class FakeDockFaceProvider: DockFaceProviding {
     var face: DockFaceGeometry?
+    /// 独立贴边摆放用的屏幕矩形。默认给一块 1920×1200，用例可覆盖。
+    var screenFrame: CGRect? = CGRect(x: 0, y: 0, width: 1920, height: 1200)
     func currentFace() -> DockFaceGeometry? { face }
+    func currentScreenFrame() -> CGRect? { screenFrame }
 }
 
 @MainActor
@@ -255,7 +258,10 @@ final class SecondaryDockControllerTests: XCTestCase {
         )
     }
 
-    private func makeContent(items: Int = 3) -> SecondaryDockContentSnapshot {
+    private func makeContent(
+        items: Int = 3,
+        position: DockBarPosition = .bottom
+    ) -> SecondaryDockContentSnapshot {
         let entries = (0..<items).map { index in
             SecondaryDockItem(
                 id: "app-\(index)",
@@ -266,7 +272,7 @@ final class SecondaryDockControllerTests: XCTestCase {
                 isRunning: false
             )
         }
-        return SecondaryDockContentSnapshot(items: entries, iconSize: 36)
+        return SecondaryDockContentSnapshot(items: entries, iconSize: 36, position: position)
     }
 
     private func makeController(
@@ -493,19 +499,28 @@ final class SecondaryDockControllerTests: XCTestCase {
     }
 
     func testGeometryTickRepositionsOnOrientationChange() {
+        // 栏绑在右缘（附着右侧面 Dock）：Dock 从底部换到右侧，条从独立贴边切到附着竖条。
         let presenter = FakeSecondaryDockPresenter()
         let provider = FakeDockFaceProvider()
         let content = ContentBox()
         let controller = makeController(presenter: presenter, provider: provider, content: content)
         showBar(controller, presenter: presenter, provider: provider, content: content)
 
+        content.snapshot = makeContent(items: 3, position: .right)
+        controller.refresh()
+        let standaloneSize = SecondaryDockLayout.barSize(itemCount: 3, iconSize: 36, isVertical: true)
+        let standalone = SecondaryDockLayout.standalonePlacement(
+            barSize: standaloneSize, position: .right, screen: provider.screenFrame!
+        )
+        XCTAssertEqual(presenter.lastFrame, standalone.tucked, "前置：Dock 在底部时右缘栏独立贴边")
+
         provider.face = rightFace()
         controller.geometryTick()
 
-        XCTAssertEqual(presenter.lastIsVertical, true, "侧边 Dock 配竖条")
+        XCTAssertEqual(presenter.lastIsVertical, true, "侧边栏配竖条")
         let barSize = SecondaryDockLayout.barSize(itemCount: 3, iconSize: 36, isVertical: true)
         let expected = SecondaryDockLayout.placement(barSize: barSize, face: rightFace())
-        XCTAssertEqual(presenter.lastFrame, expected.tucked)
+        XCTAssertEqual(presenter.lastFrame, expected.tucked, "Dock 到了右缘，栏附着到 Dock 内侧")
     }
 
     // MARK: - 与原生 Dock 的可见性同步（自动隐藏）
@@ -621,6 +636,52 @@ final class SecondaryDockControllerTests: XCTestCase {
         let narrowPlacement = SecondaryDockLayout.placement(barSize: narrowSize, face: bottomFace())
         XCTAssertEqual(presenter.lastFrame, narrowPlacement.tucked, "切桌面后窗口宽度随新内容收缩")
     }
+
+    // MARK: - 独立贴边（2026-10-05：Dock 栏位置 ≠ 原生 Dock 方位）
+
+    func testStandaloneRightPositionIgnoresBottomDockGeometry() async {
+        // Dock 在底部、栏在右缘：独立贴边，与 Dock 几何无关；Dock 自动隐藏（face == nil）也不收。
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let mouse = MouseBox(point: CGPoint(x: -9999, y: -9999))
+        let controller = makeSyncController(presenter: presenter, provider: provider, content: content, mouse: mouse)
+
+        provider.face = bottomFace()
+        controller.geometryTick()
+        content.snapshot = makeContent(items: 3, position: .right)
+        controller.spaceDidChange(makeSpace())
+
+        let barSize = SecondaryDockLayout.barSize(itemCount: 3, iconSize: 36, isVertical: true)
+        let expected = SecondaryDockLayout.standalonePlacement(
+            barSize: barSize, position: .right, screen: provider.screenFrame!
+        )
+        XCTAssertEqual(presenter.lastFrame, expected.tucked, "独立贴边按自己的边摆（半露 = 滑出屏幕一半）")
+        XCTAssertEqual(presenter.lastIsVertical, true, "侧边栏配竖条")
+
+        // Dock 滑走：独立贴边的条不跟 Dock 的显隐走。
+        provider.face = nil
+        controller.geometryTick()
+        try? await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(presenter.outCount, 0, "独立贴边的条不随原生 Dock 收起")
+    }
+
+    func testSwitchingPositionRepositionsImmediately() {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(presenter: presenter, provider: provider, content: content)
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        // 同一根栏从底部改到右缘：下一次内容更新就要按新位置摆。
+        content.snapshot = makeContent(items: 3, position: .right)
+        controller.refresh()
+        let barSize = SecondaryDockLayout.barSize(itemCount: 3, iconSize: 36, isVertical: true)
+        let expected = SecondaryDockLayout.standalonePlacement(
+            barSize: barSize, position: .right, screen: provider.screenFrame!
+        )
+        XCTAssertEqual(presenter.lastFrame, expected.tucked, "位置改动立即生效")
+    }
 }
 
 // MARK: - 冻结闸门（AppState 路径）
@@ -658,11 +719,25 @@ final class SecondaryDockFreezeTests: XCTestCase {
         )
     }
 
+    /// 生成 N 个互不相同的可写入条目（真实键名不同，避免归一化去重把条数压掉）。
+    private func apps(count: Int, prefix: String = "App") -> [DockTile] {
+        (0..<count).map { index in
+            DockTile.makeFileTile(
+                url: URL(fileURLWithPath: "/Applications/\(prefix)\(index).app", isDirectory: true),
+                label: "\(prefix)\(index)",
+                bundleIdentifier: "com.example.\(prefix.lowercased())\(index)"
+            )
+        }
+    }
+
     private func makeState(
         preferences: FakePreferences,
         stores: (ConfigStore, BaselineStore),
-        provider: FakeSpaceProvider? = nil
+        provider: FakeSpaceProvider? = nil,
+        recentApps: [DockTile]? = nil,
+        stageManagerActive: Bool? = false
     ) -> AppState {
+        let injectedApps = recentApps ?? apps(count: 1, prefix: "Default")
         let state = AppState(
             dockController: DockController(
                 preferences: preferences,
@@ -678,25 +753,13 @@ final class SecondaryDockFreezeTests: XCTestCase {
             configStore: stores.0,
             baselineStore: stores.1,
             provider: provider ?? FakeSpaceProvider(isAvailable: false, reason: "测试替身"),
-            fileLog: makeTestFileLog()
+            fileLog: makeTestFileLog(),
+            recentAppsProvider: { limit in Array(injectedApps.prefix(limit)) },
+            stageManagerActiveProvider: { stageManagerActive }
         )
         // 冻结现在是产品默认值；这里的用例各自显式决定冻结状态，默认按「未冻结」测。
         state.updateSettings { $0.freezeNativeDockSwitching = false }
         return state
-    }
-
-    private func config(tilesize: Double = 52, apps: Int = 1) -> DockConfig {
-        var config = DockConfig()
-        config.appearance.tilesize = tilesize
-        // 各不相同的条目（真实键名不同），避免归一化去重把条数压掉。
-        config.pinnedApps = (0..<apps).map { index in
-            DockTile.makeFileTile(
-                url: URL(fileURLWithPath: "/Applications/App\(index).app", isDirectory: true),
-                label: "App\(index)",
-                bundleIdentifier: "com.example.app\(index)"
-            )
-        }
-        return config
     }
 
     func testFrozenSwitchSkipsApplyButStillSwitches() async {
@@ -712,8 +775,8 @@ final class SecondaryDockFreezeTests: XCTestCase {
         state.start()
         defer { state.stop() }
 
-        state.setDockConfigInMemory(config(), for: .defaultDock)
-        state.dockEdited(.defaultDock, reason: "准备")
+        // 默认 Dock（最近添加的应用）先应用一遍，让"已应用指纹"就位。
+        state.applyDefaultDock()
         await state.dockController.waitForIdle()
         state.updateSettings { $0.freezeNativeDockSwitching = true }
         await state.dockController.waitForIdle()
@@ -741,13 +804,14 @@ final class SecondaryDockFreezeTests: XCTestCase {
         state.start()
         defer { state.stop() }
 
-        state.setDockConfigInMemory(config(), for: .defaultDock)
-        state.dockEdited(.defaultDock, reason: "准备")
+        state.applyDefaultDock()
         await state.dockController.waitForIdle()
-        // 桌面 2 配一份不同的 Dock 且暂不应用（关掉 autoApplyOnEdit），
+        // 桌面 2 绑一根内容不同的栏，且暂不应用（关掉 autoApplyOnEdit）——
         // 否则目标内容与已应用内容一致，指纹短路根本不会写，测不出"照常应用"。
         state.updateSettings { $0.autoApplyOnEdit = false }
-        state.setOverride(config(tilesize: 88), for: spaces[1], reason: "桌面 2 独立")
+        let barID = state.addDockBar()
+        state.updateDockBarInMemory(DockBar(id: barID, name: "桌面 2", apps: DockStripRules.normalizedApps(apps(count: 2))))
+        state.bindDockBar(barID, to: spaces[1].id)
 
         let writesBefore = preferences.writeCount
         state.switchToNextDesktop()
@@ -756,32 +820,36 @@ final class SecondaryDockFreezeTests: XCTestCase {
         XCTAssertGreaterThan(preferences.writeCount, writesBefore, "未冻结时预应用照常写偏好")
     }
 
-    func testFrozenManualDockEditRoutesToDefaultDock() {
+    func testFrozenManualDockEditIsNotCapturedAnywhere() {
+        // 2026-10-05 起默认 Dock 由「最近添加的应用」自动生成，冻结模式下
+        // 原生 Dock 的手动改动无处可回 —— 只能如实记日志说明原因。
         let preferences = FakePreferences(domain: baseDomain())
         let state = makeState(preferences: preferences, stores: makeStores("freeze-edit"))
         state.start()
         defer { state.stop() }
         state.updateSettings { $0.freezeNativeDockSwitching = true }
 
-        state.handleUserDockEdit(config(tilesize: 77))
+        let edited = DockConfig(pinnedApps: DockStripRules.normalizedApps(apps(count: 3, prefix: "Manual")))
+        state.handleUserDockEdit(edited)
 
-        XCTAssertEqual(
-            state.settings.defaultDock.appearance.tilesize, 77,
-            "冻结模式下手动改动归入默认 Dock"
-        )
-        XCTAssertTrue(state.bindings.isEmpty, "不能回存到「当前桌面的绑定」——冻结后那个语义不成立")
+        XCTAssertTrue(state.dockBars.allSatisfy { $0.spaceID == nil }, "冻结后没有「当前桌面的绑定」可回存")
+        XCTAssertTrue(state.log.contains { $0.message.contains("手动改动不回存") })
     }
 
     func testAppSettingsDecodeDefaultsForSecondaryDockFields() throws {
-        // 旧配置文件没有这两个键 → 走 decodeIfPresent 的默认值，不能解码失败。
+        // 旧配置文件没有这些键 → 走 decodeIfPresent 的默认值，不能解码失败。
         let legacy = try JSONDecoder().decode(AppSettings.self, from: Data("{\"restoreOnQuit\": true}".utf8))
         XCTAssertTrue(legacy.showSecondaryDock, "次级条默认开")
         XCTAssertTrue(legacy.freezeNativeDockSwitching, "冻结默认开（2026-10-04：原生 Dock 不逐桌面重启）")
+        XCTAssertEqual(legacy.defaultDockAppCount, 10, "默认 Dock 显示 10 个最近添加的应用")
+        XCTAssertTrue(legacy.dockBars.isEmpty, "栏列表为空 = 待迁移")
 
         // 往返保持（冻结翻到 false 这一侧，与默认值相反的方向才算验过）。
         var settings = AppSettings()
         settings.showSecondaryDock = false
         settings.freezeNativeDockSwitching = false
+        settings.defaultDockAppCount = 7
+        settings.dockBars = [DockBar(name: "工作", position: .right)]
         let data = try JSONEncoder().encode(settings)
         let restored = try JSONDecoder().decode(AppSettings.self, from: data)
         XCTAssertEqual(restored, settings)
@@ -797,18 +865,28 @@ final class SecondaryDockFreezeTests: XCTestCase {
         state.start()
         defer { state.stop() }
 
-        // 先制造「原生 Dock 停在某个桌面的 override 上」的局面：冻结开启后必须对齐回默认 Dock。
-        state.updateSettings { $0.defaultDock = config(tilesize: 52) }
-        state.setOverride(config(tilesize: 88), for: spaces[0], reason: "预置独立 Dock")
+        // 先制造「原生 Dock 停在某个桌面的绑定栏内容上」的局面：冻结开启后必须对齐回默认 Dock。
+        state.updateSettings { $0.autoApplyOnEdit = false }
+        let barID = state.addDockBar()
+        state.updateDockBarInMemory(
+            DockBar(id: barID, name: "独占", apps: DockStripRules.normalizedApps(apps(count: 1, prefix: "Bar")))
+        )
+        state.bindDockBar(barID, to: spaces[0].id)
+        state.applyConfigForDesktop(spaces[0], reason: "预置")
         await state.dockController.waitForIdle()
-        XCTAssertEqual(preferences.readDomain()["tilesize"]?.doubleValue, 88, "预置条件：原生 Dock 已是 override")
+        XCTAssertTrue(
+            preferences.readDomain()["persistent-apps"]?.fingerprintToken.contains("Bar0") ?? false,
+            "预置条件：原生 Dock 已是绑定栏的内容"
+        )
 
         let writesBefore = preferences.writeCount
         state.setFreezeNativeDockSwitching(true)
         await state.dockController.waitForIdle()
 
-        XCTAssertEqual(preferences.readDomain()["tilesize"]?.doubleValue, 52,
-                       "开启冻结后原生 Dock 立刻对齐默认 Dock，不等下一次切换")
+        XCTAssertTrue(
+            preferences.readDomain()["persistent-apps"]?.fingerprintToken.contains("Default0") ?? false,
+            "开启冻结后原生 Dock 立刻对齐默认 Dock（最近添加的应用），不等下一次切换"
+        )
         XCTAssertGreaterThan(preferences.writeCount, writesBefore, "对齐是一次真实写入（而不是只翻开关）")
     }
 
@@ -820,21 +898,29 @@ final class SecondaryDockFreezeTests: XCTestCase {
         state.start()
         defer { state.stop() }
 
-        state.updateSettings { $0.defaultDock = config(tilesize: 52) }
-        // 活动桌面的 override 先建好但不应用（关 autoApply），由「解冻」这一步来应用它。
+        // 活动桌面的绑定栏先建好但不应用（关 autoApply），由「解冻」这一步来应用它。
         state.updateSettings { $0.autoApplyOnEdit = false }
-        state.setOverride(config(tilesize: 88), for: spaces[0], reason: "活动桌面的独立 Dock")
+        let barID = state.addDockBar()
+        state.updateDockBarInMemory(
+            DockBar(id: barID, name: "独占", apps: DockStripRules.normalizedApps(apps(count: 1, prefix: "Bar")))
+        )
+        state.bindDockBar(barID, to: spaces[0].id)
         state.setFreezeNativeDockSwitching(true)
         await state.dockController.waitForIdle()
-        XCTAssertEqual(preferences.readDomain()["tilesize"]?.doubleValue, 52, "预置条件：冻结在默认 Dock 上")
+        XCTAssertTrue(
+            preferences.readDomain()["persistent-apps"]?.fingerprintToken.contains("Default0") ?? false,
+            "预置条件：冻结在默认 Dock（启动台 + 最近应用）上"
+        )
 
         let writesBefore = preferences.writeCount
         state.setFreezeNativeDockSwitching(false)
         await state.dockController.waitForIdle()
 
-        XCTAssertEqual(preferences.readDomain()["tilesize"]?.doubleValue, 88,
-                       "解冻后当前桌面的生效配置立刻应用，别等下一次切换")
-        XCTAssertGreaterThan(preferences.writeCount, writesBefore)
+        XCTAssertGreaterThan(preferences.writeCount, writesBefore, "解冻后当前桌面的生效配置立刻应用，别等下一次切换")
+        XCTAssertTrue(
+            preferences.readDomain()["persistent-apps"]?.fingerprintToken.contains("Bar0") ?? false,
+            "解冻后应用的是活动桌面绑定栏的内容"
+        )
     }
 
     func testLaunchInFreezeModeAlignsDefaultDockAfterSelfHeal() async throws {
@@ -844,8 +930,8 @@ final class SecondaryDockFreezeTests: XCTestCase {
         let stores = makeStores("freeze-launch")
         let state = makeState(preferences: preferences, stores: stores, provider: provider)
 
-        // 造一笔「上次没还原完」的欠账：自愈先写回基准（tilesize 36），冻结对齐再覆盖成默认 Dock（52）。
-        // 最终落在 52 就证明对齐排在自愈之后 —— 反了的话最终会是 36。
+        // 造一笔「上次没还原完」的欠账：自愈先写回基准（空内容），冻结对齐再覆盖成默认 Dock。
+        // 最终落在默认 Dock 的内容上就证明对齐排在自愈之后 —— 反了的话最终会是基准的空内容。
         try stores.1.writeSessionMarker(
             BaselineStore.SessionMarker(
                 pid: 999_999,
@@ -855,7 +941,6 @@ final class SecondaryDockFreezeTests: XCTestCase {
             )
         )
         state.updateSettings { $0.freezeNativeDockSwitching = true }
-        state.updateSettings { $0.defaultDock = config(tilesize: 52) }
         state.start()
         defer { state.stop() }
 
@@ -863,13 +948,15 @@ final class SecondaryDockFreezeTests: XCTestCase {
         await state.waitForFrozenDockAlignment()
         await state.dockController.waitForIdle()
 
-        XCTAssertEqual(preferences.readDomain()["tilesize"]?.doubleValue, 52,
-                       "启动对齐在自愈之后执行，最终停在冻结配置（默认 Dock）上")
+        XCTAssertEqual(
+            preferences.readDomain()["persistent-apps"]?.arrayValue?.count, 2,
+            "启动对齐在自愈之后执行，最终停在冻结配置（默认 Dock = 启动台 + 最近应用）上"
+        )
     }
 
-    // MARK: - 冻结模式的内容口径（条宽随内容，图标尺寸取默认 Dock）
+    // MARK: - 冻结模式的内容口径（图标尺寸跟随系统；快照带栏位置）
 
-    func testFreezeModeContentUsesDefaultDockIconSizeAndOwnItemCount() {
+    func testStripContentFollowsSystemTileSizeAndBarPosition() {
         let spaces = FakeSpaceProvider.desktops(count: 2)
         let provider = FakeSpaceProvider(desktops: spaces, activeSpaceID: spaces[0].id64)
         let preferences = FakePreferences(domain: baseDomain())
@@ -877,20 +964,27 @@ final class SecondaryDockFreezeTests: XCTestCase {
         state.start()
         defer { state.stop() }
 
-        state.updateSettings { $0.freezeNativeDockSwitching = true }
-        state.updateSettings { $0.defaultDock = config(tilesize: 36, apps: 1) }
-        // 桌面 1：1 个 App；桌面 2：3 个 App（都没有启动台 → 内容构建各补一枚）。
+        // 桌面 1：1 个 App（底部）；桌面 2：3 个 App（右侧）。
         state.updateSettings { $0.autoApplyOnEdit = false }
-        state.setOverride(config(tilesize: 44, apps: 1), for: spaces[0], reason: "桌面 1")
-        state.setOverride(config(tilesize: 48, apps: 3), for: spaces[1], reason: "桌面 2")
+        let bar1 = state.addDockBar()
+        state.updateDockBarInMemory(DockBar(id: bar1, name: "桌面 1", apps: apps(count: 1, prefix: "B1")))
+        state.bindDockBar(bar1, to: spaces[0].id)
+        let bar2 = state.addDockBar()
+        state.updateDockBarInMemory(DockBar(id: bar2, name: "桌面 2", position: .right, apps: apps(count: 3, prefix: "B2")))
+        state.bindDockBar(bar2, to: spaces[1].id)
 
         let desktop1 = state.secondaryDockContent(for: spaces[0])
         XCTAssertEqual(desktop1?.items.count, 3,
-                       "桌面 1 内容口径：1 Finder + (1 App + 1 启动台) = 3；条宽按本桌面内容撑开（2026-10-05 修订，废弃固定槽位）")
-        XCTAssertEqual(desktop1?.iconSize, 36, "冻结模式图标尺寸取默认 Dock，不跟桌面走")
+                       "桌面 1 内容口径：1 Finder + (1 App + 1 启动台) = 3；条宽按本桌面内容撑开")
+        XCTAssertEqual(desktop1?.iconSize, 36, "图标尺寸跟随系统（域里 tilesize = 36）")
+        XCTAssertEqual(desktop1?.position, .bottom)
 
-        state.updateSettings { $0.freezeNativeDockSwitching = false }
-        let unfrozen = state.secondaryDockContent(for: spaces[0])
-        XCTAssertEqual(unfrozen?.iconSize, 44, "未冻结时图标尺寸跟随该桌面生效配置")
+        let desktop2 = state.secondaryDockContent(for: spaces[1])
+        XCTAssertEqual(desktop2?.items.count, 5, "桌面 2：1 Finder + (3 App + 1 启动台) = 5")
+        XCTAssertEqual(desktop2?.position, .right, "快照要带上栏的位置，调度器据此选附着/独立贴边")
+
+        // 未绑定栏的桌面没有条可显示。
+        let orphan = FakeSpaceProvider.desktops(count: 1, displayUUID: "DISP-2", baseID: 900)[0]
+        XCTAssertNil(state.secondaryDockContent(for: orphan), "没绑栏的桌面不显示条")
     }
 }

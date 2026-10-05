@@ -3,6 +3,25 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 42 次）— 设置窗口重构（v4 内容模型）：默认 Dock 自动生成 + Dock 栏实体
+
+**用户说**：「重构设置窗口，默认Dock栏是显示/Applications以及用户Applications最新添加的应用（修改时间）10个应用，这个数值范围1-15个用户可以自行调整。大小、放大、自动隐藏、特效、最小化到应用都跟随系统设置（这些选项都不能设置，都跟系统一样）桌面：Dock栏列表，默认可以有5个（每个Dock栏都可以设置位置，避开台前调度占用的那边，其他两边都可以用，button group，其他设置都跟随系统，用户不能设置｜Dock栏都是在此设置页面都是横向显示｜设置中的Dock栏默认显示8个图标的位置，如果用户设置可更多可以以滚动显示更多｜最多设置15个，最少设置1个），dock栏名称右侧可以选择桌面下拉列表（缩略图），可以选择位置下拉列表。」
+
+**做了什么**：
+
+1. **数据源探查（→ spikes.md 实验 26 / facts.md 两条）**：台前调度开关 = `com.apple.WindowManager` 的 `GloballyEnabled`（本机 = 1，零权限可读，其窗口条固定占左缘 → 位置选项避开左）；桌面缩略图 = WallpaperKit `Index.plist` 的壁纸（本机 `Spaces` 空 → 回落 `AllSpacesAndDisplays` 的 `Iridescence.heic`，`NSImage` 直接可载；真·窗口缩略图做不到——其他空间不渲染，实验 24 同源）。
+2. **模型层（v4）**：`DockConfig` 去外观化（`DockAppearance` 删除，指纹内容口径）；新 `DockBar`（name/position/spaceID/apps/otherItems，1–15 图标）+ `DockBarPosition`（底/左/右 + 台前调度避让）+ `DockBarCatalog`（旧 override 迁移成栏 + 补足 5 根）+ `RecentAppsScanner`（/Applications + ~/Applications 按 mtime 取前 N）+ `StageManagerStatus`。`AppSettings`：+`dockBars` / `defaultDockAppCount`（默认 10），−`defaultDock`（运行时生成，只存个数）；`DesktopBinding.override` 废弃（迁移后清空）。
+3. **流水线**：`DockController.apply` 只写内容键（`entries` 变 `nonisolated` 纯函数）；三明治显出参数改读域里实时 `autohide`；**还原路径新增 `extraEntries`**——基准里的外观键照写（无痕闭环，旧版本遗留收尾）；恢复历史备份只覆盖内容键。`AppState`：默认 Dock 运行时重建（归一化补启动台在首）、bar CRUD/绑定唯一性（一桌面一栏，后来者顶掉先到者）/孤儿栏只解绑不删、冻结对齐前重扫、回存落点=活动桌面绑定栏（冻结/未绑栏→如实记日志不回存）、`secondaryDockContent` 只出绑定栏内容 + 图标尺寸读系统实时 tilesize（28–48 钳制）。
+4. **次级条运行时**：快照带 `position`；**附着模式**（栏位置 == Dock 方位）行为不变；**独立贴边**（≠）= 贴自己那条屏幕边、半露 = 滑出屏幕一半（`standalonePlacement`）、与 Dock 自动隐藏显隐无关；face == nil 时用 `lastFaceOrientation` 兜底防附着条被误判成独立贴边（修了一个真 bug）；`DockFaceProviding` +`currentScreenFrame()`。
+5. **UI**：通用 Tab = 计数 Stepper（1–15）+ 只读最近应用预览 + 说明（外观跟随系统），删图标条编辑器/外观编辑器/「本机不支持」区；桌面 Tab 全新（`DesktopListView` 重写 + `DockBarEditor` 新建）：栏列表行 = 名称(≤10) + 桌面下拉（缩略图常显在控件外 + 纯文本菜单行）+ 位置分段按钮 + 删除，编辑器横向 8 槽可见滚动、1–15、拖拽排序/拖 .app/右键或垃圾桶移除；桌面命名保留在底部小节。删 `DockStripEditor` / `DockAppearanceEditor` 两个文件。
+6. **测试**：369 → **384 个全绿**（+15）。重写 AppStateDockTests / SecondaryDockTests 冻结组 / BindingHistoryTests（孤儿栏 + 栏撤销）/ DockControllerTests（内容键 + extraEntries 还原）/ DockAcceptanceTests（P3 换内容差异、P4 弄脏换内容、回存外部改动改 `defaults import` 写内容键、未绑栏场景改「不回存」断言）/ 各小文件；新增 `DockBarModelTests`（位置可用性 / 解码兼容 / 迁移 / 独立贴边几何 / 扫描器排序与钳制）。UI 快照验收通过（缩略图、编辑器、暗色全部正常；顺手修了 menu Picker 自定义行渲染成色块的坑——缩略图移到控件外）。
+7. **打包**：`./scripts/build-app.sh` 已重跑（release 零警告）。文档同步：PLAN §3.7 顶部重构记录 + §3.12 位置附录、facts 两条、rules 新坑 7 条、spikes 实验 26、AGENTS 全节。
+
+**影响 / 未解决**：
+- **手测新增**：位置切换（底↔右）真机观感、台前调度开着时左被禁、独立贴边条的半露/hover 手感（并入 A11）。
+- **开放问题（等用户反馈）**：① 最近应用是否要排除系统自带 App（macOS 更新会顺带把 Safari 等顶进前 N）；② 是否需要周期性重扫（现在只在启动/改数量/手动应用前重扫，装新 App 要等下一次）；③ 下拉菜单行是纯文本（缩略图只在关闭态常显）——SwiftUI menu Picker 的限制，若要行内缩略图得换成自绘菜单。
+- 旧版逐桌面 override 的「其他项」迁移保留在栏数据里，新编辑器不显示（随原生 Dock 写入仍在）。
+
 ### 2026-10-05（第 41 次）— 实验 25：「随幅度渐进沉入」（v3.7）证伪；采纳残余：拉回出场改「沉没位 + 0.12 s 升起」
 
 **用户说**：「可以做到整个secondary dock检测到左右滑动桌面时，根据滑动幅度的大小，幅度最大（1/4桌面宽度）时全部隐藏到原生dock后方」「把上面的实现方式总结成prompt，让我审核」「好的，按这个方案来」；spike 第一轮：「手势滑动紫条随桌面滑动没动画、切换完成后看不到、⌃→ 也只有第一个桌面有」；第二轮（先被误读后纠正）：「左右滑动过程中并没有看到淡出的效果，但滑动结束后，看到淡入从底部上来的效果了」；随后给出新规格：「桌面滑动时 secondary dock 不随桌面滑动，幅度超过 0.15 倍桌面宽度时自动隐藏，滑动结束后 0.15 秒内从原生 dock 栏底部淡出」并要求检查现行实现。

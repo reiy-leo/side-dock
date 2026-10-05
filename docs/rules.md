@@ -368,6 +368,30 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
     （同一空间重复事件 / 全屏进出 / 从隐藏恢复都不拉，防叠淡入闪烁）。判据教训：`CGWindowList`
     「在屏」证明不了「动画期间不滑动」，这类命题只能真人手势实测。
 
+### 2026-10-05 设置窗口重构的新坑（v4 内容模型：默认 Dock 自动生成 + Dock 栏实体）
+
+1. **SwiftUI menu `Picker` 的行标签塞自定义视图（HStack + 图片）会渲染成一块高亮色**——
+   关闭态什么都看不出来（桌面下拉第一次出图就是这样）。**缩略图放 Picker 外面**做常显，
+   菜单行保持纯文本（`DesktopListView.desktopPicker`）。
+2. **`DockConfig` 已无外观**：应用路径**只写内容键**（`DockController.entries`）；三明治的
+   显出参数改读**域里的实时 `autohide`**（配置不再携带）。**还原路径必须经
+   `apply(extraEntries:)` 把基准里的外观键一并写回**（旧版本写过，无痕闭环）；
+   **恢复历史备份只覆盖内容键**（备份是把 Dock 拉回可用，不该冲掉系统外观）。
+3. **默认 Dock 是运行时生成物**（`AppState.rebuildDefaultDock` → `RecentAppsScanner`）：
+   归一化补**启动台在首**（否则冻结的原生 Dock 丢启动台）；config.json 只存
+   `defaultDockAppCount`。**冻结模式的启动对齐因此默认会真实写一次 Dock**——单测里
+   start() 后先 `waitForIdle` 再取 writeCount 基线，别假设"启动零写入"。
+4. **测试夹具的时序坑**：makeState 里 pre-start `updateSettings`（解冻）会**落盘并覆盖
+   预置的 config.json**——要在 start() 前预置配置的用例，必须在 makeState **之后**再 save。
+5. **迁移的落盘顺序**：`loadConfiguration` 迁移后立刻 `persistConfiguration()` 会把
+   `self.bindings`（此时还是空的）写进去、丢桌面命名——必须先把归一化后的 bindings 赋给
+   实例属性再落盘。
+6. **外观删除后 `DockController.entries` 变纯函数**，标了 `nonisolated`（DockController 是
+   `@MainActor`，静态方法默认继承隔离，非隔离测试调不到）。
+7. **次级条「附着 vs 独立贴边」的判定在 face == nil（自动隐藏）时要用 `lastFaceOrientation`
+   兜底**——否则跟随 Dock 隐藏的附着条会在 Dock 滑走瞬间被误判成独立贴边"常驻"
+   （`SecondaryDockController.applyCurrentState` 的 `rememberedAttached` 分支）。
+
 ---
 
 

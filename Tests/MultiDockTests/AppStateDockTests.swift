@@ -5,6 +5,9 @@ import XCTest
 ///
 /// 用测试替身替代真实偏好域与真实 Dock 进程，所以不会动用户的 Dock。
 /// 真实写入链路由 `DockAcceptanceTests`（需显式开启）覆盖。
+///
+/// 2026-10-05 起的内容模型：默认 Dock = 注入的「最近添加的应用」，逐桌面差异由
+/// `DockBar`（绑定 + 内容）承载，外观键不再出现在任何写入里。
 @MainActor
 final class AppStateDockTests: XCTestCase {
 
@@ -45,12 +48,12 @@ final class AppStateDockTests: XCTestCase {
         preferences: FakePreferences,
         process: FakeDockProcess = FakeDockProcess(),
         stores: (ConfigStore, BaselineStore),
-        provider: FakeSpaceProvider? = nil
+        provider: FakeSpaceProvider? = nil,
+        recentApps: [DockTile]? = nil,
+        stageManagerActive: Bool? = false
     ) -> AppState {
-        // 注意：这里**不能**顺手 updateSettings（那会立刻落盘），否则
-        // 「不落盘」断言与预置 config 的用例会被污染。要走逐桌面应用路径的用例，
-        // 在 start() 后自行调 `unfreeze(_:)`。
-        AppState(
+        let injectedApps = recentApps ?? Self.apps(count: 1, prefix: "Default")
+        let state = AppState(
             dockController: DockController(
                 preferences: preferences,
                 reloader: DockReloader(
@@ -67,8 +70,14 @@ final class AppStateDockTests: XCTestCase {
             // 默认给一个"私有 API 不可用"的提供者：这些用例大多不关心桌面切换，
             // 换成假的可以避免测试去读真实显示器上的桌面。
             provider: provider ?? FakeSpaceProvider(isAvailable: false, reason: "测试替身"),
-            fileLog: makeTestFileLog()
+            fileLog: makeTestFileLog(),
+            recentAppsProvider: { limit in Array(injectedApps.prefix(limit)) },
+            stageManagerActiveProvider: { stageManagerActive }
         )
+        // 冻结的启动对齐在「默认 Dock 自动生成」之后会真实写一次 Dock；
+        // 本文件的用例各自管理写入次数，默认按「未冻结」起跑（与旧文件同口径）。
+        state.updateSettings { $0.freezeNativeDockSwitching = false }
+        return state
     }
 
     /// 冻结自 2026-10-04 起是产品默认值；要走逐桌面应用路径的用例在 start() 后调它。
@@ -77,62 +86,78 @@ final class AppStateDockTests: XCTestCase {
         state.updateSettings { $0.freezeNativeDockSwitching = false }
     }
 
-    private func config(tilesize: Double = 52) -> DockConfig {
-        var config = DockConfig()
-        config.appearance.tilesize = tilesize
-        config.pinnedApps = DockStripRules.normalizedApps([
+    /// 生成 N 个互不相同的可写入条目（真实键名不同，避免归一化去重把条数压掉）。
+    private static func apps(count: Int, prefix: String) -> [DockTile] {
+        (0..<count).map { index in
             DockTile.makeFileTile(
-                url: URL(fileURLWithPath: "/Applications/Safari.app", isDirectory: true),
-                label: "Safari",
-                bundleIdentifier: "com.apple.Safari"
-            ),
-        ])
-        return config
+                url: URL(fileURLWithPath: "/Applications/\(prefix)\(index).app", isDirectory: true),
+                label: "\(prefix)\(index)",
+                bundleIdentifier: "com.example.\(prefix.lowercased())\(index)"
+            )
+        }
     }
 
-    // MARK: - 能力探测
+    private func apps(count: Int, prefix: String = "App") -> [DockTile] {
+        Self.apps(count: count, prefix: prefix)
+    }
 
-    func testStartupReportsUnavailableAppearanceKeys() {
-        let preferences = FakePreferences(domain: baseDomain())
-        let state = makeState(preferences: preferences, stores: makeStores("caps"))
-        state.start()
-        defer { state.stop() }
-
-        // 域里没有 show-process-indicators；autohide-delay / autohide-time-modifier
-        // 读回来是 nil，压根不进 domainEntries，所以不算"缺失"。
-        XCTAssertEqual(state.unavailableAppearanceKeys, ["show-process-indicators"])
-        XCTAssertTrue(state.availableWhitelistedKeys.contains("tilesize"))
-        XCTAssertFalse(state.availableWhitelistedKeys.contains("mru-spaces"))
+    /// 给桌面 1（或指定桌面）绑一根内容为 `apps` 的栏。autoApply 由调用方自己控制。
+    @discardableResult
+    private func bindBar(
+        _ state: AppState,
+        to space: DesktopSpace?,
+        apps barApps: [DockTile],
+        name: String = "测试栏"
+    ) -> UUID {
+        let id = state.addDockBar()
+        state.updateDockBarInMemory(DockBar(id: id, name: name, apps: DockStripRules.normalizedApps(barApps)))
+        if let space {
+            state.bindDockBar(id, to: space.id)
+        }
+        return id
     }
 
     // MARK: - 立即应用
 
-    func testApplyRefusesEmptyDefaultDock() async {
+    func testEmptyScanYieldsLaunchpadOnlyDefaultDock() async {
+        // 扫不到任何应用（理论外）时，默认 Dock 只剩启动台 —— 不是"空配置"，
+        // 所以「立即应用」照常可写（不会把 Dock 清成没有启动台）。
         let preferences = FakePreferences(domain: baseDomain())
-        let state = makeState(preferences: preferences, stores: makeStores("empty"))
+        let state = makeState(
+            preferences: preferences,
+            stores: makeStores("empty"),
+            recentApps: []
+        )
         state.start()
         defer { state.stop() }
 
-        state.applyDefaultDock()
-        await state.dockController.waitForIdle()
-
-        XCTAssertEqual(preferences.writeCount, 0, "默认 Dock 是空的就绝不能写 —— 那会把 Dock 清空")
-        XCTAssertTrue(state.log.contains { $0.message.contains("默认 Dock 还是空的") })
-        XCTAssertFalse(state.hasAppliedDockConfig)
-    }
-
-    func testApplyWritesAndMarksSessionDirty() async {
-        let preferences = FakePreferences(domain: baseDomain())
-        let state = makeState(preferences: preferences, stores: makeStores("apply"))
-        state.start()
-        defer { state.stop() }
-
-        state.setDefaultDock(config(tilesize: 52))
         state.applyDefaultDock()
         await state.dockController.waitForIdle()
 
         XCTAssertEqual(preferences.writeCount, 1)
-        XCTAssertEqual(preferences.lastEntries?["tilesize"], .double(52))
+        XCTAssertEqual(preferences.lastEntries?["persistent-apps"]?.arrayValue?.count, 1, "只有启动台")
+        XCTAssertTrue(state.hasAppliedDockConfig)
+    }
+
+    func testApplyWritesRecentAppsAndMarksSessionDirty() async {
+        let preferences = FakePreferences(domain: baseDomain())
+        let state = makeState(
+            preferences: preferences,
+            stores: makeStores("apply"),
+            recentApps: apps(count: 3, prefix: "Recent")
+        )
+        state.start()
+        defer { state.stop() }
+
+        state.applyDefaultDock()
+        await state.dockController.waitForIdle()
+
+        XCTAssertEqual(preferences.writeCount, 1)
+        // persistent-apps = 启动台（自动补首）+ 3 个最近应用；不含任何外观键。
+        let written = preferences.lastEntries ?? [:]
+        XCTAssertEqual(written["persistent-apps"]?.arrayValue?.count, 4)
+        XCTAssertNil(written["tilesize"], "外观键（大小）不再写入 —— 跟随系统")
+        XCTAssertNil(written["orientation"], "外观键（位置）不再写入 —— 跟随系统")
         XCTAssertTrue(state.hasAppliedDockConfig)
         XCTAssertTrue(state.lastApplySummary.contains("applied"))
         XCTAssertTrue(state.log.contains { $0.message.hasPrefix("Dock 应用成功") })
@@ -140,28 +165,34 @@ final class AppStateDockTests: XCTestCase {
 
     func testApplyNotifiesLifecycleWithFingerprint() async {
         let preferences = FakePreferences(domain: baseDomain())
-        let state = makeState(preferences: preferences, stores: makeStores("notify"))
+        let state = makeState(
+            preferences: preferences,
+            stores: makeStores("notify"),
+            recentApps: apps(count: 1)
+        )
         state.start()
         defer { state.stop() }
 
         let reported = Box<[String]>([])
         state.onDockApplied = { reported.value.append($0) }
 
-        state.setDefaultDock(config())
         state.applyDefaultDock()
         await state.dockController.waitForIdle()
 
-        XCTAssertEqual(reported.value, [config().fingerprint],
+        XCTAssertEqual(reported.value, [state.defaultDock.fingerprint],
                        "会话标记要拿到指纹，否则强杀自愈无法判断 Dock 是否被改过")
     }
 
     func testRepeatedApplyOfIdenticalContentDoesNotTouchDockAgain() async {
         let preferences = FakePreferences(domain: baseDomain())
-        let state = makeState(preferences: preferences, stores: makeStores("idem"))
+        let state = makeState(
+            preferences: preferences,
+            stores: makeStores("idem"),
+            recentApps: apps(count: 2)
+        )
         state.start()
         defer { state.stop() }
 
-        state.setDefaultDock(config())
         state.applyDefaultDock()
         await state.dockController.waitForIdle()
         state.applyDefaultDock()
@@ -171,69 +202,132 @@ final class AppStateDockTests: XCTestCase {
         XCTAssertTrue(state.log.contains { $0.message.contains("内容与当前一致") })
     }
 
-    // MARK: - 编辑后立即应用
+    // MARK: - 默认 Dock 数量（1–15）
 
-    func testEditAppliesWhenAutoApplyIsOn() async {
+    func testDefaultDockCountIsClampedToLegalRange() async {
         let preferences = FakePreferences(domain: baseDomain())
-        let state = makeState(preferences: preferences, stores: makeStores("auto-on"))
+        let state = makeState(
+            preferences: preferences,
+            stores: makeStores("count-clamp"),
+            recentApps: apps(count: 20, prefix: "Recent")
+        )
+        state.start()
+        defer { state.stop() }
+        state.updateSettings { $0.autoApplyOnEdit = false }
+
+        state.setDefaultDockAppCount(0)
+        XCTAssertEqual(state.settings.defaultDockAppCount, 1)
+        state.setDefaultDockAppCount(99)
+        XCTAssertEqual(state.settings.defaultDockAppCount, DockBar.maxApps)
+        // 15 个应用 + 自动补首的启动台
+        XCTAssertEqual(state.defaultDock.pinnedApps.count, DockBar.maxApps + 1)
+
+        state.setDefaultDockAppCount(5)
+        XCTAssertEqual(state.defaultDock.pinnedApps.count, 6, "数量改动立刻重算默认 Dock")
+    }
+
+    func testCountChangeAppliesWhenAutoApplyIsOn() async {
+        let preferences = FakePreferences(domain: baseDomain())
+        let state = makeState(
+            preferences: preferences,
+            stores: makeStores("count-apply"),
+            recentApps: apps(count: 15, prefix: "Recent")
+        )
         state.start()
         defer { state.stop() }
 
-        state.setDefaultDock(config(tilesize: 64))
-        state.dockConfigEdited(reason: "测试改动")
+        state.setDefaultDockAppCount(12)
         await state.dockController.waitForIdle()
 
         XCTAssertEqual(preferences.writeCount, 1)
-        XCTAssertEqual(preferences.lastEntries?["tilesize"], .double(64))
+        XCTAssertEqual(preferences.lastEntries?["persistent-apps"]?.arrayValue?.count, 13, "启动台 + 12 个")
     }
 
-    func testEditDoesNotApplyWhenAutoApplyIsOff() async {
+    func testCountChangeDoesNotApplyWhenAutoApplyIsOff() async {
         let preferences = FakePreferences(domain: baseDomain())
-        let state = makeState(preferences: preferences, stores: makeStores("auto-off"))
+        let state = makeState(
+            preferences: preferences,
+            stores: makeStores("count-off"),
+            recentApps: apps(count: 15, prefix: "Recent")
+        )
         state.start()
         defer { state.stop() }
 
         state.updateSettings { $0.autoApplyOnEdit = false }
-        state.setDefaultDock(config(tilesize: 64))
-        state.dockConfigEdited(reason: "测试改动")
+        state.setDefaultDockAppCount(12)
         await state.dockController.waitForIdle()
 
         XCTAssertEqual(preferences.writeCount, 0, "关掉开关就只改本地配置，不碰 Dock")
-        XCTAssertTrue(state.log.contains { $0.message.contains("改动只存在本地配置里") })
+        XCTAssertEqual(state.defaultDock.pinnedApps.count, 13, "但内存里的默认 Dock 已重算（启动台 + 12）")
     }
 
-    // MARK: - 落盘时机
-
-    func testSetDefaultDockDoesNotPersistByItself() throws {
-        // 拖拽排序的每一次 dropEntered 都会走 setDefaultDock；它不该写盘。
-        let stores = makeStores("nopersist")
-        let state = makeState(preferences: FakePreferences(domain: baseDomain()), stores: stores)
+    func testDefaultDockContentIsNotPersisted() throws {
+        // 默认 Dock 的内容是扫描出来的运行时状态；config.json 只存个数。
+        let stores = makeStores("not-persisted")
+        let state = makeState(
+            preferences: FakePreferences(domain: baseDomain()),
+            stores: stores,
+            recentApps: apps(count: 2)
+        )
         state.start()
         defer { state.stop() }
-
-        state.setDefaultDock(config(tilesize: 64))
-
-        XCTAssertFalse(FileManager.default.fileExists(atPath: stores.0.fileURL.path),
-                       "setDefaultDock 不该落盘")
-    }
-
-    func testDockConfigEditedPersistsOnce() throws {
-        let stores = makeStores("persist")
-        let state = makeState(preferences: FakePreferences(domain: baseDomain()), stores: stores)
-        state.start()
-        defer { state.stop() }
-
-        state.setDefaultDock(config(tilesize: 64))
-        state.dockConfigEdited(reason: "落盘")
 
         let data = try Data(contentsOf: stores.0.fileURL)
         let payload = try JSONDecoder().decode(ConfigStore.Payload.self, from: data)
-        XCTAssertEqual(payload.settings.defaultDock.appearance.tilesize, 64)
+        XCTAssertEqual(payload.settings.defaultDockAppCount, 10)
+        XCTAssertTrue(payload.settings.dockBars.count == DockBarCatalog.defaultBarCount,
+                      "首次载入按默认补足 5 根栏")
+    }
+
+    // MARK: - 落盘时机（Dock 栏编辑）
+
+    func testInMemoryBarEditDoesNotPersistOrApply() async {
+        // 拖拽排序的每一次 dropEntered 都会走 updateDockBarInMemory；它不该写盘也不该碰 Dock。
+        let stores = makeStores("inmemory")
+        let preferences = FakePreferences(domain: baseDomain())
+        let state = makeState(preferences: preferences, stores: stores)
+        state.start()
+        defer { state.stop() }
+
+        let id = state.addDockBar()
+        var bar = state.dockBar(id: id)!
+        bar.apps = DockStripRules.normalizedApps(apps(count: 2))
+        state.updateDockBarInMemory(bar)
+
+        XCTAssertEqual(state.dockBar(id: id)?.apps.count, 3, "内存里的改动要立即可见")
+        let payload = try? JSONDecoder().decode(
+            ConfigStore.Payload.self,
+            from: Data(contentsOf: stores.0.fileURL)
+        )
+        XCTAssertTrue(payload?.settings.dockBars.first { $0.id == id }?.apps.isEmpty ?? false,
+                      "落盘的是添加栏时的空内容，不是这次内存改动")
+        await state.dockController.waitForIdle()
+        XCTAssertEqual(preferences.writeCount, 0, "没提交就不该碰 Dock")
+    }
+
+    func testDockBarEditedPersistsOnce() async throws {
+        let stores = makeStores("bar-persist")
+        let preferences = FakePreferences(domain: baseDomain())
+        let state = makeState(preferences: preferences, stores: stores)
+        state.start()
+        defer { state.stop() }
+
+        let id = state.addDockBar()
+        var bar = state.dockBar(id: id)!
+        bar.apps = DockStripRules.normalizedApps(apps(count: 2))
+        state.dockBarEdited(bar, reason: "落盘")
+
+        let payload = try JSONDecoder().decode(
+            ConfigStore.Payload.self,
+            from: Data(contentsOf: stores.0.fileURL)
+        )
+        XCTAssertEqual(payload.settings.dockBars.first { $0.id == id }?.apps.count, 3)
+        XCTAssertTrue(state.log.contains { $0.message.contains("已修改：落盘") })
     }
 
     // MARK: - 抓取
 
-    func testCaptureCurrentDockReadsTheLiveDomain() {
+    func testCaptureLiveConfigReadsContentOnly() {
         var domain = baseDomain()
         domain["tilesize"] = .double(72)
         domain["persistent-apps"] = .array([
@@ -243,10 +337,10 @@ final class AppStateDockTests: XCTestCase {
         state.start()
         defer { state.stop() }
 
-        state.captureCurrentDockAsDefault()
+        let live = state.captureLiveDockConfig()
 
-        XCTAssertEqual(state.settings.defaultDock.appearance.tilesize, 72)
-        XCTAssertEqual(state.settings.defaultDock.pinnedApps.map(\.label), ["启动台"])
+        XCTAssertEqual(live?.pinnedApps.map(\.label), ["启动台"], "只取内容键")
+        XCTAssertEqual(state.defaultDock.pinnedApps.count, 2, "默认 Dock 不受抓取影响（内容是扫描的）")
     }
 
     func testCaptureRefusesWhenDomainIsUnreadable() {
@@ -254,15 +348,15 @@ final class AppStateDockTests: XCTestCase {
         state.start()
         defer { state.stop() }
 
-        state.captureCurrentDockAsDefault()
-
-        XCTAssertTrue(state.settings.defaultDock.pinnedApps.isEmpty)
+        XCTAssertNil(state.captureLiveDockConfig())
         XCTAssertTrue(state.log.contains { $0.message.contains("读不到 com.apple.dock") })
     }
 
     // MARK: - 还原
 
-    func testRestoreWritesTheBaselineBack() async throws {
+    func testRestoreWritesTheBaselineBackIncludingAppearanceKeys() async throws {
+        // 还原是**收尾**：应用路径不写外观了，但旧版本写过 —— 还原必须把基准里的
+        // 外观键一并写回，无痕原则才闭环（这是 2026-10-05 重构专门保留的行为）。
         let stores = makeStores("restore")
         var baseline = baseDomain()
         baseline["tilesize"] = .double(36)
@@ -282,7 +376,7 @@ final class AppStateDockTests: XCTestCase {
         let outcome = await state.restoreToBaseline()
 
         XCTAssertEqual(outcome?.result, .applied)
-        XCTAssertEqual(preferences.lastEntries?["tilesize"], .double(36))
+        XCTAssertEqual(preferences.lastEntries?["tilesize"], .double(36), "外观键随基准写回")
         XCTAssertEqual(preferences.lastEntries?["orientation"], .string("left"))
         XCTAssertFalse(state.log.contains { $0.message.contains("找不到基准快照") })
     }
@@ -399,7 +493,7 @@ final class AppStateDockTests: XCTestCase {
         XCTAssertTrue(state.log.contains { $0.message.contains("已关闭退出还原") })
     }
 
-    // MARK: - 每个桌面的独立 Dock（P3）
+    // MARK: - Dock 栏绑定（2026-10-05 起替代逐桌面 override）
 
     /// 两个桌面的夹具：桌面 1 是活动桌面。
     private func twoDesktops() -> (provider: FakeSpaceProvider, spaces: [DesktopSpace]) {
@@ -415,40 +509,42 @@ final class AppStateDockTests: XCTestCase {
         let state = makeState(
             preferences: FakePreferences(domain: baseDomain()),
             stores: makeStores("eff-default"),
-            provider: fixture.provider
+            provider: fixture.provider,
+            recentApps: apps(count: 1, prefix: "Default")
         )
         state.start()
         defer { state.stop() }
 
-        state.setDefaultDock(config(tilesize: 52))
-
-        XCTAssertFalse(state.hasOverride(for: fixture.spaces[0]))
-        XCTAssertEqual(state.effectiveConfig(for: fixture.spaces[0]).appearance.tilesize, 52)
-        XCTAssertEqual(state.effectiveConfig(for: fixture.spaces[1]).appearance.tilesize, 52)
+        XCTAssertNil(state.dockBar(for: fixture.spaces[0]))
+        XCTAssertEqual(state.effectiveConfig(for: fixture.spaces[0]).pinnedApps.map(\.label),
+                       ["启动台", "Default0"], "没绑栏的桌面用默认 Dock")
+        XCTAssertEqual(state.effectiveConfig(for: fixture.spaces[1]).pinnedApps.map(\.label),
+                       ["启动台", "Default0"])
     }
 
-    func testOverrideWinsOverDefault() {
+    func testBoundBarWinsOverDefault() {
         let fixture = twoDesktops()
         let state = makeState(
             preferences: FakePreferences(domain: baseDomain()),
-            stores: makeStores("eff-override"),
-            provider: fixture.provider
+            stores: makeStores("eff-bar"),
+            provider: fixture.provider,
+            recentApps: apps(count: 1, prefix: "Default")
         )
         state.start()
         defer { state.stop() }
+        state.updateSettings { $0.autoApplyOnEdit = false }
 
-        state.setDefaultDock(config(tilesize: 52))
-        state.setOverride(config(tilesize: 80), for: fixture.spaces[1], reason: "桌面 2 单独设置")
+        bindBar(state, to: fixture.spaces[1], apps: apps(count: 2, prefix: "Bar"))
 
-        XCTAssertTrue(state.hasOverride(for: fixture.spaces[1]))
-        XCTAssertEqual(state.effectiveConfig(for: fixture.spaces[1]).appearance.tilesize, 80)
-        XCTAssertEqual(state.effectiveConfig(for: fixture.spaces[0]).appearance.tilesize, 52,
-                       "另一个桌面不该被带着改")
+        XCTAssertEqual(state.effectiveConfig(for: fixture.spaces[1]).pinnedApps.map(\.label),
+                       ["启动台", "Bar0", "Bar1"], "绑了栏的桌面用栏的内容")
+        XCTAssertEqual(state.effectiveConfig(for: fixture.spaces[0]).pinnedApps.map(\.label),
+                       ["启动台", "Default0"], "另一个桌面不该被带着改")
     }
 
-    func testSetOverridePersistsToDisk() throws {
+    func testBindingPersistsToDisk() throws {
         let fixture = twoDesktops()
-        let stores = makeStores("override-persist")
+        let stores = makeStores("bind-persist")
         let state = makeState(
             preferences: FakePreferences(domain: baseDomain()),
             stores: stores,
@@ -456,82 +552,116 @@ final class AppStateDockTests: XCTestCase {
         )
         state.start()
         defer { state.stop() }
+        state.updateSettings { $0.autoApplyOnEdit = false }
 
-        state.setOverride(config(tilesize: 80), for: fixture.spaces[1], reason: "落盘")
+        bindBar(state, to: fixture.spaces[1], apps: apps(count: 1), name: "工作")
 
         let payload = try JSONDecoder().decode(
             ConfigStore.Payload.self,
             from: Data(contentsOf: stores.0.fileURL)
         )
-        XCTAssertEqual(payload.bindings.count, 1)
-        XCTAssertEqual(payload.bindings.first?.override?.appearance.tilesize, 80)
-        XCTAssertEqual(payload.bindings.first?.spaceUUID, fixture.spaces[1].spaceUUID)
+        let bar = payload.settings.dockBars.first { $0.name == "工作" }
+        XCTAssertEqual(bar?.spaceID, fixture.spaces[1].id)
+        XCTAssertEqual(bar?.position, .bottom)
     }
 
-    func testClearingOverrideRevertsToDefaultAndPrunesTheEmptyBinding() {
-        // 取消独立 Dock 后，这条绑定既无名字也无 override，应当整条消失，
-        // 而不是在 config.json 里留一行空壳。
+    func testBindingOneBarDisplacesTheOtherOnTheSameDesktop() {
+        // 一个桌面同时只挂一根栏：把第二根绑上去，第一根自动让出（应用保留）。
         let fixture = twoDesktops()
-        let stores = makeStores("override-clear")
         let state = makeState(
             preferences: FakePreferences(domain: baseDomain()),
-            stores: stores,
+            stores: makeStores("bind-displace"),
             provider: fixture.provider
         )
         state.start()
         defer { state.stop() }
+        state.updateSettings { $0.autoApplyOnEdit = false }
 
-        state.setDefaultDock(config(tilesize: 52))
-        state.setOverride(config(tilesize: 80), for: fixture.spaces[1], reason: "加上")
-        XCTAssertEqual(state.bindings.count, 1)
+        let first = bindBar(state, to: fixture.spaces[0], apps: apps(count: 1), name: "第一根")
+        let second = bindBar(state, to: fixture.spaces[0], apps: apps(count: 2), name: "第二根")
 
-        state.setOverride(nil, for: fixture.spaces[1], reason: "取消独立 Dock")
-
-        XCTAssertTrue(state.bindings.isEmpty, "空绑定要清掉")
-        XCTAssertEqual(state.effectiveConfig(for: fixture.spaces[1]).appearance.tilesize, 52)
+        XCTAssertNil(state.dockBar(id: first)?.spaceID, "先到的让出桌面")
+        XCTAssertEqual(state.dockBar(id: second)?.spaceID, fixture.spaces[0].id)
+        XCTAssertFalse(state.dockBar(id: first)!.apps.isEmpty, "让出的栏应用保留")
+        XCTAssertTrue(state.log.contains { $0.message.contains("让出桌面") })
     }
 
-    func testClearingOverrideKeepsTheBindingWhenTheDesktopHasAName() {
+    func testUnbindingRevertsToDefaultAndKeepsTheBar() {
         let fixture = twoDesktops()
         let state = makeState(
             preferences: FakePreferences(domain: baseDomain()),
-            stores: makeStores("override-named"),
+            stores: makeStores("unbind"),
+            provider: fixture.provider,
+            recentApps: apps(count: 1, prefix: "Default")
+        )
+        state.start()
+        defer { state.stop() }
+        state.updateSettings { $0.autoApplyOnEdit = false }
+
+        let id = bindBar(state, to: fixture.spaces[1], apps: apps(count: 1), name: "临时")
+        state.bindDockBar(id, to: nil)
+
+        XCTAssertNil(state.dockBar(for: fixture.spaces[1]))
+        XCTAssertNotNil(state.dockBar(id: id), "解绑不删栏")
+        XCTAssertEqual(state.effectiveConfig(for: fixture.spaces[1]).pinnedApps.map(\.label),
+                       ["启动台", "Default0"], "解绑后回落默认 Dock")
+    }
+
+    func testAddAndRemoveBars() {
+        let state = makeState(preferences: FakePreferences(domain: baseDomain()), stores: makeStores("crud"))
+        state.start()
+        defer { state.stop() }
+
+        let initial = state.dockBars.count
+        let id = state.addDockBar()
+        XCTAssertEqual(state.dockBars.count, initial + 1)
+        XCTAssertNotNil(state.dockBar(id: id))
+
+        state.removeDockBar(id: id)
+        XCTAssertEqual(state.dockBars.count, initial)
+        XCTAssertNil(state.dockBar(id: id))
+    }
+
+    func testRenameDockBarNormalizesAndPersists() throws {
+        let stores = makeStores("bar-rename")
+        let state = makeState(preferences: FakePreferences(domain: baseDomain()), stores: stores)
+        state.start()
+        defer { state.stop() }
+
+        let id = state.addDockBar()
+        state.renameDockBar(id, to: "  一二三四五六七八九十甲乙  ")
+
+        XCTAssertEqual(state.dockBar(id: id)?.name, "一二三四五六七八九十", "与桌面命名同一口径（10 字素簇）")
+        let payload = try JSONDecoder().decode(
+            ConfigStore.Payload.self,
+            from: Data(contentsOf: stores.0.fileURL)
+        )
+        XCTAssertEqual(payload.settings.dockBars.first { $0.id == id }?.name, "一二三四五六七八九十")
+    }
+
+    func testOrphanedBarsAreListedAndCanBeUnbound() {
+        let fixture = twoDesktops()
+        let state = makeState(
+            preferences: FakePreferences(domain: baseDomain()),
+            stores: makeStores("orphan-bars"),
             provider: fixture.provider
         )
         state.start()
         defer { state.stop() }
+        state.updateSettings { $0.autoApplyOnEdit = false }
 
-        state.setCustomName("工作", for: fixture.spaces[1])
-        state.setOverride(config(), for: fixture.spaces[1], reason: "加上")
-        state.setOverride(nil, for: fixture.spaces[1], reason: "取消独立 Dock")
-
-        XCTAssertEqual(state.bindings.count, 1, "还有名字，绑定要留着")
-        XCTAssertEqual(state.displayName(for: fixture.spaces[1]), "工作")
-    }
-
-    func testCopyDefaultToOverrideIsAnIndependentCopy() {
-        // 复制完再改默认 Dock，不该带着这个桌面的独立配置一起变。
-        let fixture = twoDesktops()
-        let state = makeState(
-            preferences: FakePreferences(domain: baseDomain()),
-            stores: makeStores("override-copy"),
-            provider: fixture.provider
+        let ghost = DesktopSpace(
+            displayUUID: "DISP-GONE", spaceUUID: "SPACE-GONE", id64: 999, type: 0, ordinal: 1
         )
-        state.start()
-        defer { state.stop() }
+        bindBar(state, to: ghost, apps: apps(count: 1), name: "孤儿")
+        XCTAssertEqual(state.orphanedBars.count, 1)
 
-        state.setDefaultDock(config(tilesize: 52))
-        state.copyDefaultToOverride(for: fixture.spaces[1])
-        XCTAssertEqual(state.effectiveConfig(for: fixture.spaces[1]).appearance.tilesize, 52)
-
-        state.setDefaultDock(config(tilesize: 96))
-
-        XCTAssertEqual(state.effectiveConfig(for: fixture.spaces[1]).appearance.tilesize, 52,
-                       "独立配置不该跟着默认 Dock 走")
-        XCTAssertEqual(state.effectiveConfig(for: fixture.spaces[0]).appearance.tilesize, 96)
+        XCTAssertEqual(state.unbindOrphanedBars(), 1)
+        XCTAssertTrue(state.orphanedBars.isEmpty)
+        XCTAssertEqual(state.dockBars.first { $0.name == "孤儿" }?.apps.count, 2, "解绑只解绑定，应用保留")
     }
 
-    func testApplyConfigForDesktopUsesThatDesktopsOwnDock() async {
+    func testApplyConfigForDesktopUsesThatDesktopsBoundBar() async {
         let fixture = twoDesktops()
         let preferences = FakePreferences(domain: baseDomain())
         let state = makeState(
@@ -541,32 +671,40 @@ final class AppStateDockTests: XCTestCase {
         )
         state.start()
         defer { state.stop() }
+        state.updateSettings { $0.autoApplyOnEdit = false }
 
-        state.setOverride(config(tilesize: 88), for: fixture.spaces[1], reason: "桌面 2")
+        bindBar(state, to: fixture.spaces[1], apps: apps(count: 2, prefix: "Bar"))
 
         state.applyConfigForDesktop(fixture.spaces[1], reason: "测试")
         await state.dockController.waitForIdle()
 
-        XCTAssertEqual(preferences.lastEntries?["tilesize"], .double(88))
+        XCTAssertTrue(
+            preferences.lastEntries?["persistent-apps"]?.fingerprintToken.contains("Bar0") ?? false,
+            "应用的是绑定栏的内容，不是默认 Dock"
+        )
     }
 
-    func testApplyConfigForDesktopRefusesAnEmptyOverride() async {
+    func testApplyConfigForDesktopRefusesAnEmptyBar() async {
         // 空配置写下去会把 Dock 清空 —— 宁可什么都不做，也不能让用户失去 Dock。
         let fixture = twoDesktops()
         let preferences = FakePreferences(domain: baseDomain())
         let state = makeState(
             preferences: preferences,
-            stores: makeStores("apply-empty-override"),
+            stores: makeStores("apply-empty-bar"),
             provider: fixture.provider
         )
         state.start()
         defer { state.stop() }
+        await state.dockController.waitForIdle()   // start 时观察器首拍会异步应用默认内容
+        state.updateSettings { $0.autoApplyOnEdit = false }
+        let writesAtStart = preferences.writeCount
 
-        state.setOverride(DockConfig(), for: fixture.spaces[1], reason: "空配置")
+        let id = state.addDockBar()
+        state.bindDockBar(id, to: fixture.spaces[1].id)   // 没放任何图标的空栏
         state.applyConfigForDesktop(fixture.spaces[1], reason: "测试")
         await state.dockController.waitForIdle()
 
-        XCTAssertEqual(preferences.writeCount, 0)
+        XCTAssertEqual(preferences.writeCount, writesAtStart, "空栏拒绝应用，不产生新写入")
         XCTAssertTrue(state.log.contains { $0.message.contains("的 Dock 是空的，跳过应用") })
     }
 
@@ -591,18 +729,18 @@ final class AppStateDockTests: XCTestCase {
         let state = makeState(
             preferences: preferences,
             stores: makeStores("preapply"),
-            provider: provider
+            provider: provider,
+            recentApps: apps(count: 1, prefix: "Default")
         )
         state.start()
         unfreeze(state)
         defer { state.stop() }
+        state.updateSettings { $0.autoApplyOnEdit = false }
 
-        // 桌面 2 有自己的 Dock；先把它应用一遍，再把默认 Dock（桌面 1 用的）应用上去，
+        // 桌面 2 绑定自己的栏；先把默认 Dock（桌面 1 用的）应用上去，
         // 这样切到桌面 2 时"目标 ≠ 当前"，预应用一定会真的写。
-        state.setOverride(config(tilesize: 88), for: spaces[1], reason: "桌面 2 独立")
-        await state.dockController.waitForIdle()
-        state.setDockConfigInMemory(config(tilesize: 40), for: .defaultDock)
-        state.dockEdited(.defaultDock, reason: "准备")
+        bindBar(state, to: spaces[1], apps: apps(count: 2, prefix: "Bar"))
+        state.applyDefaultDock()
         await state.dockController.waitForIdle()
 
         events.value.removeAll()
@@ -613,8 +751,10 @@ final class AppStateDockTests: XCTestCase {
         await state.dockController.waitForIdle()
 
         XCTAssertEqual(provider.switchTargets, [spaces[1].id64], "应当切到桌面 2")
-        XCTAssertEqual(preferences.lastEntries?["tilesize"], .double(88),
-                       "要应用目标桌面的 Dock，不是当前桌面的")
+        XCTAssertTrue(
+            preferences.lastEntries?["persistent-apps"]?.fingerprintToken.contains("Bar0") ?? false,
+            "要应用目标桌面的 Dock，不是当前桌面的"
+        )
         // 用事件流数"这次切换写了几次"，不能用累计的 writeCount（前面准备阶段也写过）。
         XCTAssertEqual(events.value.filter { $0 == "write" }.count, 1,
                        "预应用与切空间后的 observer 回调必须合并成一次，否则 Dock 会重启两次")
@@ -633,17 +773,17 @@ final class AppStateDockTests: XCTestCase {
         let state = makeState(
             preferences: preferences,
             stores: makeStores("previous"),
-            provider: provider
+            provider: provider,
+            recentApps: apps(count: 1, prefix: "Default")
         )
         state.start()
         unfreeze(state)
         defer { state.stop() }
+        state.updateSettings { $0.autoApplyOnEdit = false }
 
-        // 桌面 3 有自己的 Dock，当前在桌面 1（用默认 40）→ 往前切一定真的要写。
-        state.setOverride(config(tilesize: 88), for: spaces[2], reason: "桌面 3 独立")
-        await state.dockController.waitForIdle()
-        state.setDockConfigInMemory(config(tilesize: 40), for: .defaultDock)
-        state.dockEdited(.defaultDock, reason: "准备")
+        // 桌面 3 有自己的栏，当前在桌面 1（默认内容）→ 往前切一定真的要写。
+        bindBar(state, to: spaces[2], apps: apps(count: 2, prefix: "Bar"))
+        state.applyDefaultDock()
         await state.dockController.waitForIdle()
 
         events.value.removeAll()
@@ -653,8 +793,10 @@ final class AppStateDockTests: XCTestCase {
         await state.dockController.waitForIdle()
 
         XCTAssertEqual(provider.switchTargets, [spaces[2].id64], "第一个桌面再往前应回到最后一个")
-        XCTAssertEqual(preferences.lastEntries?["tilesize"], .double(88),
-                       "要应用目标桌面的 Dock，不是当前桌面的")
+        XCTAssertTrue(
+            preferences.lastEntries?["persistent-apps"]?.fingerprintToken.contains("Bar0") ?? false,
+            "要应用目标桌面的 Dock，不是当前桌面的"
+        )
         XCTAssertEqual(events.value.filter { $0 == "write" }.count, 1)
     }
 
@@ -666,14 +808,14 @@ final class AppStateDockTests: XCTestCase {
         let state = makeState(
             preferences: preferences,
             stores: makeStores("switch-identical"),
-            provider: provider
+            provider: provider,
+            recentApps: apps(count: 2)
         )
         state.start()
         unfreeze(state)
         defer { state.stop() }
 
-        // 两个桌面都沿用默认 Dock，内容完全相同。
-        state.setDefaultDock(config(tilesize: 52))
+        // 两个桌面都没绑栏，都用默认 Dock，内容完全相同。
         state.applyDefaultDock()
         await state.dockController.waitForIdle()
         XCTAssertEqual(preferences.writeCount, 1)
@@ -699,12 +841,13 @@ final class AppStateDockTests: XCTestCase {
         )
         state.start()
         defer { state.stop() }
-
+        await state.dockController.waitForIdle()   // start 时观察器首拍会异步应用默认内容
+        let writesAtStart = preferences.writeCount
         state.switchToNextDesktop()
         await state.dockController.waitForIdle()
 
         XCTAssertTrue(provider.switchTargets.isEmpty)
-        XCTAssertEqual(preferences.writeCount, 0)
+        XCTAssertEqual(preferences.writeCount, writesAtStart, "没有可切的桌面就不该有切换触发的写入")
         XCTAssertTrue(state.log.contains { $0.message.contains("没有可切换的下一个桌面") })
     }
 
@@ -723,65 +866,67 @@ final class AppStateDockTests: XCTestCase {
 
     // MARK: - 回存手动改动（计划 §3.8）
 
-    func testUserEditIsCapturedIntoTheCurrentDesktopsOverride() async {
+    func testUserEditIsCapturedIntoTheBoundBarOfTheActiveDesktop() async {
         let fixture = twoDesktops()
         let state = makeState(
             preferences: FakePreferences(domain: baseDomain()),
-            stores: makeStores("capture-override"),
+            stores: makeStores("capture-bar"),
             provider: fixture.provider
         )
         state.start()
         unfreeze(state)
         defer { state.stop() }
+        state.updateSettings { $0.autoApplyOnEdit = false }
 
-        state.setOverride(config(tilesize: 40), for: fixture.spaces[0], reason: "桌面 1 独立")
-        await state.dockController.waitForIdle()
+        bindBar(state, to: fixture.spaces[0], apps: apps(count: 1, prefix: "Bar"))
 
-        let edited = config(tilesize: 64)
+        let edited = DockConfig(pinnedApps: DockStripRules.normalizedApps(apps(count: 2, prefix: "Manual")))
         state.handleUserDockEdit(edited)
-        await state.dockController.waitForIdle()
 
-        XCTAssertEqual(state.binding(for: fixture.spaces[0])?.override?.appearance.tilesize, 64)
-        XCTAssertEqual(state.effectiveConfig(for: fixture.spaces[0]).appearance.tilesize, 64)
-        XCTAssertFalse(state.hasOverride(for: fixture.spaces[1]), "只改当前桌面，不碰另一个")
-        XCTAssertEqual(state.bindings.count, 1)
+        XCTAssertEqual(state.dockBar(for: fixture.spaces[0])?.apps.map(\.label),
+                       ["启动台", "Manual0", "Manual1"], "回存进活动桌面绑定的栏")
+        XCTAssertNil(state.dockBar(for: fixture.spaces[1]), "只改当前桌面，不碰另一个")
+        XCTAssertTrue(state.log.contains { $0.message.contains("已回存到 Dock 栏") })
     }
 
-    func testUserEditIsCapturedIntoTheDefaultDockWhenThereIsNoOverride() async {
+    func testUserEditIsNotCapturedWhenTheDesktopHasNoBar() async {
+        // 默认 Dock 是自动生成的：没绑栏的桌面改动无处可回，如实记日志。
         let fixture = twoDesktops()
         let state = makeState(
             preferences: FakePreferences(domain: baseDomain()),
-            stores: makeStores("capture-default"),
-            provider: fixture.provider
+            stores: makeStores("capture-nobar"),
+            provider: fixture.provider,
+            recentApps: apps(count: 1, prefix: "Default")
         )
         state.start()
         unfreeze(state)
         defer { state.stop() }
 
-        state.handleUserDockEdit(config(tilesize: 64))
-        await state.dockController.waitForIdle()
+        let before = state.defaultDock
+        state.handleUserDockEdit(DockConfig(pinnedApps: DockStripRules.normalizedApps(apps(count: 3))))
 
-        XCTAssertEqual(state.settings.defaultDock.appearance.tilesize, 64)
-        XCTAssertTrue(state.bindings.isEmpty, "没有 override 就不该凭空造一条绑定")
-        XCTAssertTrue(state.log.contains { $0.message.contains("已回存到默认 Dock") })
+        XCTAssertEqual(state.defaultDock.pinnedApps, before.pinnedApps, "默认 Dock 不被手动改动污染")
+        XCTAssertTrue(state.dockBars.allSatisfy { $0.spaceID == nil }, "不该凭空造绑定")
+        XCTAssertTrue(state.log.contains { $0.message.contains("手动改动不回存") })
     }
 
-    func testUserEditIsCapturedIntoTheDefaultDockWhenNoDesktopIsActive() async {
-        // 活动空间不是用户桌面（例如正处在全屏 App 里）时，改动只能落到默认 Dock。
+    func testUserEditIsNotCapturedWhenNoDesktopIsActive() async {
+        // 活动空间不是用户桌面（例如正处在全屏 App 里）时，改动无处可回。
         let provider = FakeSpaceProvider(desktops: [], activeSpaceID: 0)
         let state = makeState(
             preferences: FakePreferences(domain: baseDomain()),
             stores: makeStores("capture-nospace"),
-            provider: provider
+            provider: provider,
+            recentApps: apps(count: 1, prefix: "Default")
         )
         state.start()
         unfreeze(state)
         defer { state.stop() }
 
-        state.handleUserDockEdit(config(tilesize: 64))
-        await state.dockController.waitForIdle()
+        let before = state.defaultDock
+        state.handleUserDockEdit(DockConfig(pinnedApps: DockStripRules.normalizedApps(apps(count: 3))))
 
-        XCTAssertEqual(state.settings.defaultDock.appearance.tilesize, 64)
+        XCTAssertEqual(state.defaultDock.pinnedApps, before.pinnedApps)
         XCTAssertTrue(state.log.contains { $0.message.contains("当前不在用户桌面上") })
     }
 
@@ -796,10 +941,10 @@ final class AppStateDockTests: XCTestCase {
         defer { state.stop() }
         state.updateSettings { $0.autoCaptureUserEdits = false }
 
-        state.handleUserDockEdit(config(tilesize: 64))
-        await state.dockController.waitForIdle()
+        let before = state.defaultDock
+        state.handleUserDockEdit(DockConfig(pinnedApps: DockStripRules.normalizedApps(apps(count: 3))))
 
-        XCTAssertTrue(state.settings.defaultDock.pinnedApps.isEmpty, "关掉开关就不该回存")
+        XCTAssertEqual(state.defaultDock.pinnedApps, before.pinnedApps, "关掉开关就不该回存")
         XCTAssertTrue(state.log.contains { $0.message.contains("已关闭，忽略这次改动") })
     }
 
@@ -818,13 +963,15 @@ final class AppStateDockTests: XCTestCase {
     }
 
     func testWatcherIsNotStartedWhenCaptureIsOffInTheSavedConfig() throws {
-        // 开关是在 start() 里读配置决定的，所以要预先写好 config.json。
+        // 开关是在 start() 里读配置决定的。makeState 会先落一份默认设置（迁移 5 根栏），
+        // 所以这份预置配置必须**在 makeState 之后、start 之前**写入。
         let stores = makeStores("watcher-off")
         var settings = AppSettings()
         settings.autoCaptureUserEdits = false
         try stores.0.save(.init(bindings: [], settings: settings))
 
         let state = makeState(preferences: FakePreferences(domain: baseDomain()), stores: stores)
+        try stores.0.save(.init(bindings: [], settings: settings))
         state.start()
         defer { state.stop() }
 
@@ -859,173 +1006,58 @@ final class AppStateDockTests: XCTestCase {
         XCTAssertFalse(state.dockWatcher?.isDiverged ?? true)
     }
 
-    // MARK: - 编辑器统一入口（默认 Dock / 逐桌面独立 Dock）
-
-    func testInMemoryEditDoesNotPersistOrApply() async {
-        // 滑杆每一步、拖拽每次 dropEntered 都会走内存写入。
-        // 只要还没提交，就既不该写盘、也不该重启 Dock。
-        let stores = makeStores("inmemory")
-        let preferences = FakePreferences(domain: baseDomain())
-        let state = makeState(preferences: preferences, stores: stores)
-        state.start()
-        defer { state.stop() }
-
-        var appearance = state.dockAppearance(for: .defaultDock)
-        appearance.tilesize = 72
-        state.setDockAppearanceInMemory(appearance, for: .defaultDock)
-
-        XCTAssertEqual(state.dockAppearance(for: .defaultDock).tilesize, 72)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: stores.0.fileURL.path),
-                       "没提交就不该落盘")
-        await state.dockController.waitForIdle()
-        XCTAssertEqual(preferences.writeCount, 0, "没提交就不该碰 Dock")
-    }
-
-    func testAppearanceCommitPersistsAndAppliesOnce() async throws {
-        let stores = makeStores("appearance-commit")
-        let preferences = FakePreferences(domain: baseDomain())
-        let state = makeState(preferences: preferences, stores: stores)
-        state.start()
-        defer { state.stop() }
-
-        // 先备好一份非空默认 Dock，否则会被"空配置拒绝应用"挡下。
-        state.setDockConfigInMemory(config(tilesize: 52), for: .defaultDock)
-        state.dockEdited(.defaultDock, reason: "准备")
-        await state.dockController.waitForIdle()
-        let writesAfterPrepare = preferences.writeCount
-
-        // 模拟拖动滑杆：多次内存写入 + 一次提交。
-        for size in [60.0, 64.0, 68.0] {
-            var appearance = state.dockAppearance(for: .defaultDock)
-            appearance.tilesize = size
-            state.setDockAppearanceInMemory(appearance, for: .defaultDock)
-        }
-        state.dockEdited(.defaultDock, reason: "调整图标大小")
-        await state.dockController.waitForIdle()
-
-        XCTAssertEqual(preferences.writeCount, writesAfterPrepare + 1,
-                       "一次拖动只该产生一次写入")
-        XCTAssertEqual(preferences.lastEntries?["tilesize"], .double(68))
-        let payload = try JSONDecoder().decode(
-            ConfigStore.Payload.self,
-            from: Data(contentsOf: stores.0.fileURL)
-        )
-        XCTAssertEqual(payload.settings.defaultDock.appearance.tilesize, 68)
-    }
-
-    func testDesktopTargetRoutesToItsOwnOverride() async {
-        let fixture = twoDesktops()
-        let stores = makeStores("target-desktop")
-        let preferences = FakePreferences(domain: baseDomain())
-        let state = makeState(
-            preferences: preferences,
-            stores: stores,
-            provider: fixture.provider
-        )
-        state.start()
-        defer { state.stop() }
-
-        state.setDockConfigInMemory(config(tilesize: 88), for: .desktop(fixture.spaces[1]))
-        state.dockEdited(.desktop(fixture.spaces[1]), reason: "桌面 2 的图标条")
-        await state.dockController.waitForIdle()
-
-        XCTAssertEqual(state.binding(for: fixture.spaces[1])?.override?.appearance.tilesize, 88)
-        XCTAssertEqual(preferences.lastEntries?["tilesize"], .double(88))
-        XCTAssertTrue(state.isOverridden(.desktop(fixture.spaces[1])))
-        XCTAssertFalse(state.isOverridden(.defaultDock))
-        XCTAssertEqual(state.dockConfig(for: .defaultDock).appearance.tilesize,
-                       DockConfig().appearance.tilesize, "默认 Dock 不该被带着改")
-    }
-
-    func testAppearanceTargetsAreIndependent() {
-        let fixture = twoDesktops()
-        let state = makeState(
-            preferences: FakePreferences(domain: baseDomain()),
-            stores: makeStores("target-independent"),
-            provider: fixture.provider
-        )
-        state.start()
-        defer { state.stop() }
-
-        var defaultAppearance = state.dockAppearance(for: .defaultDock)
-        defaultAppearance.tilesize = 40
-        state.setDockAppearanceInMemory(defaultAppearance, for: .defaultDock)
-
-        var desktopAppearance = state.dockAppearance(for: .desktop(fixture.spaces[0]))
-        desktopAppearance.tilesize = 96
-        state.setDockAppearanceInMemory(desktopAppearance, for: .desktop(fixture.spaces[0]))
-
-        XCTAssertEqual(state.dockAppearance(for: .defaultDock).tilesize, 40)
-        XCTAssertEqual(state.dockAppearance(for: .desktop(fixture.spaces[0])).tilesize, 96)
-    }
-
-    func testAppearanceCommitRespectsAutoApplyToggle() async {
-        let stores = makeStores("appearance-auto-off")
-        let preferences = FakePreferences(domain: baseDomain())
-        let state = makeState(preferences: preferences, stores: stores)
-        state.start()
-        defer { state.stop() }
-        state.updateSettings { $0.autoApplyOnEdit = false }
-
-        state.setDockConfigInMemory(config(tilesize: 52), for: .defaultDock)
-        state.dockEdited(.defaultDock, reason: "改了但开关关着")
-        await state.dockController.waitForIdle()
-
-        XCTAssertEqual(preferences.writeCount, 0)
-        XCTAssertTrue(state.log.contains { $0.message.contains("改动只存在本地配置里") })
-        // 但内存里的改动要保留，用户下次点「立即应用」还能用上。
-        XCTAssertEqual(state.dockConfig(for: .defaultDock).appearance.tilesize, 52)
-    }
-
     // MARK: - 菜单栏「用当前 Dock 重置本桌面配置」（计划 §3.7）
 
     /// 域里放一套可辨认的 Dock，供抓取用。
-    private func domainWithLiveDock(tilesize: Double) -> [String: PlistValue] {
+    private func domainWithLiveDock() -> [String: PlistValue] {
         var domain = baseDomain()
-        domain["tilesize"] = .double(tilesize)
         domain["persistent-apps"] = .array([
             .dictionary(DockStripRules.makeLaunchpadTile().raw),
+            .dictionary(apps(count: 1, prefix: "Live")[0].raw),
         ])
         return domain
     }
 
-    func testResetFromLiveDockOverwritesTheCurrentDesktopsOverride() {
+    func testResetFromLiveDockOverwritesTheBoundBar() {
         let fixture = twoDesktops()
-        let preferences = FakePreferences(domain: domainWithLiveDock(tilesize: 72))
+        let preferences = FakePreferences(domain: domainWithLiveDock())
         let state = makeState(
             preferences: preferences,
-            stores: makeStores("reset-live-override"),
+            stores: makeStores("reset-live-bar"),
             provider: fixture.provider
         )
         state.start()
         defer { state.stop() }
+        unfreeze(state)
+        state.updateSettings { $0.autoApplyOnEdit = false }
 
-        state.setOverride(config(tilesize: 40), for: fixture.spaces[0], reason: "先给个独立配置")
+        bindBar(state, to: fixture.spaces[0], apps: apps(count: 3, prefix: "Bar"))
         state.resetActiveDesktopConfigFromLiveDock()
 
-        XCTAssertEqual(state.binding(for: fixture.spaces[0])?.override?.appearance.tilesize, 72)
-        XCTAssertFalse(state.hasOverride(for: fixture.spaces[1]), "不该给别的桌面造绑定")
-        XCTAssertEqual(state.bindings.count, 1)
+        XCTAssertEqual(state.dockBar(for: fixture.spaces[0])?.apps.map(\.label),
+                       ["启动台", "Live0"], "重置的是活动桌面绑定的栏")
+        XCTAssertTrue(state.dockBars.filter { $0.spaceID != nil }.count == 1, "不该给别的桌面造绑定")
     }
 
-    func testResetFromLiveDockFallsBackToTheDefaultDock() {
-        // 当前桌面沿用默认 Dock 时，重置的是默认 Dock —— 不能凭空造一条 override，
-        // 否则这个桌面会悄悄脱离默认 Dock。
+    func testResetFromLiveDockDoesNothingWhenTheDesktopHasNoBar() {
+        // 默认 Dock 是自动生成的：没绑栏就没有「本桌面配置」可重置，如实记日志。
         let fixture = twoDesktops()
-        let preferences = FakePreferences(domain: domainWithLiveDock(tilesize: 72))
+        let preferences = FakePreferences(domain: domainWithLiveDock())
         let state = makeState(
             preferences: preferences,
-            stores: makeStores("reset-live-default"),
-            provider: fixture.provider
+            stores: makeStores("reset-live-nobar"),
+            provider: fixture.provider,
+            recentApps: apps(count: 1, prefix: "Default")
         )
         state.start()
         defer { state.stop() }
+        unfreeze(state)
 
+        let before = state.defaultDock
         state.resetActiveDesktopConfigFromLiveDock()
 
-        XCTAssertEqual(state.settings.defaultDock.appearance.tilesize, 72)
-        XCTAssertTrue(state.bindings.isEmpty, "不该凭空造绑定")
-        XCTAssertTrue(state.log.contains { $0.message.contains("已用当前 Dock 重置默认 Dock") })
+        XCTAssertEqual(state.defaultDock.pinnedApps, before.pinnedApps, "不该凭空造绑定")
+        XCTAssertTrue(state.log.contains { $0.message.contains("当前桌面未绑定 Dock 栏") })
     }
 
     func testResetFromLiveDockRefusesWhenDomainIsUnreadable() {
@@ -1040,8 +1072,7 @@ final class AppStateDockTests: XCTestCase {
 
         state.resetActiveDesktopConfigFromLiveDock()
 
-        XCTAssertTrue(state.settings.defaultDock.pinnedApps.isEmpty)
-        XCTAssertTrue(state.bindings.isEmpty)
+        XCTAssertTrue(state.dockBars.allSatisfy { $0.spaceID == nil })
         XCTAssertTrue(state.log.contains { $0.message.contains("读不到 com.apple.dock") })
     }
 }

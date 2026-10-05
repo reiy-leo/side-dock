@@ -15,7 +15,7 @@ enum SettingsTab {
     case desktop
 }
 
-/// 设置窗口。两个页：通用（默认 Dock）/ 桌面（逐桌面独立 Dock）。
+/// 设置窗口。两个页：通用（默认 Dock）/ 桌面（Dock 栏）。
 ///
 /// 顶部有一条**报警横幅**：`docs/PLAN.md` §3.1 末段要求"降级时在 UI 明确报警，而不是静默失效"，
 /// §3.9 第 3 条要求"Dock 拉不回来时提示从备份恢复"。这两件事都只进日志和调试面板是不合格的 ——
@@ -191,46 +191,39 @@ private struct GeneralTab: View {
     var body: some View {
         Form {
             Section("默认 Dock") {
-                DockStripEditor(
-                    config: defaultDockBinding,
-                    availableKeys: state.availableWhitelistedKeys,
-                    captureLive: { state.captureLiveDockConfig() }
-                ) { reason in
-                    state.dockEdited(.defaultDock, reason: reason)
-                }
-                Text("访达与启动台固定在图标条最前面。访达在系统偏好里根本没有对应条目（P0 实测），所以不需要也不能改；启动台由程序保证存在。")
+                Stepper(
+                    "显示最近添加的应用：\(state.settings.defaultDockAppCount) 个",
+                    value: defaultDockCountBinding,
+                    in: 1...DockBar.maxApps
+                )
+                recentAppsPreview
+                Text("内容自动来自「/Applications」和「~/Applications」里最新添加的应用（按修改时间排序，启动时扫描）。装了新应用后点下面的「立即应用」，或重启本 App 让它进 Dock。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("大小、放大、自动隐藏、最小化特效、最小化到应用图标等外观项跟随系统设置，在这里不提供。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Section("默认 Dock 的外观") {
-                DockAppearanceEditor(
-                    appearance: defaultAppearanceBinding,
-                    unavailableKeys: state.unavailableAppearanceKeys
-                ) { reason in
-                    state.dockEdited(.defaultDock, reason: reason)
-                }
-            }
-
             Section("应用") {
                 HStack(spacing: 8) {
                     Button("立即应用") { state.applyDefaultDock() }
-                        .disabled(state.settings.defaultDock.pinnedApps.isEmpty)
+                        .disabled(state.defaultDock.pinnedApps.isEmpty)
                     Button("立即还原到原始 Dock") { state.restoreToBaselineNow() }
                     Button("把当前 Dock 设为新基准") { state.resetBaselineToCurrent() }
                     Button("撤销自动回存") { state.undoLastAutoCapture() }
                         .disabled(!state.canUndoAutoCapture())
-                        .help("撤销上一次「识别到你在真实 Dock 上的改动并回存」的覆盖（回存只落在当前活动桌面上）。")
+                        .help("撤销上一次「识别到你在真实 Dock 上的改动并回存」的覆盖（回存只落在活动桌面绑定的栏上）。")
                     Spacer()
                 }
                 Text(state.lastApplySummary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if state.settings.defaultDock.pinnedApps.isEmpty {
-                    Label("默认 Dock 还是空的。点图标条上的「从当前 Dock 抓取」把它读进来，否则「立即应用」会把 Dock 清空（已禁用）。",
-                          systemImage: "exclamationmark.triangle")
+                if state.defaultDock.pinnedApps.isEmpty {
+                    Label("没有扫描到任何应用，默认 Dock 是空的，「立即应用」已禁用。", systemImage: "exclamationmark.triangle")
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -260,14 +253,14 @@ private struct GeneralTab: View {
 
             Section("次级 Dock 条") {
                 Toggle("显示次级 Dock 条", isOn: secondaryDockBinding)
-                Text("贴在原生 Dock 内侧的自绘图标条：默认只露一半（藏在原生 Dock 身后），鼠标移上去滑出全条。内容跟随当前桌面、切换瞬间换；显隐与原生 Dock 同步（原生隐藏它就藏）。冻结模式下条固定尺寸钉在原生 Dock 旁，切桌面一毫米不挪。")
+                Text("每个桌面可以绑定一根 Dock 栏（在「桌面」页配置）：默认只露一半，鼠标移上去滑出全条，点击图标启动。位置可以贴屏幕底边或侧边（台前调度占用的一侧会自动避开）。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Toggle("冻结原生 Dock 的逐桌面切换", isOn: freezeNativeDockBinding)
                     .disabled(!state.settings.showSecondaryDock)
                 if state.settings.freezeNativeDockSwitching {
-                    Text("已冻结：原生 Dock 保持一套固定配置，切桌面不再重启；每个桌面的差异由次级条呈现。手动改动真实 Dock 会记入默认 Dock。")
+                    Text("已冻结：原生 Dock 固定为「默认 Dock」（最近添加的应用），切桌面不再重启；每个桌面的差异由绑定到该桌面的 Dock 栏呈现。")
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -356,7 +349,7 @@ private struct GeneralTab: View {
                     }
                 }
                 Button("刷新列表") { state.refreshBackups() }
-                Text("恢复备份只覆盖 Dock 的图标与外观，不动热角、启动台网格等设置 —— 因为我们从来只写那几项。")
+                Text("恢复备份只覆盖 Dock 的图标等内容，不动热角、启动台网格等设置 —— 因为我们从来只写那几项。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -370,21 +363,10 @@ private struct GeneralTab: View {
                         Text(strategy.displayName).tag(strategy)
                     }
                 }
-                Text("实测：写偏好后 Dock 不会自己重读，改配置要重启 Dock 进程 —— SIGHUP 约 0.1 秒不可用，SIGTERM 约 0.4 秒。（macOS 存在私有的实时生效通道，外观键已验证可行；条目路径打通前不启用。）")
+                Text("实测：写偏好后 Dock 不会自己重读，改配置要重启 Dock 进程 —— SIGHUP 约 0.1 秒不可用，SIGTERM 约 0.4 秒。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if !state.unavailableAppearanceKeys.isEmpty {
-                Section("本机不支持") {
-                    Text(state.unavailableAppearanceKeys.sorted().joined(separator: "、"))
-                        .font(.caption.monospaced())
-                    Text("这些键在当前 macOS 的 com.apple.dock 里不存在，写进去不会生效，因此不做成开关。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
         }
         .formStyle(.grouped)
@@ -403,23 +385,45 @@ private struct GeneralTab: View {
             }
             Button("取消", role: .cancel) { pendingBackup = nil }
         } message: { entry in
-            Text("会用 \(entry.fileName) 里的图标与外观覆盖当前 Dock，并重启一次 Dock（约 0.1 秒不可用）。")
+            Text("会用 \(entry.fileName) 里的内容覆盖当前 Dock，并重启一次 Dock（约 0.1 秒不可用）。")
         }
     }
 
-    private var defaultDockBinding: Binding<DockConfig> {
-        Binding(
-            get: { state.dockConfig(for: .defaultDock) },
-            // 只改内存：拖拽排序过程中会连续触发，落盘统一由 `dockEdited` 做一次。
-            set: { state.setDockConfigInMemory($0, for: .defaultDock) }
-        )
+    /// 默认 Dock 的只读预览：当前扫描结果按顺序排开（不可编辑 —— 内容是自动生成的）。
+    @ViewBuilder
+    private var recentAppsPreview: some View {
+        if state.defaultDock.pinnedApps.isEmpty {
+            Text("（没有扫描到应用）")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(state.defaultDock.pinnedApps, id: \.normalizedKey) { tile in
+                        VStack(spacing: 2) {
+                            Image(nsImage: DockStripRules.icon(for: tile, size: 32))
+                                .resizable()
+                                .frame(width: 32, height: 32)
+                                .opacity(DockStripRules.isInstalled(tile) ? 1 : 0.35)
+                            Text(tile.label)
+                                .font(.caption2)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(width: 52)
+                        }
+                        .help(tile.label)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .frame(height: 56)
+        }
     }
 
-    private var defaultAppearanceBinding: Binding<DockAppearance> {
+    private var defaultDockCountBinding: Binding<Int> {
         Binding(
-            get: { state.dockAppearance(for: .defaultDock) },
-            // 同上：滑杆拖动过程中会连续触发，提交在 `DockAppearanceEditor` 的 onCommit 里。
-            set: { state.setDockAppearanceInMemory($0, for: .defaultDock) }
+            get: { state.settings.defaultDockAppCount },
+            set: { state.setDefaultDockAppCount($0) }
         )
     }
 
@@ -503,7 +507,7 @@ private struct GeneralTab: View {
         Binding(
             get: { state.settings.freezeNativeDockSwitching },
             set: { value in
-                // 开/关都要让原生 Dock 立刻与新模式一致（对齐默认 Dock / 恢复逐桌面），
+                // 开/关都要让原生 Dock 立刻与新模式一致（重扫默认 Dock 并对齐 / 恢复逐桌面），
                 // 语义在 `AppState.setFreezeNativeDockSwitching` 里，别在这里另写一份。
                 state.setFreezeNativeDockSwitching(value)
             }

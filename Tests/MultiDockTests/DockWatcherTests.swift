@@ -8,10 +8,8 @@ import XCTest
 @MainActor
 final class DockWatcherTests: XCTestCase {
 
-    private func makeConfig(tilesize: Double = 52, apps: [String] = ["Safari"]) -> DockConfig {
-        var config = DockConfig()
-        config.appearance.tilesize = tilesize
-        config.pinnedApps = DockStripRules.normalizedApps(
+    private func makeConfig(apps: [String] = ["Safari"]) -> DockConfig {
+        DockConfig(pinnedApps: DockStripRules.normalizedApps(
             apps.map {
                 DockTile.makeFileTile(
                     url: URL(fileURLWithPath: "/Applications/\($0).app", isDirectory: true),
@@ -19,8 +17,7 @@ final class DockWatcherTests: XCTestCase {
                     bundleIdentifier: "com.example.\($0)"
                 )
             }
-        )
-        return config
+        ))
     }
 
     /// 一个可编程的假环境：当前指纹与"我们写下去的那份"都能随时改。
@@ -142,7 +139,7 @@ final class DockWatcherTests: XCTestCase {
         let harness = Harness()
         harness.current = "fp-a"
         harness.applied = "fp-a"
-        let edited = makeConfig(tilesize: 64, apps: ["Safari", "Notes"])
+        let edited = makeConfig(apps: ["Safari", "Notes"])
         harness.live = edited
         let watcher = harness.makeWatcher()
         watcher.start()

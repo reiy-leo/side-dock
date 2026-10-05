@@ -125,7 +125,60 @@ enum SecondaryDockLayout {
         }
     }
 
+    // MARK: - 独立贴边（2026-10-05：Dock 栏位置可设，≠ 原生 Dock 方位时走这里）
+
+    /// 独立贴边摆放：栏不贴原生 Dock（`position` ≠ Dock 方位），改贴**自己那一边**的屏幕边缘。
+    ///
+    /// 半露的机制不同：贴 Dock 时靠层级 19 被 Dock（层级 20）挡住一半；
+    /// 独立贴边没有可借用的遮挡者，改为**整条滑出屏幕一半** —— 出屏即「藏」，hover 滑回贴齐边缘。
+    static func standalonePlacement(
+        barSize: CGSize,
+        position: DockBarPosition,
+        screen: CGRect
+    ) -> (revealed: CGRect, tucked: CGRect) {
+        let size = CGSize(
+            width: min(barSize.width, screen.width - screenMargin * 2),
+            height: min(barSize.height, screen.height - screenMargin * 2)
+        )
+        switch position {
+        case .bottom:
+            let x = clamp(
+                (screen.midX - size.width / 2).rounded(),
+                low: screen.minX + screenMargin,
+                high: screen.maxX - size.width - screenMargin
+            )
+            let revealed = CGRect(origin: CGPoint(x: x, y: screen.minY), size: size)
+            return (revealed, revealed.offsetBy(dx: 0, dy: -size.height / 2))
+        case .left:
+            let y = clamp(
+                (screen.midY - size.height / 2).rounded(),
+                low: screen.minY + screenMargin,
+                high: screen.maxY - size.height - screenMargin
+            )
+            let revealed = CGRect(origin: CGPoint(x: screen.minX, y: y), size: size)
+            return (revealed, revealed.offsetBy(dx: -size.width / 2, dy: 0))
+        case .right:
+            let y = clamp(
+                (screen.midY - size.height / 2).rounded(),
+                low: screen.minY + screenMargin,
+                high: screen.maxY - size.height - screenMargin
+            )
+            let revealed = CGRect(origin: CGPoint(x: screen.maxX - size.width, y: y), size: size)
+            return (revealed, revealed.offsetBy(dx: size.width / 2, dy: 0))
+        }
+    }
+
     private static func clamp(_ value: CGFloat, low: CGFloat, high: CGFloat) -> CGFloat {
         min(max(value, low), max(low, high))
+    }
+}
+
+extension DockBarPosition {
+    /// 与原生 Dock 方位是否同侧（同侧 = 附着模式，贴原生 Dock 内侧）。
+    func matches(_ orientation: SecondaryDockOrientation) -> Bool {
+        switch (self, orientation) {
+        case (.bottom, .bottom), (.left, .left), (.right, .right): return true
+        default: return false
+        }
     }
 }
