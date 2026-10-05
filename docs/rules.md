@@ -395,6 +395,32 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
    （`EnvironmentReading`：一次 CFPreferences 读 + 一次 NSScreen 扫，可忽略的开销），
    打开设置窗口再即刷一拍。**别等通知**——没有；也别为这个加权限。
 
+### 2026-10-06 手势预隐藏的新坑（实验 27：type 30 → 切桌面前一拍隐藏次级条）
+
+1. **`window.animator().alphaValue` 在 `SecondaryDockWindow` 上随机静默失效**——动画组
+   跑完 alpha 停在 0.0，无报错无异常（26e 实测九次超时渐回七次卡死；26d「MC/Launchpad 后
+   条永久消失」同因，当时无安全网可救）。**本 App 一切 alpha 渐变一律分步直设**
+   （`fadeAlpha`：6 步 × 20 ms 逐步写 `alphaValue`），别改回 animator；frame 的 animator
+   （0.12 s 升起）实测可靠、保留。分步任务被取消时 alpha 停在中间值——调用方
+   （预隐藏/拉回）随即置 0，无残留。
+2. **listen-only `CGEventTap` 免授权的边界（15.8.1 实测）**：mask **不含键盘事件**
+   （type 10/11/12）即可 `tapCreate` 成功、零权限弹窗；`.listenOnly` + `.cghidEventTap` +
+   主 run loop `.commonModes` → 回调必在主线程（`MainActor.assumeIsolated` 稳）。mask
+   刻意只含 bit 30 一位——29 是 ~200/s 的环境采样流，加进来会刷爆回调。tap 会被系统超时
+   禁用，回调里必须处理 `.tapDisabledByTimeout` 自愈；创建失败 3 s 重试。
+3. **type 30 = 三/四指切桌面的前置手势指纹**：翻转前 ~620 ms 内必现（13 次手势全有）、
+   ⌃→ 键盘切换零 30；两指滚动（22）/翻页（31）/MC 捏合（29 带 110=32）不触发。
+   **别加字段门槛**——138 疑似指头数（三指=3、四指可能=4），按字段过滤会漏手势。真切换
+   发生在最后一个 30 之后 550–650 ms，**600 ms 超时不要压短**；连击 = 每个新 30 重挂超时。
+4. **安全网条件必须模式无关**：独立贴边的半露 frame 本来就在屏幕外，**不能用「frame
+   出屏」当故障判据**；只看 `!isOnActiveSpace` 与「非预隐藏 && alpha < 0.99」两个信号。
+   预隐藏期间两信号豁免（翻转前窗口在当前空间、α=0 是预期态且 30 持续续命）。静默窗
+   250 ms、连续未愈退避翻倍（500 ms）。拉回复位用 `intendedFrame`（`setFrame` 时记录的
+   目标位，含动画终点）——安全网兜底时 `window.frame` 正是沉没位废值，别用它。
+5. **预隐藏态与既有路径的交互**：期间抑制 hover（`hoverChanged` 开头 guard）；
+   `hide()` 要清预隐藏态并把 alpha 分步拉回 1，否则下次 `orderFront` 摊上隐形窗口；
+   `spaceDidChange` 翻转要取消超时任务、清预隐藏标记与退避计数。
+
 ---
 
 

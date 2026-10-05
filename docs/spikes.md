@@ -1977,3 +1977,57 @@ swift scripts/spike-hide-during-anim.swift       # 切换时 orderOut、150 ms �
 **验收**：UI 快照（`MULTIDOCK_UI_SNAPSHOT=1 --filter UISnapshotTests`）——
 桌面 Tab 的桌面名称区渲染出真实壁纸缩略图；回归测试 `DockBarModelTests`（位置可用性 /
 迁移 / 扫描器排序）与 `SecondaryDockTests`（独立贴边几何、附着-独立切换）全绿。
+
+---
+
+## 实验 27：swipe 预隐藏——type 30 前置手势指纹，切桌面前一拍把次级条藏掉（2026-10-05/06，**已实现**）
+
+> spike 脚本 `scripts/spike-swipe-prefetch.swift`（头部注释含全部六轮结论）；
+> 期间内部轮次编号写作「26c–26f」，与实验 26（设置窗口数据源）无关联。
+
+**背景**：方案 ② 下手势切桌面时，次级条留在旧空间随桌面渐隐（用户 2026-10-05 晚反馈：
+视频全屏时条跟着桌面滚，观感差）。诉求：**手势第一拍就消失**。
+
+**六轮结论**：
+
+1. **NSEvent 全局 swipe 监听零事件**——真实切桌面全程 `.swipe` 不触发，零权限 NSEvent 通道判死。
+2. **listen-only CGEventTap 免授权可挂**（macOS 15.8.1）：mask 不含键盘事件（type 10/11/12）
+   即 `tapCreate` 成功；但切桌面手势只混在 type 29（gesture，~200/s 环境采样流）里，
+   常规字段与普通触摸无区别。
+3. **指纹锁定 type 30**（26c，宽 mask 采集）：13 次三/四指手势切桌面的翻转前 ~620 ms 内
+   **全部**出现 30（burst 30×1–30×5）；8 次 ⌃→ 键盘切换**零 30**。首见字段
+   `110=23 123=1 132=1 134=1 135=… 136=1 138=3 165=1`（138 疑似指头数）。
+   刻意**不加字段门槛**（四指可能 138=4）。另证：字段 55 镜像事件类型；169 是环境时间戳
+   （并入 29 基线 `{39,40,45,50,55,58,85,87,101,169}`）；MC/捏合手势走第二种指纹
+   （29 带 `110=32`，零 30，不影响触发规则）。
+4. **30 → 预隐藏**（26d）手测通过：横扫切桌面第一拍即隐 ✓、⌃→ 对照不隐 ✓。
+   但三个失效场景条「永久消失」（MC / 打断横扫 / Launchpad）。
+5. **`window.animator().alphaValue` 在本窗口随机静默失效**（26e 定罪）：九次超时渐回
+   七次被安全网抓到 alpha=0.0 —— 26d「永久消失」同因（当时无网可救）；
+   孤儿窗口（+16 ms `moveToActiveSpace` 绑进 MC 瞬态空间）全程仅 4 次，偶发非主犯。
+   安全网静默窗 800 ms 太慢（用户反馈「要等好几秒」）→ 26f 收紧。
+6. **26f 定稿**（用户拍板落生产）：animator alpha 全部换**分步直设**（`fadeAlpha`，
+   6 步 × 20 ms）；安全网静默窗 250 ms、连续未愈退避 500 ms；新增故障特征
+   「hidden=false 但 alpha<1」。打断横扫/MC/Launchpad 后 ~0.7 s 条渐回，用户认可。
+
+**生产落地**（2026-10-06）：
+
+- `Spaces/SpaceTransitionGestureMonitor.swift`：listen-only tap（`.cghidEventTap` +
+  `.commonModes`），mask 只有 type 30 一位（宽 mask 的子集，29 环境流一条不要），
+  3 s 重试 + `tapDisabledByTimeout` 自愈；零权限。
+- `SecondaryDockWindow`：`hideForSpaceTransition()`（α=0 直设）+ `fadeBackFromSpaceTransition()`
+  （分步渐回）+ `isOnActiveSpace`/`currentAlpha`（安全网信号）；`pullToActiveSpace` 的
+  animator alpha 换分步直设，升起目标改用 `intendedFrame`（安全网兜底时窗口 frame
+  可能停在沉没位等废值）。
+- `SecondaryDockController`：`spaceTransitionGestureDetected()`（预隐藏 + 600 ms 超时
+  续命 + 顺手收回复展态）；`spaceDidChange` 翻转确认即取消超时、由拉回接管；
+  安全网挂 `geometryTick`（200 ms 节拍），条件**模式无关**——独立贴边的半露 frame
+  本来就在屏外，不能沿用 spike 的「frame 出屏」判定，只看 `!isOnActiveSpace` 与
+  `!preHidden && alpha<0.99`；预隐藏期间两信号豁免（翻转前窗口在当前空间、α=0
+  是预期态且 30 持续续命）；hover 预隐藏期间抑制；`hide()` 清预隐藏态并把 α 分步
+  复位（否则下次 orderFront 摊上隐形窗口）。
+
+**验收**：406 测试全绿（+11：预隐藏/续命/超时渐回/翻转取消超时/条不在忽略/hover
+抑制/安全网三态/退避）；release 零警告；`build/MultiDock.app` 已重打包。
+真机手测归 A11（清单更新：① 手势切桌面第一拍即隐 + 切换后沉没位升起；② 打断横扫
+600 ms 渐回；③ MC/Launchpad 关掉后 ≤1 s 回来；④ 两指横扫网页不误隐；⑤ ⌃→ 对照）。

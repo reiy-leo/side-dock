@@ -3,6 +3,46 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 43 次）— 实验 27 手势预隐藏落生产：type 30 → 切桌面前一拍隐藏 + 分步渐回 + 安全网
+
+**用户说**：「⌃→ 键盘切换对了，三/四指横扫切桌面不对（还是跟着桌面滚）」；26d 后：「三指上滑
+Mission Control / 打断横扫 / 四指捏合 Launchpad 三场景 custom dock 消失不出现了」；26e 后：「要等
+好几秒，可以缩短么」；「好的，执行吧」（批准 26f 方案落生产）；本会话「继续执行」收尾文档。
+
+**做了什么**：
+
+1. **spike 六轮（内部轮次 26c–26f，正式记为实验 27；`scripts/spike-swipe-prefetch.swift`）**：
+   NSEvent `.swipe` 通道判死（真实切桌面零事件）→ listen-only `CGEventTap` 免授权挂上
+   （mask 不含键盘事件）→ 宽 mask 指纹锁定 **type 30**（13 次手势翻转前 ~620 ms 全有、
+   8 次 ⌃→ 零 30；22/31/MC 捏合不触发）→ 26d 30 触发预隐藏（横扫第一拍即隐 ✓，但 MC /
+   打断横扫 / Launchpad 三场景条**永久消失**——`moveToActiveSpace` 拉回把窗口绑进瞬态空间
+   成孤儿）→ 26e 安全网 + 心跳遥测定罪 **`animator().alphaValue` 随机静默失效**（九次超时
+   渐回七次卡 alpha=0.0；26d「永久消失」同因，当时无网可救）→ 26f alpha 全换分步直设 +
+   安全网静默窗 800→250 ms + 未愈退避翻倍，用户批准。
+2. **生产集成（4 文件 + 测试）**：新建 `Spaces/SpaceTransitionGestureMonitor.swift`
+   （listen-only tap、mask 只含 bit 30、3 s 重试、`.tapDisabledByTimeout` 自愈、零权限）；
+   `SecondaryDockWindow` 加 `hideForSpaceTransition()`（α 直设 0）、`fadeAlpha`（6 步 ×
+   20 ms 分步直设，animator alpha 全弃用）、`intendedFrame`（拉回复位不再拿沉没位废值）、
+   暴露 `isOnActiveSpace` / `currentAlpha` 供安全网；`SecondaryDockController` 手势状态机
+   （预隐藏 + 600 ms 超时分步渐回 + 连击续命 + 翻转取消超时 + hover 抑制 + `hide()` 清态拉回
+   α）+ **安全网**挂 200 ms `geometryTick`（条件模式无关：非预隐藏 &&（不在当前空间 ‖
+   alpha < 0.99），独立贴边半露 frame 本来就在屏外、不能按「frame 出屏」判故障；静默窗
+   250 ms、未愈退避翻倍）；`AppDelegate` 接线 monitor（退出时 stop）。
+3. **测试**：+11 用例（预隐藏+收回 / 超时渐回 / 连击续命 / 翻转取消超时 / 未显示不触发 /
+   hover 抑制 / 安全网愈卡半透明 / 愈孤儿 / 健康跳过 / 预隐藏豁免 / 退避），**406 全绿、
+   release 零警告、已重打包**；后台 spike 进程已杀（避免与真机 App 双条同屏）。
+4. **文档**：spikes.md 实验 27 结案、facts.md 四条（listen-only tap 免授权边界 / type 30
+   指纹 / animator alpha 静默失效 / NSEvent swipe 判死）、spike 头注释改号、rules.md 新坑
+   五条、PLAN §3.12、AGENTS 全节。
+
+**影响 / 未解决**：
+- **A11 手测清单更新（当前最紧）**：① 三/四指横扫切桌面——条**第一拍即隐**、切换后从原生
+  Dock 底部 0.12 s 升起；② 打断横扫（没切成）——600 ms 后分步渐回；③ 三指上滑 MC / 四指捏合
+  Launchpad——条可隐藏，关掉后 ≤1 s 必须回来（安全网兜底）；④ 两指横扫网页——条**不应**
+  消失（type 30 误报面核对）；⑤ ⌃→ 键盘切换——对照，条不应提前消失。
+- 若发现 30 新误报场景，判据看 `multidock.log` 的「切桌面前置手势 → 预隐藏」与「超时无切换」
+  频率；`gestureRevealTimeout`（600 ms）与渐回步进都是 `Dependencies` 可注入参数，可按体感调。
+
 ### 2026-10-06（第 42 次）— 设置窗口重构（v4 内容模型）：默认 Dock 自动生成 + Dock 栏实体
 
 **用户说**：「重构设置窗口，默认Dock栏是显示/Applications以及用户Applications最新添加的应用（修改时间）10个应用，这个数值范围1-15个用户可以自行调整。大小、放大、自动隐藏、特效、最小化到应用都跟随系统设置（这些选项都不能设置，都跟系统一样）桌面：Dock栏列表，默认可以有5个（每个Dock栏都可以设置位置，避开台前调度占用的那边，其他两边都可以用，button group，其他设置都跟随系统，用户不能设置｜Dock栏都是在此设置页面都是横向显示｜设置中的Dock栏默认显示8个图标的位置，如果用户设置可更多可以以滚动显示更多｜最多设置15个，最少设置1个），dock栏名称右侧可以选择桌面下拉列表（缩略图），可以选择位置下拉列表。」

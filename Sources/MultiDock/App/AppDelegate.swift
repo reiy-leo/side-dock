@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var toastWindow: DesktopNameToastWindow!
     private var secondaryDockWindow: SecondaryDockWindow!
     private var secondaryDockController: SecondaryDockController?
+    /// 切桌面前置手势监视器（实验 26）：type 30 → 次级条预隐藏。
+    private var spaceGestureMonitor: SpaceTransitionGestureMonitor?
 
     private var debugWindow: NSWindow?
     private var settingsWindow: NSWindow?
@@ -98,6 +100,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.attachSecondaryDock(controller)
         controller.start()
         observeSecondaryDockConfiguration(state, controller: controller)
+        // 切桌面前置手势（实验 26）：type 30 一到就预隐藏次级条，翻转过渡不跟着滑。
+        // listen-only tap 零权限（mask 不含键盘事件，实验 26 第 2 轮实测）。
+        let monitor = SpaceTransitionGestureMonitor(
+            onGesture: { [weak controller] in controller?.spaceTransitionGestureDetected() },
+            log: { [weak state] message in state?.append(.info, message) }
+        )
+        spaceGestureMonitor = monitor
+        monitor.start()
     }
 
     /// 次级 Dock 条的内容随配置变化（改图标、改绑定、开关切换）即时刷新。
@@ -123,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         lifecycle.applicationWillTerminate()
+        spaceGestureMonitor?.stop()
         if let token = powerOffObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(token)
         }

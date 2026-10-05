@@ -5,6 +5,8 @@ import AppKit
 ///
 /// 状态只有两个：半露（默认）与展开（hover）。窗口在「启用 + 在用户桌面 + 有内容」时显示，
 /// 全屏空间（`space == nil`）与关闭开关时隐藏 —— 与原生 Dock 的可见性行为对齐。
+/// 另有一个瞬态：**手势预隐藏**（实验 26）——type 30 前置手势一拍即隐，翻转确认后由
+/// 拉回编排接管，600 ms 无切换（打断横扫）则分步渐回。
 ///
 /// **摆放模式（2026-10-05：每根 Dock 栏可设位置）**：
 /// - **附着**（栏位置 == 原生 Dock 方位）：贴原生 Dock 内侧，半露被 Dock 挡住；
@@ -28,6 +30,12 @@ final class SecondaryDockController {
         var geometryPollInterval: Duration = .milliseconds(200)
         /// 光标离开显出带后收回的宽限时长（Dock 自己收回也有迟滞，防止掠过边缘闪烁）。
         var revealGrace: Duration = .milliseconds(400)
+        /// 手势预隐藏的超时渐回（实验 26 26f）。真切换发生在最后一个 type 30 之后
+        /// 550–650 ms —— 压短会提前显形反闪，别调。
+        var gestureRevealTimeout: Duration = .milliseconds(600)
+        /// 安全网静默窗（实验 26 26f）：状态机动作后静默超过这个时长才检查；
+        /// 连续未愈翻倍退避（防 Mission Control 打开期间反复闪动）。
+        var safetyNetQuietWindow: Duration = .milliseconds(250)
         /// 鼠标位置。收回去之前核对一遍 —— 窗口自己动过时 `onHover(false)` 可能丢事件；
         /// 显出带判定也用它。
         var mouseLocation: () -> CGPoint = { NSEvent.mouseLocation }
@@ -53,6 +61,15 @@ final class SecondaryDockController {
     private var lastDockArea: CGRect?
     /// 光标离开显出带后的宽限收起任务。
     private var hideGraceTask: Task<Void, Never>?
+    /// 手势预隐藏态（实验 26）：type 30 已触发，等翻转确认或超时渐回。
+    private var isPreHidden = false
+    /// 预隐藏的超时任务（连击续命 = 每个 30 重挂）。
+    private var gestureRevealTask: Task<Void, Never>?
+    /// 最近一次状态机动作（手势/翻转确认/超时/安全网兜底）时刻；安全网静默窗基准。
+    private var lastStateMachineEventAt: ContinuousClock.Instant?
+    /// 安全网连续未愈次数（退避：250 → 500 ms）。
+    private var netBackoff = 0
+    private let clock = ContinuousClock()
 
     init(deps: Dependencies) {
         self.deps = deps
@@ -89,13 +106,82 @@ final class SecondaryDockController {
         let wasShowing = isShowing
         lastSpace = space
         applyCurrentState()
+        guard spaceChanged else { return }
+        // 翻转已确认（手势/键盘/MC 出入都走这里）：预隐藏使命结束，超时任务作废，
+        // 由拉回编排接管显形（实验 26 26f）。
+        isPreHidden = false
+        gestureRevealTask?.cancel()
+        gestureRevealTask = nil
+        netBackoff = 0
+        lastStateMachineEventAt = clock.now
         // 只在「换了空间」且「条在旧空间还挂着、新空间仍要显示」时拉回：
         // - 从隐藏到显示（全屏回来 / 刚开启）不用拉——`orderFront` 本身就落在当前空间；
         // - 切到全屏（nil）`applyCurrentState` 已把条藏起来，`isShowing` 变 false，不拉；
         // - 同一空间的重复事件不拉，防止淡入叠淡入的闪烁。
-        if spaceChanged, wasShowing, isShowing {
+        if wasShowing, isShowing {
             deps.presenter.pullToActiveSpace()
         }
+    }
+
+    // MARK: - 手势预隐藏（实验 26：type 30 前置手势 → 切桌面「不跟着滑」）
+
+    /// 三/四指切桌面的前置手势（`SpaceTransitionGestureMonitor` 的 type 30 回调）。
+    /// 翻转前 ~620 ms 内必现：第一时间把条藏掉，翻转过渡就看不见条在滑。
+    /// 打断横扫与 ⌃→ 键盘切换（零 30）不进这里 —— 前者超时渐回，后者照旧拉回。
+    func spaceTransitionGestureDetected() {
+        guard deps.isEnabled(), isShowing else { return }
+        lastStateMachineEventAt = clock.now
+        if isPreHidden {
+            // 连击续命：最后一个 30 后 550–650 ms 才翻转，每个新 30 重挂超时。
+        } else {
+            isPreHidden = true
+            // 顺手收回复展态：预隐藏期间收不到 hover 反馈，收回去切完桌面浮出的就是干净的半露。
+            isRevealed = false
+            applyCurrentFrame(animated: false)
+            deps.presenter.hideForSpaceTransition()
+            deps.log("次级 Dock 条：切桌面前置手势 → 预隐藏")
+        }
+        gestureRevealTask?.cancel()
+        gestureRevealTask = Task { [timeout = deps.gestureRevealTimeout, weak self] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled, let self else { return }
+            self.revealOnGestureTimeout()
+        }
+    }
+
+    /// 超时无空间切换 = 打断的横扫（没切过去）：分步渐回。
+    /// 不做沉没位升起 —— 空间没翻，窗口还在原地（spike 26f 行为）。
+    private func revealOnGestureTimeout() {
+        gestureRevealTask = nil
+        guard isPreHidden else { return }
+        isPreHidden = false
+        lastStateMachineEventAt = clock.now
+        deps.presenter.fadeBackFromSpaceTransition()
+        deps.log("次级 Dock 条：超时无切换 → 分步渐回（误扫）")
+    }
+
+    /// 安全网（实验 26 26e/26f）：animator 卡死 / 孤儿空间绑定 / 渐回中断的兜底。
+    /// 条件刻意**模式无关**（独立贴边的半露 frame 本来就滑出屏幕一半，不能用「frame 出屏」
+    /// 判定）：只看「不在当前空间」与「非预隐藏却 alpha<1」两个信号。预隐藏期间两者都豁免
+    /// —— 翻转前窗口还挂在当前空间、alpha=0 是预期态，且每个 30 都在续命。
+    /// 挂在 `geometryTick`（200 ms 节拍）里：恢复延迟以节拍为上界。
+    private func runSpaceTransitionSafetyNet() {
+        guard isShowing, let lastEventAt = lastStateMachineEventAt else { return }
+        // 静默窗退避（spike 26f：250 → 500 ms，防 MC 打开期间反复闪动）。
+        let quietWindow = netBackoff >= 1
+            ? deps.safetyNetQuietWindow + deps.safetyNetQuietWindow
+            : deps.safetyNetQuietWindow
+        guard clock.now - lastEventAt > quietWindow else { return }
+        let stuckOffSpace = !isPreHidden && !deps.presenter.isOnActiveSpace
+        let stuckDimmed = !isPreHidden && deps.presenter.currentAlpha < 0.99
+        guard stuckOffSpace || stuckDimmed else { return }
+        netBackoff += 1
+        lastStateMachineEventAt = clock.now
+        deps.presenter.pullToActiveSpace()
+        deps.log(
+            "次级 Dock 条：安全网 #\(netBackoff) 兜底重挂"
+                + "（不在当前空间=\(stuckOffSpace) 卡半透明=\(stuckDimmed)）"
+        )
     }
 
     /// 开关或配置（settings / bars）变化后的统一入口。
@@ -109,6 +195,7 @@ final class SecondaryDockController {
             hide()
             return
         }
+        runSpaceTransitionSafetyNet()
         let fresh = deps.faceProvider.currentFace()
         guard fresh != face else {
             // 几何没变也要跟光标：自动隐藏生效中（face == nil）且条附着在 Dock 那条边上时，
@@ -130,6 +217,9 @@ final class SecondaryDockController {
     // MARK: - hover
 
     func hoverChanged(_ inside: Bool) {
+        // 预隐藏期间不响应 hover：窗口正透明，显形/收回都无视觉意义，
+        // 还会把 frame 留在展开位（切完桌面浮出全条；实验 26）。
+        guard !isPreHidden else { return }
         if inside {
             tuckTask?.cancel()
             tuckTask = nil
@@ -236,6 +326,13 @@ final class SecondaryDockController {
         hideGraceTask?.cancel()
         hideGraceTask = nil
         isRevealed = false
+        if isPreHidden {
+            isPreHidden = false
+            gestureRevealTask?.cancel()
+            gestureRevealTask = nil
+            // 把 alpha 分步复位：否则下次 orderFront 摊上一个隐形窗口。
+            deps.presenter.fadeBackFromSpaceTransition()
+        }
         guard isShowing else { return }
         isShowing = false
         deps.presenter.orderOut()

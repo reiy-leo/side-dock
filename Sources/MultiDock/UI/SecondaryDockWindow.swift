@@ -12,6 +12,15 @@ protocol SecondaryDockPresenting: AnyObject {
     /// 把窗口拉回当前活动空间（`.moveToActiveSpace` 折中方案的配套，实验 24 / AGENTS.md §6.1 #4）。
     /// 真实窗口 = 「临时跨空间可见 → orderFront → 设回单空间」+ 淡入；替身记录调用次数即可。
     func pullToActiveSpace()
+    /// 手势预隐藏（实验 26）：type 30 前置手势一触发就直设 α=0 —— 切桌面前把条藏掉，
+    /// 翻转过渡就「不跟着滑」。不走 animator（在本窗口实测随机静默失效，实验 26 26e/26f）。
+    func hideForSpaceTransition()
+    /// 预隐藏超时的分步渐回（打断横扫/误扫）：α 分 6 步 × 20 ms 直设回 1。
+    func fadeBackFromSpaceTransition()
+    /// 安全网信号：窗口是否挂在当前活动空间（孤儿空间绑定检测，实验 26 26e）。
+    var isOnActiveSpace: Bool { get }
+    /// 安全网信号：当前透明度（animator 卡死 / 渐回中断检测，实验 26 26f）。
+    var currentAlpha: CGFloat { get }
 }
 
 /// 贴在原生 Dock 内侧的次级条窗口。
@@ -54,6 +63,12 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     private var hosting: NSHostingView<SecondaryDockStripView>!
     /// 「设回单空间配方」的延迟任务；连切时取消上一拍未生效的，防止堆积。
     private var pullResetTask: Task<Void, Never>?
+    /// 分步 alpha 渐变任务（实验 26 26f）。`window.animator().alphaValue` 在本窗口实测
+    /// 随机静默失效（26e 九次超时渐回七次卡死 alpha=0.0），渐回全部换手动分步直设。
+    private var fadeTask: Task<Void, Never>?
+    /// 最近一次 `setFrame` 的目标位（动画进行中也记录终点）。拉回的升起目标用它：
+    /// 安全网兜底时窗口 frame 可能停在沉没位等废值，当前 frame 不能当目标（实验 26 26f）。
+    private var intendedFrame: NSRect?
 
     /// 点击条目。由 `AppDelegate` 注入（`NSWorkspace.open`）。
     var onActivate: (SecondaryDockItem) -> Void = { _ in }
@@ -100,6 +115,7 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     }
 
     func setFrame(_ frame: NSRect, animated: Bool) {
+        intendedFrame = frame
         container.frame = NSRect(origin: .zero, size: frame.size)
         // NSVisualEffectView 没有 cornerRadius（那是 UIKit 的），圆角靠 maskImage 现画。
         container.maskImage = Self.maskImage(size: frame.size)
@@ -128,12 +144,13 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     ///    此刻窗口还属旧空间，跳变无视觉）；
     /// 2. 切到临时跨空间配方 → `orderFrontRegardless` 在当前空间重新注册；
     /// 3. 下一拍（16 ms，spike 实证 10 ms 即够，留一帧余量）设回单空间配方；
-    /// 4. 0.12 s easeInEaseOut 升回原位并同步淡显（alpha 与 frame 同一动画组——
+    /// 4. 0.12 s easeInEaseOut 升回原位，alpha 分步直设同步淡显（各 6 步 × 20 ms ——
     ///    即便 Dock 在左/右侧、沉没位不被遮挡，也只是无方向感的淡入，不会破相）。
     /// 连击时 `pullResetTask` 先取消上一拍未生效的复位，防止旧任务把新空间的配方改回去。
     func pullToActiveSpace() {
         pullResetTask?.cancel()
-        let targetFrame = window.frame
+        fadeTask?.cancel()
+        let targetFrame = intendedFrame ?? window.frame
         let visibleBottom = (window.screen ?? NSScreen.main)?.visibleFrame.minY ?? 0
         window.alphaValue = 0
         window.setFrame(
@@ -156,7 +173,39 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
             context.duration = Self.pullRiseDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             window.animator().setFrame(targetFrame, display: true)
-            window.animator().alphaValue = 1
+        }
+        // alpha 不进动画组：animator 渐回在本窗口实测随机静默失效（实验 26 26e/26f），
+        // 换分步直设（6 步 × 20 ms ≈ 120 ms，与 0.12 s 升起同步收尾）。
+        fadeAlpha(to: 1)
+    }
+
+    /// 手势预隐藏（实验 26）：type 30 一到就直设 α=0。
+    func hideForSpaceTransition() {
+        fadeTask?.cancel()
+        window.alphaValue = 0
+    }
+
+    /// 打断横扫（600 ms 无切换）的分步渐回。
+    func fadeBackFromSpaceTransition() {
+        fadeAlpha(to: 1)
+    }
+
+    var isOnActiveSpace: Bool { window.isOnActiveSpace }
+    var currentAlpha: CGFloat { window.alphaValue }
+
+    /// 分步直设 alpha（实验 26 26f）。被取消时停在中间值 —— 调用方
+    ///（hideForSpaceTransition / pullToActiveSpace 开头）随即直设 0，无残留。
+    private func fadeAlpha(to target: CGFloat, steps: Int = 6, intervalMs: Int = 20) {
+        fadeTask?.cancel()
+        let from = window.alphaValue
+        let delta = target - from
+        guard abs(delta) > 0.005 else { return }
+        fadeTask = Task { [weak self] in
+            for step in 1...steps {
+                try? await Task.sleep(for: .milliseconds(intervalMs))
+                guard !Task.isCancelled, let self else { return }
+                self.window.alphaValue = from + delta * CGFloat(step) / CGFloat(steps)
+            }
         }
     }
 

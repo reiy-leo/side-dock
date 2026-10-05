@@ -700,6 +700,16 @@ struct AppSettings: Codable {
   （用户规格：切换后总感知 ≤ 0.15 s；实验 25 采纳的残余）；程序化切换（菜单栏点击）经
   `SpaceSwitcher.switchTo → observer.refreshNow()` 当拍拉回，没有 300 ms 空窗。拉回闸门：仅
   「换了空间且切换前后都在显示」才拉（同一空间重复事件 / 全屏进出 / 从隐藏恢复不拉）。
+- **手势预隐藏（2026-10-06，实验 27）**：三/四指横扫切桌面时条**在过渡第一拍就消失**
+  （不再随桌面滑）。`SpaceTransitionGestureMonitor`（listen-only `CGEventTap`，mask 只含
+  type 30，零权限）在切桌面前置手势指纹上回调 `spaceTransitionGestureDetected()`——指纹
+  = type 30（翻转前 ~620 ms 必现；⌃→ 键盘切换零 30；两指滚动 22 / 翻页 31 / MC 捏合不触发；
+  **不加字段门槛**）。动作：α 直设 0 + 收回半露位；600 ms 内确认翻转则由拉回编排（沉没位
+  0.12 s 升起）接管，超时无切换（误扫/打断横扫/MC/Launchpad）分步渐回（6 步 × 20 ms，
+  animator alpha 实测随机静默失效，一律分步直设）；连击由每个新 30 续命。安全网挂
+  200 ms 几何轮询：非预隐藏且（不在当前空间 / alpha < 0.99）→ 兜底重挂拉回，静默窗
+  250 ms、未愈退避翻倍（条件**模式无关**——独立贴边半露 frame 本来就在屏外）。NSEvent
+  `.swipe` 通道在真实切桌面全程零事件（实验 27 第 1 轮），已判死。
 - **显隐与原生 Dock 同步（2026-10-04 用户修订）**：原生 Dock 隐藏 → 条隐藏；Dock 显出 →
   条同步显示。信号 = face（`visibleFrame` 内缩）为主，自动隐藏生效中（face == nil）用
   「光标在显出带」启发式补判（实验 22：Dock 实际显隐没有零权限直读信号）；几何轮询 200 ms。
@@ -743,17 +753,20 @@ struct AppSettings: Codable {
 | 几何源 | `Dock/DockFaceProviding.swift` | `ScreenInsetDockFaceProvider` 扫全部 `NSScreen`，取内缩最大的屏 |
 | 呈现 | `UI/SecondaryDockWindow.swift` | Toast 配方 + 三处不同：可交互、层级 19、SwiftUI 图标条；材质 `.popover` + maskImage 圆角；**方案 ②：单空间配方 + `pullToActiveSpace()`（置透明 + frame 跳沉没位 → 临时跨空间 → orderFront → 16 ms 设回 → 0.12 s 升回原位 + 同步淡显，实验 25）** |
 | 内容 | `UI/SecondaryDockStripView.swift` | 条目模型 + `SecondaryDockContentBuilder`（纯函数）+ SwiftUI 视图 |
-| 调度 | `UI/SecondaryDockController.swift` | 状态机（半露/展开/隐藏）+ **显隐同步（face + 显出带 + 400 ms 宽限）**+ 200 ms 几何轮询 + hover 防抖 + 鼠标位置安全网 + **空间切换拉回闸门**（换空间且前后都显示才拉）；依赖全注入可单测 |
+| 调度 | `UI/SecondaryDockController.swift` | 状态机（半露/展开/隐藏/手势预隐藏）+ **显隐同步（face + 显出带 + 400 ms 宽限）**+ 200 ms 几何轮询 + hover 防抖 + 鼠标位置安全网 + **空间切换拉回闸门**（换空间且前后都显示才拉）+ **手势预隐藏**（30 → α=0 + 600 ms 超时分步渐回 + 连击续命 + 安全网兜底，实验 27）；依赖全注入可单测 |
+| 手势监视 | `Spaces/SpaceTransitionGestureMonitor.swift` | listen-only `CGEventTap`，mask 只含 type 30（切桌面前置手势指纹，零权限，实验 27）；创建失败 3 s 重试、`.tapDisabledByTimeout` 自愈；回调走 `spaceTransitionGestureDetected()` |
 
 **可见性行为**：全屏空间（`space == nil`）隐藏；开关关闭隐藏；
 内容为空（该桌面 `pinnedApps` 为空）隐藏；**自动隐藏 / 重启瞬态里与原生 Dock 同步显隐**
 （Dock 隐藏条也藏，光标碰边 Dock 显出时条同步出来 —— 实验 22）。多显示器跟随内缩最大的那块屏（B5 未实测，标注）。
 
 **验收**：次级条相关单测（几何三方位 / 半露 / clamp / dockArea / 内容构建 / 状态机 / 条宽随内容 /
-同步显隐 / **空间拉回五例**——切空间拉一次、连切各拉一次、重复事件不拉、进全屏不拉、出全屏不拉，
-累计到 **369 全绿**）；快照 `secondary-dock-{light,dark}.png`；真机 window-dump
+同步显隐 / **空间拉回五例**——切空间拉一次、连切各拉一次、重复事件不拉、进全屏不拉、出全屏不拉 /
+**手势预隐藏十一例**——预隐藏+收回、超时渐回、连击续命、翻转取消超时、未显示不触发、hover 抑制、
+安全网愈卡半透明 / 愈孤儿 / 健康跳过 / 预隐藏豁免 / 未愈退避；全仓 **406 全绿**）；快照
+`secondary-dock-{light,dark}.png`；真机 window-dump
 核验 `layer=19` 半露 frame 逐像素吻合（实验 21）、启动对齐日志、切桌面零重启日志（v3.6.1/2）；
-hover/点击/方案 ② 切桌面手感归入用户手测（A11）。
+hover/点击/方案 ② 与手势预隐藏切桌面手感归入用户手测（A11）。
 
 ---
 

@@ -198,6 +198,11 @@ private final class FakeSecondaryDockPresenter: SecondaryDockPresenting {
     private(set) var frontCount = 0
     private(set) var outCount = 0
     private(set) var pullCount = 0
+    private(set) var hideCount = 0
+    private(set) var fadeBackCount = 0
+    /// 安全网判定信号的可注入替身（真实窗口 = `window.isOnActiveSpace` / `window.alphaValue`）。
+    var stubIsOnActiveSpace = true
+    var stubCurrentAlpha: CGFloat = 1
 
     var lastFrame: NSRect? { frames.last?.frame }
     var lastAnimated: Bool? { frames.last?.animated }
@@ -214,6 +219,10 @@ private final class FakeSecondaryDockPresenter: SecondaryDockPresenting {
     func orderFront() { frontCount += 1 }
     func orderOut() { outCount += 1 }
     func pullToActiveSpace() { pullCount += 1 }
+    func hideForSpaceTransition() { hideCount += 1 }
+    func fadeBackFromSpaceTransition() { fadeBackCount += 1 }
+    var isOnActiveSpace: Bool { stubIsOnActiveSpace }
+    var currentAlpha: CGFloat { stubCurrentAlpha }
 }
 
 @MainActor
@@ -279,7 +288,9 @@ final class SecondaryDockControllerTests: XCTestCase {
         presenter: FakeSecondaryDockPresenter,
         provider: FakeDockFaceProvider,
         content: ContentBox,
-        enabled: Bool = true
+        enabled: Bool = true,
+        gestureRevealTimeout: Duration = .milliseconds(600),
+        safetyNetQuietWindow: Duration = .milliseconds(250)
     ) -> SecondaryDockController {
         SecondaryDockController(deps: .init(
             presenter: presenter,
@@ -288,6 +299,8 @@ final class SecondaryDockControllerTests: XCTestCase {
             isEnabled: { enabled },
             log: { _ in },
             tuckDebounce: .milliseconds(10),
+            gestureRevealTimeout: gestureRevealTimeout,
+            safetyNetQuietWindow: safetyNetQuietWindow,
             mouseLocation: { CGPoint(x: -9999, y: -9999) }
         ))
     }
@@ -465,6 +478,215 @@ final class SecondaryDockControllerTests: XCTestCase {
         controller.spaceDidChange(FakeSpaceProvider.desktops(count: 2)[1])
         XCTAssertEqual(presenter.frontCount, 2, "从隐藏恢复显示")
         XCTAssertEqual(presenter.pullCount, 0, "隐藏过的窗口 orderFront 落在当前空间，无需拉回")
+    }
+
+    // MARK: - 手势预隐藏（实验 26：type 30 前置手势 → 切桌面「不跟着滑」）
+
+    func testGesturePrehidesShowingBarAndTucks() {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(
+            presenter: presenter, provider: provider, content: content,
+            gestureRevealTimeout: .milliseconds(500)
+        )
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        // 展开态下触手势：一拍即隐，且顺手收回展开（切完桌面浮出的是半露）。
+        controller.hoverChanged(true)
+        controller.spaceTransitionGestureDetected()
+        XCTAssertEqual(presenter.hideCount, 1, "手势一拍即隐（alpha=0 直设）")
+        let barSize = SecondaryDockLayout.barSize(itemCount: 3, iconSize: 36, isVertical: false)
+        let expected = SecondaryDockLayout.placement(barSize: barSize, face: bottomFace())
+        XCTAssertEqual(presenter.lastFrame, expected.tucked, "预隐藏同时收回复展态")
+        XCTAssertEqual(presenter.lastAnimated, false)
+    }
+
+    func testGestureTimeoutFadesBackWhenSwitchInterrupted() async throws {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(
+            presenter: presenter, provider: provider, content: content,
+            gestureRevealTimeout: .milliseconds(20)
+        )
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        controller.spaceTransitionGestureDetected()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(presenter.fadeBackCount, 1, "打断横扫：超时后分步渐回（不升沉没位）")
+        XCTAssertEqual(presenter.pullCount, 0, "没有空间翻转就不做沉没位升起")
+
+        // 渐回后状态机复位：新手势能再次预隐藏。
+        controller.spaceTransitionGestureDetected()
+        XCTAssertEqual(presenter.hideCount, 2, "超时渐回后可再次预隐藏")
+    }
+
+    func testRepeatedGesturesRenewTimeout() async throws {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(
+            presenter: presenter, provider: provider, content: content,
+            gestureRevealTimeout: .milliseconds(60)
+        )
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        controller.spaceTransitionGestureDetected()
+        try await Task.sleep(for: .milliseconds(30))
+        controller.spaceTransitionGestureDetected() // 连击：续命
+        try await Task.sleep(for: .milliseconds(90))
+        XCTAssertEqual(presenter.hideCount, 1, "连击只隐藏一次")
+        XCTAssertEqual(presenter.fadeBackCount, 1, "超时从最后一个手势起算，只渐回一次")
+    }
+
+    func testSpaceChangeAfterGesturePullsWithoutTimeoutFade() async throws {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(
+            presenter: presenter, provider: provider, content: content,
+            gestureRevealTimeout: .milliseconds(20)
+        )
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        controller.spaceTransitionGestureDetected()
+        controller.spaceDidChange(FakeSpaceProvider.desktops(count: 2)[1])
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(presenter.pullCount, 1, "切换确认走拉回 + 沉没位升起")
+        XCTAssertEqual(presenter.fadeBackCount, 0, "拉回已接管显形，超时任务作废")
+    }
+
+    func testGestureIgnoredWhenBarNotShowing() async throws {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(
+            presenter: presenter, provider: provider, content: content,
+            gestureRevealTimeout: .milliseconds(20)
+        )
+        provider.face = bottomFace()
+        controller.geometryTick()
+        content.snapshot = nil // 空配置桌面：条不在
+        controller.spaceDidChange(makeSpace())
+
+        controller.spaceTransitionGestureDetected()
+        XCTAssertEqual(presenter.hideCount, 0, "条不在就无预隐藏可言")
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertEqual(presenter.fadeBackCount, 0)
+    }
+
+    func testHoverSuppressedWhilePreHidden() async throws {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(
+            presenter: presenter, provider: provider, content: content,
+            gestureRevealTimeout: .milliseconds(20)
+        )
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        controller.spaceTransitionGestureDetected()
+        let framesBefore = presenter.frames.count
+        controller.hoverChanged(true)
+        XCTAssertEqual(presenter.frames.count, framesBefore, "预隐藏期间 hover 不挪 frame")
+        try await Task.sleep(for: .milliseconds(80))
+    }
+
+    // MARK: - 安全网（实验 26 26e/26f：卡死兜底，条件模式无关）
+
+    func testSafetyNetHealsStuckDimmedBar() async throws {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(
+            presenter: presenter, provider: provider, content: content,
+            safetyNetQuietWindow: .milliseconds(20)
+        )
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        // 模拟 animator 卡死：非预隐藏但 alpha 卡在 0.3（26e 实测故障形态）。
+        presenter.stubCurrentAlpha = 0.3
+        try await Task.sleep(for: .milliseconds(80))
+        controller.geometryTick()
+        XCTAssertEqual(presenter.pullCount, 1, "卡半透明 → 安全网重挂拉回")
+    }
+
+    func testSafetyNetHealsOrphanedBar() async throws {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(
+            presenter: presenter, provider: provider, content: content,
+            safetyNetQuietWindow: .milliseconds(20)
+        )
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        // 模拟孤儿绑定：拉回的 +16ms 复位把窗口绑进了瞬态空间（26e 偶发形态）。
+        presenter.stubIsOnActiveSpace = false
+        try await Task.sleep(for: .milliseconds(80))
+        controller.geometryTick()
+        XCTAssertEqual(presenter.pullCount, 1, "不在当前空间 → 安全网重挂拉回")
+    }
+
+    func testSafetyNetSkipsHealthyBar() async throws {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(
+            presenter: presenter, provider: provider, content: content,
+            safetyNetQuietWindow: .milliseconds(20)
+        )
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        try await Task.sleep(for: .milliseconds(80))
+        controller.geometryTick()
+        XCTAssertEqual(presenter.pullCount, 0, "健康状态（在当前空间、alpha=1）不触发安全网")
+    }
+
+    func testSafetyNetSkipsWhilePreHidden() async throws {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(
+            presenter: presenter, provider: provider, content: content,
+            gestureRevealTimeout: .milliseconds(500),
+            safetyNetQuietWindow: .milliseconds(20)
+        )
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        // 预隐藏期间两个信号都豁免：翻转前窗口还在当前空间、alpha=0 是预期态。
+        controller.spaceTransitionGestureDetected()
+        presenter.stubIsOnActiveSpace = false
+        presenter.stubCurrentAlpha = 0
+        try await Task.sleep(for: .milliseconds(80))
+        controller.geometryTick()
+        XCTAssertEqual(presenter.pullCount, 0, "预隐藏是预期态，安全网不掺和")
+    }
+
+    func testSafetyNetBacksOffAfterUnhealedStuck() async throws {
+        let presenter = FakeSecondaryDockPresenter()
+        let provider = FakeDockFaceProvider()
+        let content = ContentBox()
+        let controller = makeController(
+            presenter: presenter, provider: provider, content: content,
+            safetyNetQuietWindow: .milliseconds(20)
+        )
+        showBar(controller, presenter: presenter, provider: provider, content: content)
+
+        presenter.stubCurrentAlpha = 0.3
+        try await Task.sleep(for: .milliseconds(80))
+        controller.geometryTick()
+        XCTAssertEqual(presenter.pullCount, 1, "第一次兜底")
+
+        // 紧跟着的一拍在退避窗（2× 静默窗）内：不再反复闪动。
+        controller.geometryTick()
+        XCTAssertEqual(presenter.pullCount, 1, "退避期内不重复兜底")
+
+        // 静默超过 2× 静默窗后仍卡死：再兜一次（替身不会真好，正好验连续未愈路径）。
+        try await Task.sleep(for: .milliseconds(80))
+        controller.geometryTick()
+        XCTAssertEqual(presenter.pullCount, 2, "退避窗外仍未愈 → 再次兜底")
     }
 
     func testDisabledKeepsHidden() {
