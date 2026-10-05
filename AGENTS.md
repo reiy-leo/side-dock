@@ -73,6 +73,8 @@ macOS 多桌面（Space）工具。**当前产品形态（2026-10-04 起，用�
    原「默认 Dock」节——数量步进器 + 最近应用预览——**2026-10-06 用户指令删除**）、
    **桌面**（Dock 栏列表 + 桌面命名）、**数据**（导出/导入配置 + 备份与还原）、
    **关于**（图标/名称/版本/GitHub 仓库/更新检查，走 GitHub Releases API，零权限）。
+   **侧边栏布局（2026-10-06 用户指令）**：主 tabs（通用/桌面/数据）顶部一组、与窗顶再留
+   26 pt 让位；**「关于」钉在侧边栏底部**（单行原生小 List 承载，规格见 PLAN §3.7 第 4 轮）。
 5. **桌面命名 + 切换提示**：设置 → 桌面里可以给每个桌面起名，**最长 10 个字符**（仅存本地，macOS 15 没有系统接口）；**切换桌面后在屏幕中上部弹一条 toast 显示该名字，1 秒后自动消失**。toast 不抢焦点、不挡点击、不需要权限。规格见 `docs/PLAN.md` §3.10。
 
    > **已解除的约束（2026-10-05，用户指令）**：原第 5 条「不需要任何系统权限（辅助功能/屏幕录制/root），方案要权限先回来确认」——辅助功能等系统权限不再一票否决，**按功能收益逐案评估**后可用（例如 Dockset 式全局手势切换）。**现行实现仍是零权限**：没有具体功能承载前，代码不引入任何权限请求。注意这不改变实验 24 的结论：**权限解决不了「条随桌面滑」**（钉住特权来自进程身份，不是权限）。
@@ -146,7 +148,7 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 | 次级 Dock 条 | `Dock/SecondaryDockLayout.swift`、`Dock/DockFaceProviding.swift`、`UI/SecondaryDock{StripView,Window,Controller}.swift` | 几何源 `visibleFrame` 内缩（**Dock 条不是独立 CG 窗口**）；层级 19 半露 / hover 全出；**条宽随本桌面内容撑开**（图标尺寸跟随系统实时 tilesize）；附着模式同步显隐（face + 显出带 + 400 ms 宽限，200 ms 轮询）；**位置 ≠ Dock 方位 → 独立贴边**（半露 = 滑出屏幕一半，与 Dock 显隐无关）；空间拉回 = 方案 ②（沉没位 + 0.12 s 升起，实验 25）；**手势预隐藏**（type 30 → α=0 + 600 ms 超时分步渐回 + 安全网兜底，实验 27；alpha 渐变一律分步直设——animator 随机静默失效）；**右键菜单**（`NSHostingView` 子类接管 rightMouseDown → 纯函数 builder 每次现建 → 选中带栏 ID 回 `AppState`，2026-10-06）；依赖全注入可单测 |
 | 桌面（Space） | `Spaces/SkyLightBridge.swift`、`SpaceProvider.swift`、`SpaceObserver.swift`、`SpaceSwitcher.swift`、`SpaceTransitionGestureMonitor.swift`、`DesktopNaming.swift`、`ScreenNaming.swift` | dlopen 私有 API + 降级；300 ms 轮询 + 通知快速通道；循环切换；命名（≤10 字素簇）；显示器名解析；**切桌面前置手势监视**（listen-only CGEventTap 只听 type 30，零权限，实验 27） |
 | 持久化 | `Store/ConfigStore.swift`、`Store/BaselineStore.swift` | 原子写 `config.json`；基准快照 + 会话标记 + 备份轮转（20 份） |
-| 菜单栏 / 设置 UI | `UI/MenuBarController.swift`、`UI/SettingsView.swift`、`UI/DesktopListView.swift`、`UI/DockBarEditor.swift`、`UI/DataView.swift`、`UI/AboutView.swift`、`UI/SpaceThumbnail.swift`、`UI/DebugPanelView.swift` | 侧边栏四选项卡（通用/桌面/数据/关于，`NavigationSplitView`）；**无 titlebar**（`fullSizeContentView` + 隐藏标题 + 透明 titlebar，侧边栏贯通到窗口顶、红绿灯浮在侧边栏上；`.titled` 保留给红绿灯/顶部拖拽/「窗口」菜单）；顶部报警横幅；数据页 = 导出/导入（与加载同一套归一化）+ 备份还原；关于页 = 版本/GitHub 链接/更新检查（发布读取器可注入，未配置不碰网络）；桌面 Tab = Dock 栏列表（绑定下拉缩略图在控件外、位置分段、横向编辑器 8 槽滚动 1–15）+ 桌面命名小节 |
+| 菜单栏 / 设置 UI | `UI/MenuBarController.swift`、`UI/SettingsView.swift`、`UI/DesktopListView.swift`、`UI/DockBarEditor.swift`、`UI/DataView.swift`、`UI/AboutView.swift`、`UI/SpaceThumbnail.swift`、`UI/DebugPanelView.swift` | 侧边栏四选项卡（通用/桌面/数据/关于，`NavigationSplitView`；主 tabs 顶部一组、留 26 pt 顶部让位，**「关于」钉列底**——`safeAreaInset(edge:.bottom)` 内嵌单行原生 sidebar 小 List，与主 List 共用 selection 绑定，2026-10-06）；**无 titlebar**（`fullSizeContentView` + 隐藏标题 + 透明 titlebar，侧边栏贯通到窗口顶、红绿灯浮在侧边栏上；`.titled` 保留给红绿灯/顶部拖拽/「窗口」菜单）；顶部报警横幅；数据页 = 导出/导入（与加载同一套归一化）+ 备份还原；关于页 = 版本/GitHub 链接/更新检查（发布读取器可注入，未配置不碰网络）；桌面 Tab = Dock 栏列表（绑定下拉缩略图在控件外、位置分段、横向编辑器 8 槽滚动 1–15）+ 桌面命名小节 |
 | toast | `UI/ToastPresenter.swift`、`UI/DesktopNameToast.swift` | 纯逻辑调度 + 无边框窗口；跨空间、不抢焦点、零权限 |
 | 脚本 | `scripts/build-app.sh`、`check-toast-window.sh`、`check-fullscreen-filter.swift`、`preview-toast.swift`、`spike-*.swift`、`measure-*.swift`、`spike-secondary-dock-sync.swift` | 打包；零权限验收工具；各实验复现脚本 |
 | 测试 | `Tests/MultiDockTests/` | **414 个测试，全绿**（其中 9 个真实 Dock 验收 + 2 个 UI 快照默认跳过，需显式开启） |
@@ -170,7 +172,8 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
   次级条应立即改贴右缘（半露 = 滑出屏幕一半、hover 滑回）；台前调度开着时位置按钮里没有「左」；
   绑定另一根栏到同一桌面时先前的栏自动让出（未绑定）。**加右键菜单（2026-10-06）**：条上右键
   弹「屏幕位置」菜单，勾标当前、点选另一项条立即换边；台前调度开着时菜单里没有「左」。
-  逻辑侧已单测覆盖，差真人点一次。
+  **加侧边栏布局（2026-10-06 第 48 次）**：「关于」钉列底（点它上方三行应全不选）、
+  主 tabs 与窗顶留白的真人观感。逻辑侧已单测覆盖，差真人点一次。
 
 **等条件**：
 
