@@ -1,111 +1,72 @@
 import AppKit
 import SwiftUI
 
-/// 设置窗口当前显示的页。由窗口工具栏（NSToolbar 可选项）写入，SwiftUI 侧只读。
-/// 放成可注入的类而不是 `@State`：NSToolbar 的 item action 在 AppKit 侧，写不进视图状态。
+/// 设置窗口当前显示的页。由侧边栏（SwiftUI List 选中项）写入，窗口装配侧也持有
+/// —— 菜单/测试要指定页时走它。
 @MainActor
 @Observable
 final class SettingsTabModel {
     var tab: SettingsTab = .general
 }
 
-/// 设置窗口的两页。
-enum SettingsTab {
+/// 设置窗口的四个页（2026-10-06 起侧边栏呈现，系统设置风格）。
+enum SettingsTab: Hashable {
     case general
     case desktop
+    case data
+    case about
 }
 
-/// 设置窗口。两个页：通用（默认 Dock）/ 桌面（Dock 栏）。
+/// 设置窗口：左侧边栏选项卡 + 右侧内容，顶部保留报警横幅。
 ///
-/// 顶部有一条**报警横幅**：`docs/PLAN.md` §3.1 末段要求"降级时在 UI 明确报警，而不是静默失效"，
-/// §3.9 第 3 条要求"Dock 拉不回来时提示从备份恢复"。这两件事都只进日志和调试面板是不合格的 ——
-/// 用户不看日志。
+/// **为什么是 `NavigationSplitView` 而不是 `TabView`**：SwiftUI 的 `TabView` 在 macOS 上
+/// 渲染成浏览器式窗口标签；系统的 macOS 设置（Ventura+）是侧边栏形态。侧边栏用
+/// SwiftUI List 的选中项驱动（`SettingsTabModel` 桥接，菜单/测试可指定页）。
+///
+/// 报警横幅放在**内容列**顶部：`docs/PLAN.md` §3.1 末段要求"降级时在 UI 明确报警"，
+/// §3.9 第 3 条要求"Dock 拉不回来时提示从备份恢复"——用户不看日志。
 struct SettingsView: View {
     @Bindable var state: AppState
     var tabModel: SettingsTabModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            WarningBanner(state: state)
-            switch tabModel.tab {
-            case .general: GeneralTab(state: state)
-            case .desktop: DesktopListView(state: state)
+        NavigationSplitView {
+            List(selection: Binding(
+                get: { tabModel.tab },
+                set: { tabModel.tab = $0 ?? tabModel.tab }
+            )) {
+                Section {
+                    Label("通用", systemImage: "gearshape").tag(SettingsTab.general)
+                    Label("桌面", systemImage: "rectangle.3.group").tag(SettingsTab.desktop)
+                    Label("数据", systemImage: "externaldrive").tag(SettingsTab.data)
+                    Label("关于", systemImage: "info.circle").tag(SettingsTab.about)
+                }
             }
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 150, ideal: 160, max: 200)
+        } detail: {
+            VStack(spacing: 0) {
+                WarningBanner(state: state)
+                switch tabModel.tab {
+                case .general: GeneralTab(state: state)
+                case .desktop: DesktopListView(state: state)
+                case .data: DataView(state: state)
+                case .about: AboutTab(state: state)
+                }
+            }
+            .frame(minWidth: 600, minHeight: 500)
         }
-        .frame(width: 780, height: 560)
+        .frame(width: 880, height: 560)
     }
-}
-
-// MARK: - 窗口工具栏（System Preferences 式标签页）
-
-/// macOS 设置窗口的原生形态：工具栏上「图标 + 文字」的标签页，选中项高亮
-/// （窗口 `toolbarStyle = .preference`）。SwiftUI 的 `TabView` 在 macOS 上渲染成
-/// 浏览器式的窗口标签——没有任何一个 Apple 设置窗口长那样。
-@MainActor
-final class SettingsToolbarController: NSObject, NSToolbarDelegate {
-    static let generalItem = NSToolbarItem.Identifier("MultiDock.Settings.General")
-    static let desktopItem = NSToolbarItem.Identifier("MultiDock.Settings.Desktop")
-
-    private let tabModel: SettingsTabModel
-
-    init(tabModel: SettingsTabModel) {
-        self.tabModel = tabModel
-    }
-
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        Self.items
-    }
-
-    /// 把两页做成「可选中」的标签：AppKit 负责选中高亮，页切换仍走 item action。
-    func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.generalItem, Self.desktopItem]
-    }
-
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        Self.items
-    }
-
-    private static var items: [NSToolbarItem.Identifier] {
-        [.flexibleSpace, generalItem, desktopItem, .flexibleSpace]
-    }
-
-    func toolbar(
-        _ toolbar: NSToolbar,
-        itemForItemIdentifier identifier: NSToolbarItem.Identifier,
-        willBeInsertedIntoToolbar flag: Bool
-    ) -> NSToolbarItem? {
-        let item = NSToolbarItem(itemIdentifier: identifier)
-        switch identifier {
-        case Self.generalItem:
-            item.label = "通用"
-            item.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "通用")
-            item.target = self
-            item.action = #selector(showGeneral)
-        case Self.desktopItem:
-            item.label = "桌面"
-            item.image = NSImage(systemSymbolName: "rectangle.3.group", accessibilityDescription: "桌面")
-            item.target = self
-            item.action = #selector(showDesktop)
-        default:
-            return nil
-        }
-        return item
-    }
-
-    @objc private func showGeneral() { tabModel.tab = .general }
-    @objc private func showDesktop() { tabModel.tab = .desktop }
 }
 
 // MARK: - 窗口装配
 
-/// 设置窗口的完整装配（SwiftUI 内容 + 可选中工具栏标签）。
-/// AppDelegate 与 UI 快照测试**共用** —— 快照要复制一份装配逻辑，验出来的就不是真窗口。
+/// 设置窗口的完整装配（SwiftUI 内容）。AppDelegate 与 UI 快照测试**共用** ——
+/// 快照要复制一份装配逻辑，验出来的就不是真窗口。
 @MainActor
 enum SettingsWindowFactory {
-    private static var keepAliveKey: UInt8 = 0
-
     static func makeWindow(state: AppState, tabModel: SettingsTabModel) -> NSWindow {
-        let toolbarController = SettingsToolbarController(tabModel: tabModel)
         let window = NSWindow(contentViewController: NSHostingController(
             rootView: SettingsView(state: state, tabModel: tabModel)
         ))
@@ -113,26 +74,17 @@ enum SettingsWindowFactory {
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         // 关掉后仍保留实例，再次打开时复用，避免状态丢失。
         window.isReleasedWhenClosed = false
-        let toolbar = NSToolbar(identifier: "MultiDock.Settings.Tabs")
-        toolbar.delegate = toolbarController
-        toolbar.displayMode = .iconAndLabel
-        toolbar.allowsUserCustomization = false
-        toolbar.autosavesConfiguration = false
-        window.toolbar = toolbar
-        window.toolbarStyle = .preference
-        toolbar.selectedItemIdentifier = SettingsToolbarController.generalItem
         // 与 `SettingsView` 根视图的 `.frame(width:height:)` 保持一致，
         // 否则窗口先按这个尺寸画一帧再被 SwiftUI 撑开，会看到一次跳动。
-        window.setContentSize(NSSize(width: 780, height: 560))
-        // NSToolbar.delegate 是弱引用：把 controller 挂在窗口上保活。
-        objc_setAssociatedObject(window, &keepAliveKey, toolbarController, .OBJC_ASSOCIATION_RETAIN)
+        window.setContentSize(NSSize(width: 880, height: 560))
+        window.center()
         return window
     }
 }
 
 // MARK: - 报警横幅
 
-/// 设置窗口顶部的报警区。两条都为空时**整个视图不占空间**。
+/// 设置窗口内容列顶部的报警区。两条都为空时**整个视图不占空间**。
 private struct WarningBanner: View {
     var state: AppState
 
@@ -146,7 +98,7 @@ private struct WarningBanner: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Dock 拉不回来")
                                 .font(.headline)
-                            Text("\(reason)。可以点右边重试，或到「通用 → 备份与还原」恢复一份历史备份。")
+                            Text("\(reason)。可以点右边重试，或到「数据 → 备份与还原」恢复一份历史备份。")
                                 .font(.caption)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -185,8 +137,6 @@ private struct WarningBanner: View {
 
 private struct GeneralTab: View {
     @Bindable var state: AppState
-    /// 待确认的备份恢复。恢复备份会真的重启 Dock，必须二次确认。
-    @State private var pendingBackup: BaselineStore.BackupEntry?
 
     var body: some View {
         Form {
@@ -324,37 +274,6 @@ private struct GeneralTab: View {
                 }
             }
 
-            Section("备份与还原") {
-                if state.backups.isEmpty {
-                    Text("还没有历史备份。每次真正写 Dock 之前都会自动留一份，最多保留 20 份。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    ForEach(state.backups.prefix(5)) { entry in
-                        HStack(spacing: 8) {
-                            Text(entry.fileName)
-                                .font(.caption.monospaced())
-                            Text(entry.date.formatted(date: .abbreviated, time: .shortened))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("恢复") { pendingBackup = entry }
-                        }
-                    }
-                    if state.backups.count > 5 {
-                        Text("只列出最近 5 份，共 \(state.backups.count) 份。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Button("刷新列表") { state.refreshBackups() }
-                Text("恢复备份只覆盖 Dock 的图标等内容，不动热角、启动台网格等设置 —— 因为我们从来只写那几项。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
             Section("Dock 应用") {
                 Toggle("编辑后立即应用", isOn: autoApplyBinding)
                 Toggle("识别真实 Dock 上的手动改动并回存", isOn: autoCaptureBinding)
@@ -370,23 +289,6 @@ private struct GeneralTab: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { state.refreshBackups() }
-        .alert(
-            "恢复这份备份？",
-            isPresented: Binding(
-                get: { pendingBackup != nil },
-                set: { if !$0 { pendingBackup = nil } }
-            ),
-            presenting: pendingBackup
-        ) { entry in
-            Button("恢复", role: .destructive) {
-                state.restoreBackup(entry)
-                pendingBackup = nil
-            }
-            Button("取消", role: .cancel) { pendingBackup = nil }
-        } message: { entry in
-            Text("会用 \(entry.fileName) 里的内容覆盖当前 Dock，并重启一次 Dock（约 0.1 秒不可用）。")
-        }
     }
 
     /// 默认 Dock 的只读预览：当前扫描结果按顺序排开（不可编辑 —— 内容是自动生成的）。

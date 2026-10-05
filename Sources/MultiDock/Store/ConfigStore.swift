@@ -37,12 +37,25 @@ struct ConfigStore: Sendable {
         return (try? decoder.decode(Payload.self, from: data)) ?? Payload()
     }
 
-    func save(_ payload: Payload) throws {
-        try AppPaths.ensureDirectory()
+    /// Payload → JSON 数据（与 `save` 同一格式）。导出配置复用它，保证导出的文件
+    /// 与 config.json 可以互换（导入路径就是同一套解码）。
+    func encode(_ payload: Payload) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(payload)
+        return try encoder.encode(payload)
+    }
+
+    /// 解码一份配置（导入路径）。与 `load` 同一口径：日期 ISO8601。
+    func decode(from data: Data) throws -> Payload {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(Payload.self, from: data)
+    }
+
+    func save(_ payload: Payload) throws {
+        try AppPaths.ensureDirectory()
+        let data = try encode(payload)
 
         let temporary = fileURL.deletingLastPathComponent()
             .appendingPathComponent(".config-\(UUID().uuidString).tmp")

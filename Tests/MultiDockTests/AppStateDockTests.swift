@@ -1163,4 +1163,150 @@ final class AppStateDockTests: XCTestCase {
         XCTAssertTrue(state.dockSideDescription.contains("右侧"))
         XCTAssertTrue(state.log.contains { $0.message.contains("原生 Dock 位置变化") })
     }
+
+    // MARK: - 数据：导出 / 导入（数据 Tab，2026-10-06）
+
+    func testExportThenImportRoundTripsTheWholeConfiguration() throws {
+        let stores = makeStores("data-roundtrip")
+        let state = makeState(preferences: FakePreferences(domain: baseDomain()), stores: stores)
+        state.start()
+        defer { state.stop() }
+        state.updateSettings { $0.autoApplyOnEdit = false }
+
+        // 造一套可辨认的配置：一根绑定栏 + 命名 + 非默认个数。
+        let barID = state.addDockBar()
+        state.updateDockBarInMemory(DockBar(
+            id: barID, name: "工作", position: .right,
+            spaceID: FakeSpaceProvider.desktops(count: 1)[0].id,
+            apps: DockStripRules.normalizedApps(apps(count: 2, prefix: "Bar"))
+        ))
+        state.setDefaultDockAppCount(6)
+
+        let exportURL = stores.0.fileURL.deletingLastPathComponent()
+            .appendingPathComponent("export-\(UUID().uuidString).json")
+        XCTAssertTrue(state.exportConfiguration(to: exportURL))
+        XCTAssertTrue(state.lastDataOperationMessage?.hasPrefix("已导出") ?? false)
+
+        // 改乱当前状态，再导入回来，必须整份还原。
+        state.setDefaultDockAppCount(1)
+        state.removeDockBar(id: barID)
+        XCTAssertNotEqual(state.settings.defaultDockAppCount, 6)
+
+        XCTAssertTrue(state.importConfiguration(from: exportURL))
+        XCTAssertEqual(state.settings.defaultDockAppCount, 6)
+        XCTAssertEqual(state.dockBar(id: barID)?.name, "工作")
+        XCTAssertEqual(state.dockBar(id: barID)?.position, .right)
+        XCTAssertEqual(state.dockBar(id: barID)?.apps.count, 3, "启动台 + 2 个 App")
+        XCTAssertTrue(state.log.contains { $0.message.contains("配置已导入") })
+
+        // 导入要落盘：config.json 与导出的内容一致（整份替换）。
+        let persisted = try JSONDecoder().decode(
+            ConfigStore.Payload.self,
+            from: Data(contentsOf: stores.0.fileURL)
+        )
+        XCTAssertEqual(persisted.settings.dockBars.count, state.settings.dockBars.count)
+        XCTAssertTrue(persisted.settings.dockBars.contains { $0.id == barID })
+    }
+
+    func testImportRunsTheSameMigrationAsLoading() throws {
+        // 导入一份旧版格式（bindings 带 override、没有 dockBars）：
+        // 必须走与启动加载同一套归一化/迁移，而不是把旧格式原样塞进内存。
+        let stores = makeStores("data-import-legacy")
+        let state = makeState(preferences: FakePreferences(domain: baseDomain()), stores: stores)
+        state.start()
+        defer { state.stop() }
+
+        let spaces = FakeSpaceProvider.desktops(count: 1)[0]
+        let legacy = ConfigStore.Payload(
+            bindings: [DesktopBinding(
+                displayUUID: spaces.displayUUID,
+                spaceUUID: spaces.spaceUUID,
+                customName: "旧桌面",
+                override: DockConfig(pinnedApps: DockStripRules.normalizedApps(apps(count: 1, prefix: "Legacy")))
+            )],
+            settings: AppSettings()
+        )
+        let legacyURL = stores.0.fileURL.deletingLastPathComponent()
+            .appendingPathComponent("legacy-\(UUID().uuidString).json")
+        try stores.0.encode(legacy).write(to: legacyURL)
+
+        XCTAssertTrue(state.importConfiguration(from: legacyURL))
+
+        XCTAssertEqual(state.settings.dockBars.count, DockBarCatalog.defaultBarCount, "旧格式迁移 + 补足默认 5 栏")
+        let migrated = state.dockBars.first { $0.spaceID == spaces.id }
+        XCTAssertEqual(migrated?.name, "旧桌面", "迁移沿用桌面名")
+        XCTAssertEqual(migrated?.apps.count, 2, "启动台 + 1 个旧 override 的 App")
+        XCTAssertTrue(state.bindings.allSatisfy { $0.override == nil }, "override 残留清空")
+        XCTAssertEqual(state.lastDataOperationFailed, false, "导入成功")
+    }
+
+    func testImportRefusesInvalidFile() throws {
+        let stores = makeStores("data-import-bad")
+        let state = makeState(preferences: FakePreferences(domain: baseDomain()), stores: stores)
+        state.start()
+        defer { state.stop() }
+
+        let barsBefore = state.dockBars.count
+        let badURL = stores.0.fileURL.deletingLastPathComponent()
+            .appendingPathComponent("bad-\(UUID().uuidString).json")
+        try Data("这不是一个配置文件".utf8).write(to: badURL)
+
+        XCTAssertFalse(state.importConfiguration(from: badURL))
+        XCTAssertEqual(state.dockBars.count, barsBefore, "导入失败不能动当前配置")
+        XCTAssertEqual(state.lastDataOperationFailed, true)
+        XCTAssertTrue(state.lastDataOperationMessage?.contains("不是有效的 MultiDock 配置文件") ?? false)
+    }
+
+    // MARK: - 更新检查（关于 Tab，2026-10-06）
+
+    func testUpdateCheckReportsNewerRelease() async {
+        let state = makeState(preferences: FakePreferences(domain: baseDomain()), stores: makeStores("update-new"))
+        state.configureUpdateChecking {
+            .release(tag: "99.0.0", url: URL(string: "https://github.com/reiy-leo/side-dock/releases/tag/v99.0.0"))
+        }
+        state.checkForUpdates()
+        await state.waitForUpdateCheck()
+
+        XCTAssertEqual(state.updateCheckStatus,
+                       .available(latest: "99.0.0",
+                                  url: URL(string: "https://github.com/reiy-leo/side-dock/releases/tag/v99.0.0")))
+        XCTAssertTrue(state.log.contains { $0.message.contains("发现新版本") })
+    }
+
+    func testUpdateCheckReportsUpToDateAndFailures() async {
+        let state = makeState(preferences: FakePreferences(domain: baseDomain()), stores: makeStores("update-same"))
+        state.configureUpdateChecking { .release(tag: "0.0.0", url: nil) }
+        state.checkForUpdates()
+        await state.waitForUpdateCheck()
+        XCTAssertEqual(state.updateCheckStatus, .upToDate(latest: "0.0.0"),
+                       "本机开发版比较基线是 0.0.0，仓库 0.0.0 不算新")
+
+        let failing = makeState(preferences: FakePreferences(domain: baseDomain()), stores: makeStores("update-fail"))
+        failing.configureUpdateChecking { .failure("网络断了") }
+        failing.checkForUpdates()
+        await failing.waitForUpdateCheck()
+        XCTAssertEqual(failing.updateCheckStatus, .failed(reason: "网络断了"))
+
+        let empty = makeState(preferences: FakePreferences(domain: baseDomain()), stores: makeStores("update-empty"))
+        empty.configureUpdateChecking { .noRelease }
+        empty.checkForUpdates()
+        await empty.waitForUpdateCheck()
+        XCTAssertEqual(empty.updateCheckStatus, .failed(reason: "仓库还没有发布版"))
+    }
+
+    func testUpdateCheckWithoutConfigurationNeverTouchesNetwork() async {
+        // 快照/单测环境不配置发布读取器：检查按钮只如实报告「未配置」，不发请求。
+        let state = makeState(preferences: FakePreferences(domain: baseDomain()), stores: makeStores("update-none"))
+        state.checkForUpdates()
+        XCTAssertEqual(state.updateCheckStatus, .failed(reason: "更新检查未配置"))
+
+        // 自动检查同样安全，且每次启动只自动跑一次。
+        // 用 999.0.0 保证比任何运行环境的版本（xctest runner 自带 Info.plist 版本号）都新。
+        state.configureUpdateChecking { .release(tag: "999.0.0", url: nil) }
+        state.checkForUpdatesOncePerLaunch()
+        await state.waitForUpdateCheck()
+        state.checkForUpdatesOncePerLaunch()
+        await state.waitForUpdateCheck()
+        XCTAssertEqual(state.updateCheckStatus, .available(latest: "999.0.0", url: nil))
+    }
 }

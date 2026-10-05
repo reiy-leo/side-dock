@@ -35,11 +35,11 @@ final class UISnapshotTests: XCTestCase {
             let suffix = appearance == .darkAqua ? "dark" : "light"
             window.appearance = NSAppearance(named: appearance)
 
-            tabModel.tab = .general
-            try capture(window, to: outDir.appendingPathComponent("settings-general-\(suffix).png"))
-
-            tabModel.tab = .desktop
-            try capture(window, to: outDir.appendingPathComponent("settings-desktop-\(suffix).png"))
+            for (tab, name) in [(SettingsTab.general, "general"), (SettingsTab.desktop, "desktop"),
+                                (SettingsTab.data, "data"), (SettingsTab.about, "about")] {
+                tabModel.tab = tab
+                try capture(window, to: outDir.appendingPathComponent("settings-\(name)-\(suffix).png"))
+            }
         }
         print("UI 快照 → \(outDir.path)")
     }

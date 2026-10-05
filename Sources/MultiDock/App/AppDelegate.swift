@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let state = AppState()
         self.state = state
+        // 关于页的更新检查走 GitHub Releases（零权限）；测试与快照不配置就不会碰网络。
+        state.configureUpdateChecking(AppAbout.standardReleaseFetcher())
         attachToast(to: state)
         attachSecondaryDock(to: state)
 

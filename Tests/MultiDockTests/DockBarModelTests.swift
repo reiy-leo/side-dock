@@ -213,4 +213,28 @@ final class DockBarModelTests: XCTestCase {
         XCTAssertFalse(tiles.isEmpty, "连一个 .app 都扫不到 —— 扫描器坏了")
         XCTAssertLessThanOrEqual(tiles.count, 5)
     }
+
+    // MARK: - 更新检查（关于 Tab 的纯函数部分）
+
+    func testSemanticVersionComparison() {
+        XCTAssertTrue(UpdateCheck.isNewer("0.2.0", than: "0.1.0"))
+        XCTAssertTrue(UpdateCheck.isNewer("1.0", than: "0.9.9"), "缺段按 0")
+        XCTAssertTrue(UpdateCheck.isNewer("v0.2.0", than: "0.1.0"), "tag 带不带 v 都能比")
+        XCTAssertFalse(UpdateCheck.isNewer("0.1.0", than: "0.1.0"), "相同不算新")
+        XCTAssertFalse(UpdateCheck.isNewer("0.1.0", than: "0.2.0"))
+        XCTAssertFalse(UpdateCheck.isNewer("0.1.0-beta", than: "0.1.0"), "预发布后缀截掉后主段相同")
+        XCTAssertFalse(UpdateCheck.isNewer("abc", than: "0.1.0"), "无法解析的版本保守判旧")
+    }
+
+    func testParseReleaseReadsTagAndURL() throws {
+        let json = #"{"tag_name":"v1.2.3","html_url":"https://github.com/reiy-leo/side-dock/releases/tag/v1.2.3"}"#
+        let outcome = try XCTUnwrap(UpdateCheck.parseRelease(data: Data(json.utf8)))
+        XCTAssertEqual(outcome, .release(
+            tag: "1.2.3",
+            url: URL(string: "https://github.com/reiy-leo/side-dock/releases/tag/v1.2.3")
+        ))
+
+        XCTAssertNil(UpdateCheck.parseRelease(data: Data("不是 JSON".utf8)))
+        XCTAssertNil(UpdateCheck.parseRelease(data: Data(#"{"html_url":"x"}"#.utf8)), "没有 tag_name 不算发布")
+    }
 }

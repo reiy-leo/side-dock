@@ -147,6 +147,30 @@ final class AppState {
     private var environmentTask: Task<Void, Never>?
     private var hasReadEnvironment = false
 
+    // MARK: - 数据（导出 / 导入）与更新检查
+
+    /// 最近一次数据操作（导出 / 导入）的一句话结果，数据页直接显示。
+    private(set) var lastDataOperationMessage: String?
+    /// 最近一次数据操作是否失败（决定消息颜色）。
+    private(set) var lastDataOperationFailed = false
+
+    /// 更新检查状态（关于页显示）。
+    enum UpdateCheckStatus: Equatable {
+        case idle
+        case checking
+        case upToDate(latest: String)
+        case available(latest: String, url: URL?)
+        case failed(reason: String)
+    }
+
+    private(set) var updateCheckStatus: UpdateCheckStatus = .idle
+    /// 每次启动只在关于页首次出现时自动检查一次；手动按钮随时可再查。
+    private var hasAutoCheckedForUpdates = false
+    /// 发布读取器。nil = 未配置（测试 / 快照环境）：按钮不会碰网络。
+    private var releaseFetcher: (@Sendable () async -> UpdateCheckOutcome)?
+    /// 在飞的检查任务句柄：连点「检查更新」时取消旧的，只保留最后一发。
+    private var updateCheckTask: Task<Void, Never>?
+
     /// 依赖全部可注入：`DockController`、两个 Store、以及空间提供者都能换成测试替身，
     /// 这样「立即应用 / 还原 / 切桌面预应用」这几条路径不必真的动用户的 Dock 也能测。
     ///
@@ -679,36 +703,45 @@ final class AppState {
         }
     }
 
-    private func loadConfiguration() {
-        let payload = configStore.load()
-        settings = payload.settings
+    /// 配置归一化与迁移（**加载与导入共用一条路径**，两处各写一份迟早不一致）：
+    /// 旧 override → 栏迁移（仅当还没有任何栏）、补足默认 5 栏、清掉废弃的 override 残留、
+    /// 截断超长名并丢掉无名绑定。
+    private func normalizePayload(_ payload: ConfigStore.Payload)
+        -> (settings: AppSettings, bindings: [DesktopBinding], migratedBarCount: Int)
+    {
+        var settings = payload.settings
         var bindings = payload.bindings
-
-        // 迁移（2026-10-05）：旧版逐桌面 override → Dock 栏。判据 = 配置里还没有任何栏
-        // （`dockBars` 键不存在的旧文件解出来就是空数组）。迁移完补足到默认 5 栏；
-        // 落盘放在下面 `self.bindings` 赋值**之后**（persistConfiguration 用的是实例属性）。
-        let needsFormatUpgrade = settings.dockBars.isEmpty
-        if needsFormatUpgrade {
+        var migratedBarCount = 0
+        if settings.dockBars.isEmpty {
             let migrated = DockBarCatalog.migratedBars(from: bindings)
             if !migrated.isEmpty {
-                append(.info, "已把 \(migrated.count) 条逐桌面 Dock 配置迁移为 Dock 栏")
+                migratedBarCount = migrated.count
                 for index in bindings.indices { bindings[index].override = nil }
             }
             settings.dockBars = DockBarCatalog.paddedToDefault(migrated)
         }
-
-        // 归一化放在这里而不是 ConfigStore：手改 config.json 塞进超长名或空绑定，
-        // 也要在进入内存模型前就被收拾干净（计划 §3.10 的「两层防线」）。
         let normalized = DesktopNaming.normalizedBindings(bindings)
-        if normalized.count != bindings.count {
-            append(.warning, "配置里有 \(bindings.count - normalized.count) 条空绑定（没有名字），已清理")
+        return (settings, normalized, migratedBarCount)
+    }
+
+    private func loadConfiguration() {
+        let payload = configStore.load()
+        let needsFormatUpgrade = payload.settings.dockBars.isEmpty
+        let (loadedSettings, normalizedBindings, migratedBarCount) = normalizePayload(payload)
+        if migratedBarCount > 0 {
+            append(.info, "已把 \(migratedBarCount) 条逐桌面 Dock 配置迁移为 Dock 栏")
         }
-        bindings = normalized
-        self.bindings = normalized
+        if normalizedBindings.count != payload.bindings.count {
+            append(.warning, "配置里有 \(payload.bindings.count - normalizedBindings.count) 条空绑定（没有名字），已清理")
+        }
+        settings = loadedSettings
+        bindings = normalizedBindings
+        // v4 迁移/补栏发生时把配置格式一次性升上去（此后用户删光栏也不会再补）。
+        // 落盘放在 self.bindings 赋值**之后**（persistConfiguration 用的是实例属性）。
         if needsFormatUpgrade {
             persistConfiguration()
         }
-        append(.info, "配置已载入：\(settings.dockBars.count) 根 Dock 栏、\(normalized.count) 条桌面命名")
+        append(.info, "配置已载入：\(settings.dockBars.count) 根 Dock 栏、\(normalizedBindings.count) 条桌面命名")
         rebuildDefaultDock(reason: "启动扫描")
     }
 
@@ -1172,6 +1205,132 @@ final class AppState {
         ) else { return nil }
         snapshot.position = bar.position
         return snapshot
+    }
+
+    // MARK: - 数据（导出 / 导入，数据 Tab）
+
+    /// 导出当前全部设置（Dock 栏、绑定、命名、各开关）为 JSON——与 config.json 同构，
+    /// 导出的文件可直接再导入。
+    @discardableResult
+    func exportConfiguration(to url: URL) -> Bool {
+        do {
+            let data = try configStore.encode(.init(bindings: bindings, settings: settings))
+            try data.write(to: url)
+            lastDataOperationMessage = "已导出到 \(url.path)"
+            lastDataOperationFailed = false
+            append(.info, "配置已导出：\(url.path)（\(settings.dockBars.count) 根栏、\(bindings.count) 条命名）")
+            return true
+        } catch {
+            lastDataOperationMessage = "导出失败：\(error.localizedDescription)"
+            lastDataOperationFailed = true
+            append(.error, "配置导出失败：\(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// 导入配置：**整份替换**当前设置（走与启动加载同一套归一化/迁移），落盘。
+    ///
+    /// 次级条与绑定导入即生效（refresh）；**不自动应用原生 Dock**——由「立即应用」/
+    /// 切桌面 / 下次启动跟上；冻结开关方向变了则按同一入口把原生 Dock 掰到新模式
+    /// （否则导入后会出现"原生 Dock 与次级条各显一套"——rules.md 冻结语义缺口的复刻）。
+    @discardableResult
+    func importConfiguration(from url: URL) -> Bool {
+        guard let data = try? Data(contentsOf: url) else {
+            recordDataOperation("读不到文件：\(url.path)", failed: true)
+            append(.error, "配置导入失败：读不到 \(url.path)")
+            return false
+        }
+        let payload: ConfigStore.Payload
+        do {
+            payload = try configStore.decode(from: data)
+        } catch {
+            recordDataOperation("不是有效的 MultiDock 配置文件（解码失败）", failed: true)
+            append(.error, "配置导入失败：解码失败（\(error.localizedDescription)）——请确认文件来自本 App 的导出")
+            return false
+        }
+
+        let previousFreeze = settings.freezeNativeDockSwitching
+        let (importedSettings, normalizedBindings, migratedBarCount) = normalizePayload(payload)
+        settings = importedSettings
+        bindings = normalizedBindings
+        persistConfiguration()
+
+        rebuildDefaultDock(reason: "导入配置后重扫")
+        refreshDockCapabilities()
+        secondaryDock?.refresh()
+        if settings.freezeNativeDockSwitching != previousFreeze {
+            if settings.freezeNativeDockSwitching {
+                applyDock(defaultDock, reason: "导入配置：冻结模式对齐默认 Dock")
+            } else if let space = activeSpace {
+                applyForDesktopSwitch(space, reason: "导入配置：解冻恢复逐桌面切换")
+            }
+        }
+
+        append(.info, "配置已导入：\(settings.dockBars.count) 根 Dock 栏、\(normalizedBindings.count) 条桌面命名"
+            + (migratedBarCount > 0 ? "（迁移 \(migratedBarCount) 条旧 override）" : ""))
+        recordDataOperation(
+            "已导入：\(settings.dockBars.count) 根 Dock 栏、\(normalizedBindings.count) 条桌面命名。"
+                + "次级条已生效；原生 Dock 由「立即应用」/ 切桌面 / 下次启动跟上。",
+            failed: false
+        )
+        return true
+    }
+
+    private func recordDataOperation(_ message: String, failed: Bool) {
+        lastDataOperationMessage = message
+        lastDataOperationFailed = failed
+    }
+
+    // MARK: - 更新检查（关于 Tab）
+
+    /// 注入发布读取器（AppDelegate 组装真实实现；测试注入假值，不碰网络）。
+    func configureUpdateChecking(_ fetcher: @escaping @Sendable () async -> UpdateCheckOutcome) {
+        releaseFetcher = fetcher
+    }
+
+    /// 关于页首次出现时自动检查（每次启动最多一次）；手动按钮随时可再查。
+    func checkForUpdatesOncePerLaunch() {
+        guard !hasAutoCheckedForUpdates else { return }
+        hasAutoCheckedForUpdates = true
+        checkForUpdates()
+    }
+
+    /// 等在飞的检查落地（测试用；生产 UI 靠 @Observable 状态自动刷新）。
+    func waitForUpdateCheck() async {
+        await updateCheckTask?.value
+    }
+
+    /// 检查更新。连点会取消上一发，只认最后一次结果。
+    func checkForUpdates() {
+        guard let releaseFetcher else {
+            updateCheckStatus = .failed(reason: "更新检查未配置")
+            return
+        }
+        updateCheckTask?.cancel()
+        updateCheckStatus = .checking
+        let currentVersion = AppAbout.comparableVersion
+        updateCheckTask = Task { [weak self] in
+            let outcome = await releaseFetcher()
+            guard !Task.isCancelled else { return }
+            self?.finishUpdateCheck(outcome, currentVersion: currentVersion)
+        }
+    }
+
+    private func finishUpdateCheck(_ outcome: UpdateCheckOutcome, currentVersion: String) {
+        switch outcome {
+        case .noRelease:
+            updateCheckStatus = .failed(reason: "仓库还没有发布版")
+        case .failure(let reason):
+            updateCheckStatus = .failed(reason: reason)
+        case .release(let tag, let url):
+            if UpdateCheck.isNewer(tag, than: currentVersion) {
+                updateCheckStatus = .available(latest: tag, url: url)
+                append(.info, "发现新版本 \(tag)（本机 \(currentVersion)）")
+            } else {
+                updateCheckStatus = .upToDate(latest: tag)
+                append(.info, "更新检查：已是最新（仓库 \(tag)，本机 \(currentVersion)）")
+            }
+        }
     }
 
     // MARK: - toast
