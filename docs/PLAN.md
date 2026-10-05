@@ -444,7 +444,8 @@ struct AppSettings: Codable {
 >   导入配置（**与启动加载同一套** `normalizePayload` 归一化/迁移；整份替换并落盘；次级条与绑定
 >   即时生效，**不自动应用原生 Dock**；冻结开关方向变了会按同一入口对齐——防"两套内容并排"）；
 >   「备份与还原」自通用页迁入。
-> - **「关于」页**：图标（`NSApp.applicationIconImage`——App 尚无 icns，显示通用图标；补图标资源后自动跟上）、
+> - **「关于」页**：图标（`NSApp.applicationIconImage`——**2026-10-06 起已有自己的 icns**：
+>   `Support/MultiDock.icns`，经 `scripts/make-app-icon.swift` 按苹果图标网格生成）、
 >   名称 / 版本（`Support/Info.plist` 的 `CFBundleShortVersionString`——**发版时改它**）、
 >   GitHub 仓库链接（git remote：`reiy-leo/side-dock`）、更新检查（`releases/latest` API，
 >   语义化版本逐段比较；**发布读取器可注入**——测试/快照不配置就不碰网络，状态如实显示「未配置」；
@@ -498,6 +499,21 @@ struct AppSettings: Codable {
 >   自己的计时器）。不传 `namePresenter` 时回落到 `presenter`（测试替身与旧行为兼容）。
 > - **验收**：423 测试全绿（+路由 5 例 / 几何 3 例 + 解码往返扩项）；五页 UI 快照亮暗各
 >   一套出 PNG 逐张核对（应用栏 / 桌面 / 通用 / 数据 / 关于 + 次级条）。
+
+> **2026-10-06 第 6 轮（用户指令）：应用图标**——用户提供的方形奶油色 3D 图标设为 App 图标，
+> 要求「和 macOS 通用图标大小相同」。
+> - **对齐基准（实测）**：苹果的 macOS 图标网格 —— 1024 画布里美术体（alpha>127）
+>   **824×824 居中**、四周留 100（Notes / Music / Weather 的 1024 渲染逐点一致）；
+>   系统投影 = 剪影高斯模糊 σ≈10px、透明度 29%、下移 10px。
+>   整幅铺满（如把 1254 源图直接缩放）会比系统图标大一圈且缺投影，**不要那样做**。
+> - **生成管线**（`scripts/make-app-icon.swift`，可重复运行）：
+>   清 alpha<8 噪声 → 裁到美术体 bbox（外扩 2px 保 AA 沿）→ 长边缩到 824 居中 →
+>   烘焙系统同款投影 → 10 档尺寸打 `Support/MultiDock.icns`。
+>   源图存 `Support/AppIcon-source.png`；重新出图：
+>   `swift scripts/make-app-icon.swift Support/AppIcon-source.png Support/MultiDock.icns`。
+> - **接线**：`Info.plist` 加 `CFBundleIconFile = MultiDock`；`build-app.sh` 复制
+>   `Support/MultiDock.icns` 进 `Contents/Resources/`；「关于」页的
+>   `NSApp.applicationIconImage` 自动跟上，无需改代码。
 
 > **P5++ 实现记录（2026-09-18）**：应用摘要现在**也进调试面板**（§3.4 第 6 条要求"调试面板可见"，早先只在设置页）。
 > 调试面板新增「最近一次应用」一组：`结果摘要`（含重载方式与耗时）+ `内容指纹`（前两行 + 总长度，便于对照日志）+

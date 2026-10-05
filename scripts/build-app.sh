@@ -17,6 +17,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/MultiDock"
 cp Support/Info.plist "$APP/Contents/Info.plist"
+cp Support/MultiDock.icns "$APP/Contents/Resources/MultiDock.icns"
 codesign --force --sign - "$APP"
 
 echo "已生成 $APP"

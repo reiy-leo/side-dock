@@ -6,6 +6,8 @@
 	<string>zh_CN</string>
 	<key>CFBundleExecutable</key>
 	<string>MultiDock</string>
+	<key>CFBundleIconFile</key>
+	<string>MultiDock</string>
 	<key>CFBundleIdentifier</key>
 	<string>local.multidock</string>
 	<key>CFBundleInfoDictionaryVersion</key>

@@ -117,6 +117,10 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
   压壁纸、柔和投影、无底无框；位置存 `desktopNamePlacement`（默认顶部 = 锁屏时钟位）。
   系统级告知（自愈还原）仍走胶囊 HUD——**双通路**（`ToastPresenter` 名称/告知各一窗，
   接替时旧窗立即收）；1 秒自动消失、跨空间、不抢焦点、不挡点击、零权限。
+- **应用图标（2026-10-06）**：用户提供的方形 3D 图标 → `Support/MultiDock.icns`，
+  由 `scripts/make-app-icon.swift` 按苹果图标网格生成（**美术体 824/1024 居中 + σ10/29%/下移10
+  的剪影投影**——与系统图标逐点对齐；源图在 `Support/AppIcon-source.png`，重出图见脚本头注释）。
+  `Info.plist` 的 `CFBundleIconFile` + `build-app.sh` 复制 Resources 接线；「关于」页自动跟上。
 - **次级条**：层级 19 半露 / hover 全出（半露滑入 `tuckRatio`=0.8 个条厚，2026-10-06 用户
   从 0.5 调深——与原生 Dock 重叠更多、只露一条薄边；**独立贴边不吃此参数**，那边按规格
   滑出屏幕一半）；**条宽随该桌面内容撑开**；图标尺寸**跟随系统**
@@ -159,7 +163,7 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 | 持久化 | `Store/ConfigStore.swift`、`Store/BaselineStore.swift` | 原子写 `config.json`；基准快照 + 会话标记 + 备份轮转（20 份） |
 | 菜单栏 / 设置 UI | `UI/MenuBarController.swift`、`UI/SettingsView.swift`、`UI/DockBarsTabView.swift`、`UI/DesktopsTabView.swift`、`UI/DockBarEditor.swift`、`UI/DataView.swift`、`UI/AboutView.swift`、`UI/SpaceThumbnail.swift`、`UI/DebugPanelView.swift` | 侧边栏五选项卡（通用/应用栏/桌面/数据/关于，`NavigationSplitView`；主 tabs 顶部一组、留 26 pt 顶部让位，**「关于」钉列底**——`safeAreaInset(edge:.bottom)` 内嵌单行原生 sidebar 小 List，与主 List 共用 selection 绑定，2026-10-06）；**无 titlebar**（`fullSizeContentView` + 隐藏标题 + 透明 titlebar，侧边栏贯通到窗口顶、红绿灯浮在侧边栏上；`.titled` 保留给红绿灯/顶部拖拽/「窗口」菜单）；顶部报警横幅；数据页 = 导出/导入（与加载同一套归一化）+ 备份还原；关于页 = 版本/GitHub 链接/更新检查（发布读取器可注入，未配置不碰网络）；**应用栏 Tab**（`DockBarsTab`，原「桌面」页拆出）= Dock 栏列表（绑定下拉缩略图在控件外、位置分段、横向编辑器 8 槽滚动 1–15）；**桌面 Tab**（`DesktopsTab`）= 桌面命名（LabeledContent 行，输入框标题走 `prompt:` 防 Form 提成行标签）+ 名称展示（开关 / 位置分段） |
 | 桌面名称展示 | `UI/DesktopNameOverlay.swift`、`UI/ToastPresenter.swift`、`UI/DesktopNameToast.swift` | **双通路调度**：桌面名 → `DesktopNameOverlayWindow`（iPhone 锁屏式：64 pt 极细白字 + 图层投影，无底无框；位置 顶部/中部/底部 纯几何 `frameOrigin` 可单测）；系统告知（自愈等）→ `HudToastWindow` 胶囊 HUD（原 `DesktopNameToastWindow` 更名，HUD 材质 + 描边，属性清单逐条是踩坑项）；接替时旧窗立即收、只收当前通路；跨空间、不抢焦点、零权限；`ScreenMatching` 共享显示器映射 |
-| 脚本 | `scripts/build-app.sh`、`check-toast-window.sh`、`check-fullscreen-filter.swift`、`preview-toast.swift`、`spike-*.swift`、`measure-*.swift`、`spike-secondary-dock-sync.swift` | 打包；零权限验收工具；各实验复现脚本 |
+| 脚本 | `scripts/build-app.sh`、`make-app-icon.swift`、`check-toast-window.sh`、`check-fullscreen-filter.swift`、`preview-toast.swift`、`spike-*.swift`、`measure-*.swift`、`spike-secondary-dock-sync.swift` | 打包（含 `Support/MultiDock.icns`）；**图标生成**（源图 → 苹果图标网格对齐的 icns，网格/投影参数见 `docs/rules.md`）；零权限验收工具；各实验复现脚本 |
 | 测试 | `Tests/MultiDockTests/` | **423 个测试，全绿**（其中 9 个真实 Dock 验收 + 2 个 UI 快照默认跳过，需显式开启） |
 | 文档 | `docs/PLAN.md`（设计）、`docs/spikes.md`（27 个实验）、`docs/facts.md`（环境事实）、`docs/rules.md`（约定与陷阱台账） | 本文件为入口 |
 

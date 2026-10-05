@@ -3,6 +3,36 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 50 次）— 应用图标：用户给的方形图 → 苹果网格对齐的 icns
+
+**用户说**：「把这张图设置成应用图标，确保大小合适（和macOS通用图标大小相同）」。
+
+**做了什么**：
+
+1. **量出对齐基准**（`NSWorkspace` 渲染 Notes/Music/Weather 的 1024 图标逐点对比）：
+   苹果的 macOS 图标网格 = 1024 画布上**美术体（alpha>127）824×824 居中**、四周留 100；
+   系统投影 = 剪影高斯模糊 **σ≈10、透明度 29%、下移 10px**（底缘正外 alpha 64、
+   侧缘外 37，向外 ~12px 降到 <8）。整幅铺满会比系统图标大一圈——不对齐。
+2. **生成脚本** `scripts/make-app-icon.swift`（可重复运行）：清 alpha<8 噪声 →
+   裁到美术体 bbox（外扩 2px 保 AA 沿）→ 长边缩到 824 居中 → 剪影模糊烘焙同款投影 →
+   10 档尺寸调 `iconutil` 打 `Support/MultiDock.icns`。源图存 `Support/AppIcon-source.png`。
+3. **踩了两个 CG 坑**（已记 `docs/rules.md`）：① 混合模式只在源绘制覆盖的区域内生效——
+   「填黑 → destinationIn 叠图」会在绘制区外留下整片黑；正确是「先画图 → `.sourceIn` 全幅填色」。
+   ② `CIColorMatrix` 向量是线性组合不是通道乘系数（黑剪影用它收 alpha 会全透明），
+   收全局透明度用 `CGContext.setAlpha`。
+4. **接线**：`Info.plist` 加 `CFBundleIconFile=MultiDock`；`build-app.sh` 复制
+   `Support/MultiDock.icns` 到 `Contents/Resources/`；「关于」页的 `NSApp.applicationIconImage`
+   自动跟上。解包核对 icns 10 档齐全、角像素透明。
+5. **验收**：并排对比图（新图标 + Notes/Music/Weather）大小、圆角网格、投影一致；
+   16/32 px 小尺寸可辨认；**423 测试全绿**；重打包 `build/MultiDock.app`。
+
+**影响 / 未解决**：
+
+- Dock / 访达 / 关于页的实际观感待用户看一眼（替换旧图标后可能需要注销或 `touch` 刷新图标缓存）。
+- 源图存 `Support/AppIcon-source.png`（719 KB）——想换图重跑脚本一行命令即可（见脚注用法）。
+
+---
+
 ### 2026-10-06（第 49 次）— 「桌面」拆五页 + 桌面名称锁屏式展示 + 位置可选
 
 **用户说**：「multidock设置中，"桌面"拆分成"应用栏"和"桌面"，桌面只能设置桌面名称，
