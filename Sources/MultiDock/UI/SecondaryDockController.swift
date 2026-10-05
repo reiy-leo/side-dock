@@ -158,7 +158,7 @@ final class SecondaryDockController {
             return
         }
         let barSize = SecondaryDockLayout.barSize(
-            itemCount: content.sizingSlots ?? content.items.count,
+            itemCount: content.items.count,
             iconSize: content.iconSize,
             isVertical: face.orientation.isBarVertical
         )

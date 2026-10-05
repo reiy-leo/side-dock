@@ -347,11 +347,13 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
     CGWindowList 在 15.8.1 完全看不见 Dock 窗口。同步显隐的唯一可行组合 =
     face（inset）为主 + 自动隐藏态下「光标在显出带（`SecondaryDockLayout.dockArea` 外扩 8pt）」
     启发式 + 400 ms 宽限，几何轮询 200 ms。
-11. **冻结模式下条是固定几何**：`SecondaryDockContentSnapshot.sizingSlots` = 所有活着的桌面
-    生效配置的最大条目数、iconSize 取默认 Dock——切桌面只换内容不挪窗。改条目口径时
-    `AppState.secondaryDockMaxSlots` 必须与 `SecondaryDockContentBuilder` 同口径
-    （Finder 幻影 +1、`normalizedApps` 缺启动台补一枚）。未冻结（opt-out）老模式保持
-    按本桌面撑开的原规格，别顺手统一。
+11. **条宽随本桌面内容撑开（2026-10-05 用户修订，废弃 v3.6.2 固定槽位）**：
+    `SecondaryDockLayout.barSize` 按 `content.items.count` 撑开、iconSize 冻结模式取默认
+    Dock / 未冻结取该桌面配置。原「固定槽位防切桌面跳变」的理由在方案 ② 下不成立——切桌面
+    条必经「沉没位再升起」，宽度变化静默发生在沉没位（`sizingSlots` 字段与
+    `AppState.secondaryDockMaxSlots` 已删，别按旧结论加回来）。改条目口径时记得
+    `SecondaryDockContentBuilder` 的 Finder 幻影（+1）与 `normalizedApps` 缺启动台补一枚
+    会改变条宽。
 12. **「手势切换时条不滑动」零权限下做不到（实验 24，别再试窗口配方）**：窗口层级
     （`CGSSetWindowLevel` 20/24/25）、复制原生 Dock 的 `CGSSetWindowTags`、
     `CGSSetWindowWorkspace`（15.8.1 不存在）、每空间独立窗口，全部真人手测证伪——

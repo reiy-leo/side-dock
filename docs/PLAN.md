@@ -6,7 +6,7 @@
 
 - **默认形态（冻结模式，默认开）**：原生 Dock **全桌面一致**、固定为「通用页那套默认 Dock」，
   切桌面**零写入零重启**；每个桌面的差异由**次级 Dock 条**呈现（贴原生 Dock 内侧的自绘条，
-  随桌面秒换图标、固定几何、与原生 Dock 同步显隐，见 §3.12）。
+  随桌面秒换图标、条宽随内容、与原生 Dock 同步显隐，见 §3.12）。
 - **可选老形态（关掉「冻结原生 Dock 的逐桌面切换」）**：每个桌面一套原生 Dock，切换时自动把原生 Dock
   更新为该桌面的配置（走 SIGHUP + 自动隐藏三明治，重启不可见）。未单独设置的桌面（含新建桌面）使用默认 Dock。
 - **菜单栏**：单击图标 → 切到下一个桌面（循环）；`⇧`+单击 → 切到上一个桌面（循环）；右键 / ⌥+左键 → 下拉菜单，列出所有桌面（点选即切换）、进设置、退出。
@@ -87,7 +87,7 @@ multi-dock/
 │   ├── UI/DockAppearanceEditor.swift   外观控件（不支持键禁用；onCommit 只在松手/值变化）
 │   ├── UI/SecondaryDockStripView.swift 次级条条目模型 + 纯函数内容构建 + SwiftUI 条
 │   ├── UI/SecondaryDockWindow.swift    次级条窗口（Toast 配方的可交互变体，层级 19）
-│   ├── UI/SecondaryDockController.swift 次级条调度：固定几何 / 显隐同步 / hover / 轮询
+│   ├── UI/SecondaryDockController.swift 次级条调度：条宽随内容 / 显隐同步 / hover / 轮询
 │   ├── UI/ToastPresenter.swift         toast 协议 + 纯逻辑调度（1 s 计时、连击取消重启、只弹桌面→桌面）
 │   ├── UI/DesktopNameToast.swift       中上部提示窗口（无边框、不抢焦点、跨空间、零权限）
 │   └── UI/DebugPanelView.swift         当前 spaceUUID / id64 / type、应用日志、测试 toast 按钮
@@ -646,10 +646,10 @@ struct AppSettings: Codable {
   （次级条窗口层级 19 < Dock 20）；**hover 滑出全条**（离开 150 ms 防抖后收回）。
 - **不做放大效果**，图标定尺寸（跟随该桌面生效配置的 tilesize，钳 28–48；
   **冻结模式改取默认 Dock 的**，见下）。
-- **sticky 固定几何（2026-10-04 用户修订）**：冻结模式下条窗口尺寸固定——槽位 = 所有
-  桌面生效配置的最大条目数、图标尺寸 = 默认 Dock 的 tilesize——**切桌面只换图标、窗口
-  一毫米不挪**（用户原话：「不要随桌面滚动，sticky 到原生 Dock 固定位置」）。未冻结时
-  维持按本桌面撑开的原规格。
+- **条宽随内容（2026-10-05 用户修订，废弃 v3.6.2 固定槽位）**：条宽按该桌面内容条目数撑开、
+  图标尺寸冻结模式取默认 Dock 的 tilesize（未冻结取本桌面配置）。原「固定槽位 = 各桌面最大
+  条目数、切桌面窗口一毫米不挪」在方案 ② 下不成立——切桌面条必经「沉没位再升起」，宽度变化
+  静默发生在沉没位，无可见跳变。
 - **空间归属 = 方案 ②（2026-10-05 用户拍板，实验 24 折中）**：窗口用 `.moveToActiveSpace`
   单空间配方——手势切换瞬间条**留在旧空间（随系统过渡渐隐，≈0.25 倍屏宽时归零——渐隐时机
   由 WindowServer 决定，实验 25 证实改不了）**，切换完成回调把窗口拉回当前空间：
@@ -684,14 +684,14 @@ struct AppSettings: Codable {
 | 纯几何 | `Dock/SecondaryDockLayout.swift` | `detectDockFace`（三向内缩 → 方位）+ `placement`（展开/半露两 frame）+ `barSize` + `dockArea`（显出带判定，实验 22）；全纯函数 |
 | 几何源 | `Dock/DockFaceProviding.swift` | `ScreenInsetDockFaceProvider` 扫全部 `NSScreen`，取内缩最大的屏 |
 | 呈现 | `UI/SecondaryDockWindow.swift` | Toast 配方 + 三处不同：可交互、层级 19、SwiftUI 图标条；材质 `.popover` + maskImage 圆角；**方案 ②：单空间配方 + `pullToActiveSpace()`（置透明 + frame 跳沉没位 → 临时跨空间 → orderFront → 16 ms 设回 → 0.12 s 升回原位 + 同步淡显，实验 25）** |
-| 内容 | `UI/SecondaryDockStripView.swift` | 条目模型（含 `sizingSlots` 固定几何）+ `SecondaryDockContentBuilder`（纯函数）+ SwiftUI 视图 |
+| 内容 | `UI/SecondaryDockStripView.swift` | 条目模型 + `SecondaryDockContentBuilder`（纯函数）+ SwiftUI 视图 |
 | 调度 | `UI/SecondaryDockController.swift` | 状态机（半露/展开/隐藏）+ **显隐同步（face + 显出带 + 400 ms 宽限）**+ 200 ms 几何轮询 + hover 防抖 + 鼠标位置安全网 + **空间切换拉回闸门**（换空间且前后都显示才拉）；依赖全注入可单测 |
 
 **可见性行为**：全屏空间（`space == nil`）隐藏；开关关闭隐藏；
 内容为空（该桌面 `pinnedApps` 为空）隐藏；**自动隐藏 / 重启瞬态里与原生 Dock 同步显隐**
 （Dock 隐藏条也藏，光标碰边 Dock 显出时条同步出来 —— 实验 22）。多显示器跟随内缩最大的那块屏（B5 未实测，标注）。
 
-**验收**：次级条相关单测（几何三方位 / 半露 / clamp / dockArea / 内容构建 / 状态机 / 固定几何 /
+**验收**：次级条相关单测（几何三方位 / 半露 / clamp / dockArea / 内容构建 / 状态机 / 条宽随内容 /
 同步显隐 / **空间拉回五例**——切空间拉一次、连切各拉一次、重复事件不拉、进全屏不拉、出全屏不拉，
 累计到 **369 全绿**）；快照 `secondary-dock-{light,dark}.png`；真机 window-dump
 核验 `layer=19` 半露 frame 逐像素吻合（实验 21）、启动对齐日志、切桌面零重启日志（v3.6.1/2）；

@@ -597,7 +597,7 @@ final class SecondaryDockControllerTests: XCTestCase {
         XCTAssertEqual(presenter.outCount, 1, "重新显示不该多一次收起")
     }
 
-    func testSizingSlotsFixFrameAcrossContentChanges() {
+    func testBarWidthFollowsContentCount() {
         let presenter = FakeSecondaryDockPresenter()
         let provider = FakeDockFaceProvider()
         let content = ContentBox()
@@ -607,18 +607,19 @@ final class SecondaryDockControllerTests: XCTestCase {
         provider.face = bottomFace()
         controller.geometryTick()
         content.snapshot = makeContent(items: 3)
-        content.snapshot?.sizingSlots = 6
         controller.spaceDidChange(makeSpace())
 
-        let fixedSize = SecondaryDockLayout.barSize(itemCount: 6, iconSize: 36, isVertical: false)
-        let expected = SecondaryDockLayout.placement(barSize: fixedSize, face: bottomFace())
-        XCTAssertEqual(presenter.lastFrame, expected.tucked, "窗口按 sizingSlots 固定尺寸，不按当前条目数")
+        let wideSize = SecondaryDockLayout.barSize(itemCount: 3, iconSize: 36, isVertical: false)
+        let widePlacement = SecondaryDockLayout.placement(barSize: wideSize, face: bottomFace())
+        XCTAssertEqual(presenter.lastFrame, widePlacement.tucked, "窗口宽度按当前内容条目数撑开")
 
-        // 换到只有 1 个条目的桌面：内容变、窗口尺寸与位置一毫米不挪。
+        // 换到只有 1 个条目的桌面：内容变，窗口宽度跟着变窄（2026-10-05 用户修订：
+        // 废弃固定槽位——方案 ② 下宽度变化静默发生在沉没位，切桌面无可见跳变）。
         content.snapshot = makeContent(items: 1)
-        content.snapshot?.sizingSlots = 6
         controller.spaceDidChange(makeSpace())
-        XCTAssertEqual(presenter.lastFrame, expected.tucked, "固定几何下切桌面窗口不挪（sticky）")
+        let narrowSize = SecondaryDockLayout.barSize(itemCount: 1, iconSize: 36, isVertical: false)
+        let narrowPlacement = SecondaryDockLayout.placement(barSize: narrowSize, face: bottomFace())
+        XCTAssertEqual(presenter.lastFrame, narrowPlacement.tucked, "切桌面后窗口宽度随新内容收缩")
     }
 }
 
@@ -866,9 +867,9 @@ final class SecondaryDockFreezeTests: XCTestCase {
                        "启动对齐在自愈之后执行，最终停在冻结配置（默认 Dock）上")
     }
 
-    // MARK: - 冻结模式的固定几何（sticky：切桌面窗口一毫米不挪）
+    // MARK: - 冻结模式的内容口径（条宽随内容，图标尺寸取默认 Dock）
 
-    func testFreezeModeGivesFixedSizingSlotsAndDefaultDockIconSize() {
+    func testFreezeModeContentUsesDefaultDockIconSizeAndOwnItemCount() {
         let spaces = FakeSpaceProvider.desktops(count: 2)
         let provider = FakeSpaceProvider(desktops: spaces, activeSpaceID: spaces[0].id64)
         let preferences = FakePreferences(domain: baseDomain())
@@ -884,13 +885,12 @@ final class SecondaryDockFreezeTests: XCTestCase {
         state.setOverride(config(tilesize: 48, apps: 3), for: spaces[1], reason: "桌面 2")
 
         let desktop1 = state.secondaryDockContent(for: spaces[0])
-        XCTAssertEqual(desktop1?.sizingSlots, 5,
-                       "固定槽位 = 最大口径：1 Finder + (3 App + 1 启动台) = 5")
+        XCTAssertEqual(desktop1?.items.count, 3,
+                       "桌面 1 内容口径：1 Finder + (1 App + 1 启动台) = 3；条宽按本桌面内容撑开（2026-10-05 修订，废弃固定槽位）")
         XCTAssertEqual(desktop1?.iconSize, 36, "冻结模式图标尺寸取默认 Dock，不跟桌面走")
 
         state.updateSettings { $0.freezeNativeDockSwitching = false }
         let unfrozen = state.secondaryDockContent(for: spaces[0])
-        XCTAssertNil(unfrozen?.sizingSlots, "未冻结维持实验 21 原规格：按本桌面条目数撑开窗口")
         XCTAssertEqual(unfrozen?.iconSize, 44, "未冻结时图标尺寸跟随该桌面生效配置")
     }
 }

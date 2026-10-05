@@ -17,11 +17,6 @@ struct SecondaryDockItem: Identifiable {
 struct SecondaryDockContentSnapshot {
     var items: [SecondaryDockItem]
     var iconSize: CGFloat
-    /// 固定几何模式的槽位数（nil = 按 `items.count` 撑开窗口）。
-    ///
-    /// 冻结模式下原生 Dock 全桌面一致，条也固定尺寸：槽位取所有桌面生效配置的最大值，
-    /// 切桌面只换图标、窗口一毫米不挪（用户规格：sticky 在原生 Dock 的固定位置上）。
-    var sizingSlots: Int?
 }
 
 /// 从一套 `DockConfig` 构建条目。**纯函数**（`runningBundleIDs` 由调用方注入），

@@ -465,29 +465,18 @@ final class AppState {
                 .filter { $0.activationPolicy == .regular }
                 .compactMap(\.bundleIdentifier)
         )
-        // 冻结模式下原生 Dock 全桌面一致，条也固定几何：图标尺寸取默认 Dock（被冻结的那套），
-        // 槽位取所有桌面生效配置的最大值 —— 切桌面只换图标，窗口一毫米不挪
-        // （用户规格：sticky 在原生 Dock 的固定位置，不随桌面改动位置）。
+        // 冻结模式下原生 Dock 全桌面一致，条的图标尺寸取默认 Dock（被冻结的那套）；
         // 未冻结时维持实验 21 的原规格：跟随该桌面生效配置的 tilesize。
+        // 条宽随该桌面内容撑开（2026-10-05 用户修订，废弃 v3.6.2 固定槽位——方案 ② 下
+        // 切桌面条必经「沉没位再升起」，宽度变化静默发生在沉没位，无可见跳变）。
         let frozen = settings.freezeNativeDockSwitching
         let rawIconSize = frozen ? settings.defaultDock.appearance.tilesize : config.appearance.tilesize
         let iconSize = min(max(rawIconSize, 28), 48)
-        guard var snapshot = SecondaryDockContentBuilder.snapshot(
+        return SecondaryDockContentBuilder.snapshot(
             from: config,
             runningBundleIDs: running,
             iconSize: iconSize
-        ) else { return nil }
-        snapshot.sizingSlots = frozen ? secondaryDockMaxSlots() : nil
-        return snapshot
-    }
-
-    /// 冻结模式下条的固定槽位数：所有**活着的**桌面生效配置的最大条目数。
-    /// 口径与内容构建一致：Finder 幻影（+1）+ `normalizedApps`（缺启动台会补一枚）。
-    private func secondaryDockMaxSlots() -> Int {
-        let counts = desktops.map { space in
-            1 + DockStripRules.normalizedApps(effectiveConfig(for: space).pinnedApps).count
-        }
-        return max(counts.max() ?? 1, 1)
+        )
     }
 
     // MARK: - 生命周期
