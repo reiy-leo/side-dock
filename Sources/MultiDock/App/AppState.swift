@@ -377,6 +377,16 @@ final class AppState {
         }
     }
 
+    /// 方位短文案（应用栏页脚用）：只报方位，不解释附着规则 —— 那条解释挂在 tooltip 上。
+    var dockSideShortDescription: String {
+        switch dockSide {
+        case .bottom: return "在底部"
+        case .left: return "在左侧"
+        case .right: return "在右侧"
+        case nil: return "方位未识别"
+        }
+    }
+
     /// 读一次环境（台前调度 + 原生 Dock 方位），值变化时更新缓存并记日志。
     /// 首次读取静默（启动日志里没必要多两条）。
     func refreshEnvironment() {

@@ -18,6 +18,7 @@ struct DockBarEditor: View {
     var onCommit: (DockBar, String) -> Void
 
     @State private var dragging: String?
+    @State private var hovered: String?
     @State private var isFileTargeted = false
     /// 拖入被拒（文件夹 / 普通文件 / 超出上限）时的说明。**不留静默失败**。
     @State private var rejectionMessage: String?
@@ -74,8 +75,10 @@ struct DockBarEditor: View {
     }
 
     /// 图标槽：**只有图标、不显示名字**（2026-10-06 用户规格）；名字与安装状态看 tooltip。
+    /// 悬停给一层极淡的圆角底（craft：可点/可拖的东西在指针下要有回应）。
     private func editableSlot(_ tile: DockTile) -> some View {
         let installed = DockStripRules.isInstalled(tile)
+        let isHot = hovered == tile.normalizedKey || dragging == tile.normalizedKey
         return Image(nsImage: DockStripRules.icon(for: tile, size: iconSize))
             .resizable()
             .frame(width: iconSize, height: iconSize)
@@ -83,9 +86,13 @@ struct DockBarEditor: View {
             .opacity(installed ? 1 : 0.35)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(dragging == tile.normalizedKey ? Color.primary.opacity(0.08) : Color.clear)
+                    .fill(isHot ? Color.primary.opacity(0.08) : Color.clear)
             )
             .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { hovered = tile.normalizedKey }
+                else if hovered == tile.normalizedKey { hovered = nil }
+            }
             .help(installed ? tile.label : "\(tile.label)（磁盘上找不到这个 App）")
             .onDrag {
                 dragging = tile.normalizedKey
@@ -116,11 +123,19 @@ struct DockBarEditor: View {
                 Text(editable.count >= DockBar.maxApps ? "已满" : "添加")
                     .font(.caption2)
             }
-            .frame(width: slotSize)
+            .frame(width: slotSize, height: slotSize)
             .foregroundStyle(.secondary)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(hovered == appendKey ? Color.primary.opacity(0.08) : Color.clear)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { inside in
+            if inside { hovered = appendKey }
+            else if hovered == appendKey { hovered = nil }
+        }
         .disabled(editable.count >= DockBar.maxApps)
         .help(editable.count >= DockBar.maxApps
               ? "每根栏最多 \(DockBar.maxApps) 个图标"
@@ -135,6 +150,9 @@ struct DockBarEditor: View {
         )
     }
 
+    /// 「添加」槽的悬停键（与图标的 `normalizedKey` 不会撞——那是路径）。
+    private var appendKey: String { "+" }
+
     // MARK: - 底部控件
 
     private var controls: some View {
@@ -145,9 +163,12 @@ struct DockBarEditor: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 removeZone
+                // 提示只在拖拽进行时出现（呼应动作方向；平时不占视线，Apple §8/§16 简洁性）。
                 Text("拖到这里移除")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .opacity(dragging == nil ? 0 : 1)
+                    .animation(.easeOut(duration: 0.12), value: dragging == nil)
             }
 
             // 拖入被拒时说清原因 —— 静默失败会让人以为程序坏了。
@@ -170,13 +191,15 @@ struct DockBarEditor: View {
     private var removeZone: some View {
         Image(systemName: "trash")
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(dragging == nil ? Color.secondary : Color.primary)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                    .foregroundStyle(Color(nsColor: .separatorColor))
+                    .strokeBorder(
+                        style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                    )
+                    .foregroundStyle(dragging == nil ? Color(nsColor: .separatorColor) : Color.accentColor)
             )
             .onDrop(of: [.text], delegate: BarRemoveDropDelegate(
                 currentDragging: { dragging },

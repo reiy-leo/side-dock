@@ -24,6 +24,9 @@ struct DockBarsTab: View {
             Divider()
             editor
         }
+        // 与其它四页的 Form 分组保持同一版心：两侧各让 60 pt
+        // （实测 Form 分组框距面板边缘 ≈61 pt；统一后五个页签内容列对齐）。
+        .padding(.horizontal, 60)
         .onAppear {
             // 打开就选中第一根栏：编辑器不用等一次点击才出现，中部也不留大片空白。
             if selection == nil {
@@ -53,17 +56,21 @@ struct DockBarsTab: View {
                 }
             }
 
-            HStack {
+            // 列表脚注：添加动作 + 一句规则提示（系统设置里也是这种"列表 → 按钮条"收尾）。
+            Divider()
+            HStack(spacing: 8) {
                 Button("添加 Dock 栏") {
                     selection = state.addDockBar()
                 }
-                Spacer()
-                Text("一个桌面只挂一根栏；绑定时另一根会自动让出 · 原生 Dock \(state.dockSideDescription)")
+                Spacer(minLength: 8)
+                Text("一个桌面只挂一根栏 · 原生 Dock \(state.dockSideShortDescription)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(state.dockSideDescription)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
 
             orphanBanner
         }
@@ -74,7 +81,7 @@ struct DockBarsTab: View {
             NameField(
                 value: bar.name,
                 placeholder: "名称",
-                width: 110,
+                width: 100,
                 onCommit: { raw in
                     state.renameDockBar(bar.id, to: raw)
                     return state.dockBar(id: bar.id)?.name ?? bar.name
@@ -83,36 +90,47 @@ struct DockBarsTab: View {
             // representable 默认吃满可用宽度，这里钉回固定尺寸。
             .fixedSize()
 
-            Spacer(minLength: 2)
+            Spacer(minLength: 8)
 
             desktopPicker(bar)
             positionPicker(bar)
-
-            // 只有未绑定的栏能删（2026-10-06 用户规格）：绑着桌面的栏先解绑——
-            // 否则那条桌面会突然没有栏可用。闸门在 AppState.removeDockBar，这里只做呈现。
-            if bar.spaceID == nil {
-                Button {
-                    state.removeDockBar(id: bar.id)
-                    if selection == bar.id { selection = nil }
-                } label: {
-                    Image(systemName: "minus.circle")
-                }
-                .buttonStyle(.borderless)
-                .help("删除这根 Dock 栏")
-            } else {
-                Image(systemName: "lock.fill")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .help("这根栏绑着桌面，先解绑才能删除")
-            }
+            trailingAccessory(for: bar)
+                .frame(width: 20)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
     }
 
-    /// 桌面下拉：当前绑定以「缩略图 + 文本」常显，菜单行是纯文本（桌面名 · 显示器名）。
+    /// 行尾配件：未绑定 = 可删（−），绑定 = 锁形（先解绑）。
+    /// **两态同列宽**（20pt），换栏/解绑时右边一列不跳。
+    ///
+    /// 「只有未绑定的栏能删」（2026-10-06 用户规格）：闸门在 `AppState.removeDockBar`，
+    /// 这里只做呈现。
+    @ViewBuilder
+    private func trailingAccessory(for bar: DockBar) -> some View {
+        if bar.spaceID == nil {
+            Button {
+                state.removeDockBar(id: bar.id)
+                if selection == bar.id { selection = nil }
+            } label: {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("删除这根 Dock 栏")
+        } else {
+            Image(systemName: "lock.fill")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .help("这根栏绑着桌面，先解绑才能删除")
+        }
+    }
+
+    /// 桌面下拉：**关闭态只显示桌面名**（少截断、一眼可读），菜单里给全信息
+    /// （桌面名 · 显示器名）+ 勾选当前绑定 —— Apple §6：常见路径短，细节在下一层。
     ///
     /// ⚠️ 缩略图**不能塞进 Picker 的行视图**：SwiftUI 的 menu Picker 会把自定义行标签
     /// 渲染成一块高亮色（实测），关闭态什么都看不出来 —— 所以缩略图放在控件外面。
+    /// 用 `Menu` + `Toggle` 而不是 `Picker`：Picker 的关闭态与菜单行共用同一视图，
+    /// 长显示器名会把关闭态撑出省略号，且没有勾选态。
     private func desktopPicker(_ bar: DockBar) -> some View {
         HStack(spacing: 6) {
             Group {
@@ -125,28 +143,56 @@ struct DockBarsTab: View {
                         .frame(width: 24, height: 15)
                 }
             }
-            Picker("桌面", selection: desktopBinding(for: bar)) {
-                Text("未绑定").tag(String?.none)
+            Menu {
+                Toggle("未绑定", isOn: binding(bar, isBoundTo: nil))
+                Divider()
                 ForEach(state.desktops) { space in
-                    Text("\(state.displayName(for: space)) · \(state.screenName(for: space.displayUUID))")
-                        .tag(String?.some(space.id))
+                    Toggle(
+                        "\(state.displayName(for: space)) · \(state.screenName(for: space.displayUUID))",
+                        isOn: binding(bar, isBoundTo: space.id)
+                    )
                 }
+            } label: {
+                Text(closedDesktopText(bar))
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(width: 176)
+            .frame(width: 150)
         }
         .help("这根栏显示在哪个桌面上。缩略图是空间的壁纸（本机各空间共用系统壁纸时显示同一张）。")
+    }
+
+    /// 下拉关闭态的短文案：绑定了就只显示桌面名（不带显示器名，避免截断）。
+    private func closedDesktopText(_ bar: DockBar) -> String {
+        guard
+            let spaceID = bar.spaceID,
+            let space = state.desktops.first(where: { $0.id == spaceID })
+        else { return "未绑定" }
+        return state.displayName(for: space)
+    }
+
+    /// 单选开关绑定：勾选当前项；点已勾选项不重复落盘（`bindDockBar` 自带去重）。
+    private func binding(_ bar: DockBar, isBoundTo spaceID: String?) -> Binding<Bool> {
+        Binding(
+            get: { bar.spaceID == spaceID },
+            set: { isOn in
+                guard isOn else { return }
+                state.bindDockBar(bar.id, to: spaceID)
+            }
+        )
     }
 
     /// 位置分段按钮。台前调度开着时左不在选项里（其窗口条占屏幕左缘）；
     /// 已经存成左的栏仍会把当前值显示出来（可以改走，改回来不行）。
     private func positionPicker(_ bar: DockBar) -> some View {
-        Picker("位置", selection: positionBinding(for: bar)) {
+        Picker("", selection: positionBinding(for: bar)) {
             ForEach(positionOptions(for: bar), id: \.self) { position in
                 Text(position.displayName).tag(position)
             }
         }
+        .labelsHidden()
         .pickerStyle(.segmented)
-        .frame(width: 150)
+        .frame(width: 132)
         .help("栏贴在哪条屏幕边。台前调度开启时自动避开左侧。")
     }
 
@@ -184,12 +230,13 @@ struct DockBarsTab: View {
                     bar: barBinding(for: bar),
                     onCommit: { state.dockBarEdited($0, reason: $1) }
                 )
-                Text("从访达拖 .app 进来，或点「＋」选择；拖动排序，右键或拖到垃圾桶移除。栏不固定任何图标（启动台也只是普通条目），可以清空；最多 \(DockBar.maxApps) 个，编辑器里超过 \(DockBar.visibleSlots) 个走横向滚动。")
+                Text("从访达拖 .app 进来，或点「＋」添加；拖动排序，拖到垃圾桶移除。栏可以清空，最多 \(DockBar.maxApps) 个，超出 \(DockBar.visibleSlots) 个横向滚动。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(10)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
         } else {
             Text("在上方选一根 Dock 栏编辑它的图标")
                 .font(.caption)
@@ -235,13 +282,6 @@ struct DockBarsTab: View {
         Binding(
             get: { state.dockBars.first { $0.id == bar.id } ?? bar },
             set: { state.updateDockBarInMemory($0) }
-        )
-    }
-
-    private func desktopBinding(for bar: DockBar) -> Binding<String?> {
-        Binding(
-            get: { bar.spaceID },
-            set: { state.bindDockBar(bar.id, to: $0) }
         )
     }
 

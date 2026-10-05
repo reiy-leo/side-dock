@@ -26,15 +26,28 @@ struct DataView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let message = state.lastDataOperationMessage {
-                    Text(message)
-                        .font(.caption)
-                        .foregroundStyle(state.lastDataOperationFailed ? Color.orange : Color.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Label(
+                        message,
+                        systemImage: state.lastDataOperationFailed
+                            ? "exclamationmark.triangle"
+                            : "checkmark.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(state.lastDataOperationFailed ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
-                Text("配置文件路径：\(state.configPath)")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                // 路径是"查证用"的次级信息，收进脚注行、弱化呈现（craft：主次分明）。
+                HStack(spacing: 6) {
+                    Text("文件")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text(state.configPath)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
             }
 
             Section("备份与还原") {
