@@ -147,10 +147,12 @@ final class SecondaryDockContentBuilderTests: XCTestCase {
         )
     }
 
-    func testFinderFirstThenLaunchpadThenApps() {
+    func testItemsFollowBarContentWithoutFixedEntries() {
+        // 2026-10-06 用户规格：栏不固定任何 App —— 不插访达幻影、启动台只是普通条目，
+        // 顺序与内容完全照栏里存的来。
         let safari = tile(path: "/Applications/Safari.app", label: "Safari", bundleID: "com.apple.Safari")
         var config = DockConfig()
-        config.pinnedApps = DockStripRules.normalizedApps([safari, DockStripRules.makeLaunchpadTile()])
+        config.pinnedApps = DockStripRules.barApps([safari, DockStripRules.makeLaunchpadTile()])
 
         let snapshot = SecondaryDockContentBuilder.snapshot(
             from: config,
@@ -159,13 +161,26 @@ final class SecondaryDockContentBuilderTests: XCTestCase {
         )
         let items = try? XCTUnwrap(snapshot?.items)
 
-        XCTAssertEqual(items?.count, 3, "Finder 幻影 + 启动台 + 1 个 App")
-        XCTAssertEqual(items?.first?.id, "finder")
-        XCTAssertEqual(items?.first?.isRunning, true, "Finder 永远在运行")
-        XCTAssertEqual(items?.dropFirst().first?.id, DockStripRules.makeLaunchpadTile().normalizedKey)
-        XCTAssertEqual(items?.last?.label, "Safari")
-        XCTAssertEqual(items?.last?.isRunning, true, "运行指示按 bundle id 匹配")
-        XCTAssertEqual(items?.last?.launchPath, "/Applications/Safari.app")
+        XCTAssertEqual(items?.count, 2, "栏里有什么就是什么")
+        XCTAssertEqual(items?.first?.label, "Safari")
+        XCTAssertEqual(items?.first?.isRunning, true, "运行指示按 bundle id 匹配")
+        XCTAssertEqual(items?.first?.launchPath, "/Applications/Safari.app")
+        XCTAssertEqual(items?.last?.label, "启动台")
+    }
+
+    func testLaunchpadOnlyBarShowsJustLaunchpad() {
+        // 用户把其他图标都删了、只留启动台：条上就只有启动台，没有访达幻影。
+        var config = DockConfig()
+        config.pinnedApps = DockStripRules.barApps([DockStripRules.makeLaunchpadTile()])
+
+        let snapshot = SecondaryDockContentBuilder.snapshot(
+            from: config,
+            runningBundleIDs: [],
+            iconSize: 36
+        )
+
+        XCTAssertEqual(snapshot?.items.count, 1)
+        XCTAssertEqual(snapshot?.items.first?.label, "启动台")
     }
 
     func testUninstalledAppIsFlaggedNotRunning() {
@@ -1199,13 +1214,13 @@ final class SecondaryDockFreezeTests: XCTestCase {
         state.bindDockBar(bar2, to: spaces[1].id)
 
         let desktop1 = state.secondaryDockContent(for: spaces[0])
-        XCTAssertEqual(desktop1?.items.count, 3,
-                       "桌面 1 内容口径：1 Finder + (1 App + 1 启动台) = 3；条宽按本桌面内容撑开")
+        XCTAssertEqual(desktop1?.items.count, 1,
+                       "桌面 1 内容口径 = 栏里有什么就是什么（2026-10-06：不插 Finder、不补启动台）；条宽按本桌面内容撑开")
         XCTAssertEqual(desktop1?.iconSize, 36, "图标尺寸跟随系统（域里 tilesize = 36）")
         XCTAssertEqual(desktop1?.position, .bottom)
 
         let desktop2 = state.secondaryDockContent(for: spaces[1])
-        XCTAssertEqual(desktop2?.items.count, 5, "桌面 2：1 Finder + (3 App + 1 启动台) = 5")
+        XCTAssertEqual(desktop2?.items.count, 3, "桌面 2：3 个 App 就是 3 条")
         XCTAssertEqual(desktop2?.position, .right, "快照要带上栏的位置，调度器据此选附着/独立贴边")
 
         // 未绑定栏的桌面没有条可显示。

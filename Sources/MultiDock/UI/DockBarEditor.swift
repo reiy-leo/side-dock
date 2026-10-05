@@ -2,13 +2,12 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 一根 Dock 栏的图标编辑器（2026-10-05 用户规格）：
+/// 一根 Dock 栏的图标编辑器（2026-10-05 用户规格；2026-10-06 修订）。
 /// **横向**一条（不管栏在屏幕上是横是竖，设置页里永远横排），
-/// 默认露出 **8 个槽位**，超过走滚动；图标数 **1...15**（下限由「最后一个图标不可删」保证，
-/// 上限由「添加」禁用 + 拒绝超量拖入保证）。
+/// 默认露出 **8 个槽位**，超过走滚动；图标数 **0...15** —— 栏不固定任何 App
+/// （不画访达 / 启动台幻影；启动台只是普通条目，可删可排），允许清空。
 ///
-/// 结构固定为：**[访达] [启动台] [可编辑的 App…] [＋]** —— 与原生 Dock 的口径一致：
-/// 访达是幻影（偏好域里没有表示），启动台由 `DockStripRules` 保证在首位。
+/// **预览只显示图标、不显示应用名**（2026-10-06 用户规格）：名字靠悬停 tooltip。
 ///
 /// 编辑只改内存（`bar` 绑定）；落盘/应用由 `onCommit` 一次性交给 `AppState`。
 /// ⚠️ 其他项（文件夹/堆栈）不能在这里新建（实验 8：自拼目录条目 Dock 不认领、坏形状崩 Dock）；
@@ -30,9 +29,7 @@ struct DockBarEditor: View {
     private var stripWidth: CGFloat { CGFloat(DockBar.visibleSlots) * slotSize + 24 }
 
     private var editable: [DockTile] {
-        var seen = Set<String>()
-        return DockStripRules.editableApps(bar.apps)
-            .filter { seen.insert($0.normalizedKey).inserted }
+        DockStripRules.barApps(bar.apps)
     }
 
     var body: some View {
@@ -70,85 +67,42 @@ struct DockBarEditor: View {
 
     @ViewBuilder
     private var slots: some View {
-        finderSlot
-        launchpadSlot
         ForEach(editable, id: \.normalizedKey) { tile in
             editableSlot(tile)
         }
         appendSlot
     }
 
-    private var finderSlot: some View {
-        VStack(spacing: 2) {
-            Image(nsImage: DockStripRules.icon(forPath: DockStripRules.finderPath, size: iconSize))
-                .resizable()
-                .frame(width: iconSize, height: iconSize)
-            Text("访达")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .frame(width: slotSize)
-        .help("访达永远在 Dock 最左侧。系统不把它存在偏好里，所以既不需要也不能修改。")
-    }
-
-    private var launchpadSlot: some View {
-        VStack(spacing: 2) {
-            ZStack(alignment: .bottomTrailing) {
-                Image(nsImage: DockStripRules.icon(forPath: DockStripRules.launchpadPath, size: iconSize))
-                    .resizable()
-                    .frame(width: iconSize, height: iconSize)
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 8))
-                    .foregroundStyle(.secondary)
-            }
-            Text("启动台")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .frame(width: slotSize)
-        .help("启动台固定在图标条最前面，不能移除或移动。")
-    }
-
+    /// 图标槽：**只有图标、不显示名字**（2026-10-06 用户规格）；名字与安装状态看 tooltip。
     private func editableSlot(_ tile: DockTile) -> some View {
         let installed = DockStripRules.isInstalled(tile)
-        let canRemove = editable.count > 1
-        return VStack(spacing: 2) {
-            Image(nsImage: DockStripRules.icon(for: tile, size: iconSize))
-                .resizable()
-                .frame(width: iconSize, height: iconSize)
-                .opacity(installed ? 1 : 0.35)
-            Text(tile.label)
-                .font(.caption2)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .foregroundStyle(installed ? Color.primary : Color.secondary)
-        }
-        .frame(width: slotSize)
-        .opacity(dragging == tile.normalizedKey ? 0.4 : 1)
-        .contentShape(Rectangle())
-        .help(installed ? tile.label : "\(tile.label)（磁盘上找不到这个 App）")
-        .onDrag {
-            dragging = tile.normalizedKey
-            return NSItemProvider(object: tile.normalizedKey as NSString)
-        }
-        .onDrop(
-            of: [.text],
-            delegate: BarReorderDropDelegate(
-                target: tile,
-                currentDragging: { dragging },
-                apps: $bar.apps,
-                onFinish: { onCommit(bar, "调整「\(bar.name)」的图标顺序") }
+        return Image(nsImage: DockStripRules.icon(for: tile, size: iconSize))
+            .resizable()
+            .frame(width: iconSize, height: iconSize)
+            .frame(width: slotSize, height: slotSize)
+            .opacity(installed ? 1 : 0.35)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(dragging == tile.normalizedKey ? Color.primary.opacity(0.08) : Color.clear)
             )
-        )
-        .contextMenu {
-            Button("从 Dock 栏移除") { remove(tile) }
-                .disabled(!canRemove)
-            if !canRemove {
-                Text("每根栏至少要留 1 个图标")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+            .help(installed ? tile.label : "\(tile.label)（磁盘上找不到这个 App）")
+            .onDrag {
+                dragging = tile.normalizedKey
+                return NSItemProvider(object: tile.normalizedKey as NSString)
             }
-        }
+            .onDrop(
+                of: [.text],
+                delegate: BarReorderDropDelegate(
+                    target: tile,
+                    currentDragging: { dragging },
+                    apps: $bar.apps,
+                    onFinish: { onCommit(bar, "调整「\(bar.name)」的图标顺序") }
+                )
+            )
+            .contextMenu {
+                Button("从 Dock 栏移除") { remove(tile) }
+            }
     }
 
     private var appendSlot: some View {
@@ -227,25 +181,20 @@ struct DockBarEditor: View {
             .onDrop(of: [.text], delegate: BarRemoveDropDelegate(
                 currentDragging: { dragging },
                 apps: $bar.apps,
-                onRemove: { note in onCommit(bar, note) },
-                onReject: { rejectionMessage = "每根栏至少要留 1 个图标" }
+                onRemove: { note in onCommit(bar, note) }
             ))
     }
 
     // MARK: - 编辑动作
 
     private func commitApps(_ apps: [DockTile], note: String) {
-        let normalized = DockStripRules.apps(fromEditable: apps, preserving: bar.apps)
+        let normalized = DockStripRules.barApps(apps)
         guard normalized != bar.apps else { return }
         bar.apps = normalized
         onCommit(bar, note)
     }
 
     private func remove(_ tile: DockTile) {
-        guard editable.count > 1 else {
-            rejectionMessage = "每根栏至少要留 1 个图标"
-            return
-        }
         var apps = editable
         apps.removeAll { $0.normalizedKey == tile.normalizedKey }
         commitApps(apps, note: "从「\(bar.name)」移除「\(tile.label)」")
@@ -307,7 +256,7 @@ private struct BarReorderDropDelegate: DropDelegate {
 
     func dropEntered(info: DropInfo) {
         guard let dragged = currentDragging(), dragged != target.normalizedKey else { return }
-        let editable = DockStripRules.editableApps(apps)
+        let editable = DockStripRules.barApps(apps)
         guard
             let from = editable.firstIndex(where: { $0.normalizedKey == dragged }),
             let to = editable.firstIndex(where: { $0.normalizedKey == target.normalizedKey }),
@@ -317,7 +266,7 @@ private struct BarReorderDropDelegate: DropDelegate {
         var reordered = editable
         let item = reordered.remove(at: from)
         reordered.insert(item, at: to)
-        apps = DockStripRules.apps(fromEditable: reordered, preserving: apps)
+        apps = DockStripRules.barApps(reordered)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
@@ -338,12 +287,12 @@ private struct BarAppendDropDelegate: DropDelegate {
 
     func dropEntered(info: DropInfo) {
         guard let dragged = currentDragging() else { return }
-        var editable = DockStripRules.editableApps(apps)
+        var editable = DockStripRules.barApps(apps)
         guard let from = editable.firstIndex(where: { $0.normalizedKey == dragged }),
               from != editable.count - 1 else { return }
         let item = editable.remove(at: from)
         editable.append(item)
-        apps = DockStripRules.apps(fromEditable: editable, preserving: apps)
+        apps = DockStripRules.barApps(editable)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
@@ -354,25 +303,20 @@ private struct BarAppendDropDelegate: DropDelegate {
     }
 }
 
-/// 拖到垃圾桶 = 移除。少于 1 个图标时通过 `onReject` 说明原因，不静默失败。
+/// 拖到垃圾桶 = 移除。栏不再有「至少留 1 个」的下限（2026-10-06：可以清空）。
 private struct BarRemoveDropDelegate: DropDelegate {
     let currentDragging: () -> String?
     @Binding var apps: [DockTile]
     let onRemove: (String) -> Void
-    let onReject: () -> Void
 
     func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
 
     func performDrop(info: DropInfo) -> Bool {
         guard let dragged = currentDragging() else { return false }
-        var editable = DockStripRules.editableApps(apps)
+        var editable = DockStripRules.barApps(apps)
         guard editable.contains(where: { $0.normalizedKey == dragged }) else { return false }
-        guard editable.count > 1 else {
-            onReject()
-            return false
-        }
         editable.removeAll { $0.normalizedKey == dragged }
-        apps = DockStripRules.apps(fromEditable: editable, preserving: apps)
+        apps = DockStripRules.barApps(editable)
         onRemove("从 Dock 栏移除一个 App")
         return true
     }

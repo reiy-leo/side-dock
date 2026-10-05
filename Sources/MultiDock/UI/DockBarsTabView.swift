@@ -4,7 +4,7 @@ import SwiftUI
 /// 桌面命名与名称展示在「桌面」页）。
 ///
 /// 模型：栏是主实体 —— 每根栏有名字、屏幕位置（底部/左/右，台前调度占用的一侧自动避开）、
-/// 绑定的桌面（下拉，带缩略图）与图标（1...15）。一个桌面同时只挂一根栏。
+/// 绑定的桌面（下拉，带缩略图）与图标（0...15，栏不固定任何 App）。一个桌面同时只挂一根栏。
 /// 没绑栏的桌面在冻结模式下只有原生 Dock（默认 Dock = 最近添加的应用）可看。
 ///
 /// 编辑器永远**横向**显示（不管栏在屏幕上是横是竖）；默认露出 8 个槽位，超出走滚动。
@@ -12,9 +12,6 @@ struct DockBarsTab: View {
     @Bindable var state: AppState
 
     @State private var selection: UUID?
-    /// 栏名草稿。**不直接绑到模型**：中文输入法组字期间改写绑定值会打断候选词。
-    @State private var barNameDrafts: [UUID: String] = [:]
-    @FocusState private var focusedBar: UUID?
     @State private var confirmingUnbind = false
 
     private var selectedBar: DockBar? {
@@ -28,19 +25,10 @@ struct DockBarsTab: View {
             editor
         }
         .onAppear {
-            syncDrafts()
             // 打开就选中第一根栏：编辑器不用等一次点击才出现，中部也不留大片空白。
             if selection == nil {
                 selection = state.dockBars.first?.id
             }
-        }
-        .onChange(of: state.desktopListGeneration) {
-            syncDrafts()
-        }
-        .onChange(of: focusedBar) { previous, _ in
-            // 失焦即提交，避免用户改完直接点别处导致改动丢失。
-            guard let previous else { return }
-            commitBarName(previous)
         }
     }
 
@@ -68,7 +56,6 @@ struct DockBarsTab: View {
             HStack {
                 Button("添加 Dock 栏") {
                     selection = state.addDockBar()
-                    syncDrafts()
                 }
                 Spacer()
                 Text("一个桌面只挂一根栏；绑定时另一根会自动让出 · 原生 Dock \(state.dockSideDescription)")
@@ -83,33 +70,41 @@ struct DockBarsTab: View {
     }
 
     private func barRow(_ bar: DockBar) -> some View {
-        let draft = barNameDrafts[bar.id] ?? bar.name
-        return HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                TextField("名称", text: barNameDraftBinding(for: bar))
-                    .textFieldStyle(.roundedBorder)
-                    .focused($focusedBar, equals: bar.id)
-                    .onSubmit { commitBarName(bar.id) }
-                Text("\(draft.count)/\(DesktopNaming.maxLength)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(draft.count > DesktopNaming.maxLength ? Color.orange : Color.secondary)
-            }
-            .frame(width: 110, alignment: .leading)
+        HStack(spacing: 8) {
+            NameField(
+                value: bar.name,
+                placeholder: "名称",
+                width: 110,
+                onCommit: { raw in
+                    state.renameDockBar(bar.id, to: raw)
+                    return state.dockBar(id: bar.id)?.name ?? bar.name
+                }
+            )
+            // representable 默认吃满可用宽度，这里钉回固定尺寸。
+            .fixedSize()
 
             Spacer(minLength: 2)
 
             desktopPicker(bar)
             positionPicker(bar)
 
-            Button {
-                state.removeDockBar(id: bar.id)
-                if selection == bar.id { selection = nil }
-                syncDrafts()
-            } label: {
-                Image(systemName: "minus.circle")
+            // 只有未绑定的栏能删（2026-10-06 用户规格）：绑着桌面的栏先解绑——
+            // 否则那条桌面会突然没有栏可用。闸门在 AppState.removeDockBar，这里只做呈现。
+            if bar.spaceID == nil {
+                Button {
+                    state.removeDockBar(id: bar.id)
+                    if selection == bar.id { selection = nil }
+                } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("删除这根 Dock 栏")
+            } else {
+                Image(systemName: "lock.fill")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .help("这根栏绑着桌面，先解绑才能删除")
             }
-            .buttonStyle(.borderless)
-            .help("删除这根 Dock 栏")
         }
         .padding(.vertical, 2)
     }
@@ -189,7 +184,7 @@ struct DockBarsTab: View {
                     bar: barBinding(for: bar),
                     onCommit: { state.dockBarEdited($0, reason: $1) }
                 )
-                Text("从访达拖 .app 进来，或点「＋」选择；拖动排序，右键或拖到垃圾桶移除。每根栏 1–\(DockBar.maxApps) 个图标，编辑器里超过 8 个走横向滚动。")
+                Text("从访达拖 .app 进来，或点「＋」选择；拖动排序，右键或拖到垃圾桶移除。栏不固定任何图标（启动台也只是普通条目），可以清空；最多 \(DockBar.maxApps) 个，编辑器里超过 \(DockBar.visibleSlots) 个走横向滚动。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -231,31 +226,6 @@ struct DockBarsTab: View {
                 Text("只解除绑定，栏的名字、位置与图标都保留。")
             }
         }
-    }
-
-    // MARK: - 草稿与提交
-
-    private func barNameDraftBinding(for bar: DockBar) -> Binding<String> {
-        Binding(
-            get: { barNameDrafts[bar.id] ?? bar.name },
-            set: { barNameDrafts[bar.id] = $0 }
-        )
-    }
-
-    /// 提交栏名：归一化（≤10 字素簇）并落盘，草稿对齐成归一化后的结果。
-    private func commitBarName(_ id: UUID) {
-        guard let bar = state.dockBar(id: id) else { return }
-        let raw = barNameDrafts[id] ?? bar.name
-        state.renameDockBar(id, to: raw)
-        barNameDrafts[id] = state.dockBar(id: id)?.name ?? ""
-    }
-
-    private func syncDrafts() {
-        var bars: [UUID: String] = [:]
-        for bar in state.dockBars {
-            bars[bar.id] = bar.name
-        }
-        barNameDrafts = bars
     }
 
     // MARK: - 绑定

@@ -72,7 +72,7 @@ multi-dock/
 │   ├── Dock/DockController.swift       应用流水线、双重短路、防抖合并
 │   ├── Dock/DockReloader.swift         SIGHUP 主 + SIGTERM/kickstart 兜底；节流错开；不等，催；显隐取证
 │   ├── Dock/DockAutoHide.swift         自动隐藏三明治（typed setter 桥；重启不可见）
-│   ├── Dock/DockStripRules.swift       图标条规则：启动台固定在首位、Finder 幻影、从 .app 造条目、其他项只搬不造
+│   ├── Dock/DockStripRules.swift       图标条规则：默认 Dock 启动台补首（栏不插固定项，barApps）、从 .app 造条目、其他项只搬不造
 │   ├── Dock/DockWatcher.swift          识别用户在真实 Dock 上的手动改动并回存（Dock 不在时不采样）
 │   ├── Dock/DockEditHistory.swift      回存的旧配置暂存（内存撤销栈），供电「撤销自动回存」
 │   ├── Dock/DockPresenceMonitor.swift  Dock 存活监视（连续缺失才 kickstart；持续拉不回报警）
@@ -426,10 +426,14 @@ struct AppSettings: Codable {
 >   **位置分段按钮**（底 / 左 / 右；**台前调度开着时避开左**——读 `com.apple.WindowManager
 >   GloballyEnabled`，零权限；台前调度开/关、原生 Dock 位置变化要**实时反映**到位置选项
 >   与提示——`AppState` 2 s 环境轮询 + 打开设置窗口即刷，2026-10-06 用户规格）。
-> - 图标编辑器永远**横向**显示；默认露出 **8 个槽位**、超出横向滚动；每根栏 **1–15 个图标**
->   （末位图标不可删，达到 15 禁止添加）。其他项（文件夹/堆栈）不在新编辑器里出现
+> - 图标编辑器永远**横向**显示；默认露出 **8 个槽位**、超出横向滚动；每根栏 **0–15 个图标**
+>   （**2026-10-06 用户规格修订：栏不固定任何 App**——访达/启动台幻影槽删除、启动台降为普通条目
+>   可删可排、允许清空；预览**不显示应用名**、靠悬停 tooltip；**只有未绑定的栏能删**）。
+>   其他项（文件夹/堆栈）不在新编辑器里出现
 >   （迁移保留在栏数据里，随原生 Dock 写入）。
 > - 运行时：没绑栏的桌面在冻结模式下只有原生 Dock（默认内容）可看，次级条隐藏；
+>   **栏内容 = `DockStripRules.barApps`**（只去重、保序、不插启动台）——默认 Dock 才走
+>   `normalizedApps`（启动台补首）；次级条也不再画访达幻影（2026-10-06）。
 >   栏位置 ≠ 原生 Dock 方位时条**独立贴边**（半露 = 滑出屏幕一半），与 Dock 的自动隐藏显隐**无关**；
 >   位置 == Dock 方位时维持贴 Dock 内侧 + 同步显隐（§3.12）。
 > - 桌面命名（toast 用）保留在本页底部独立小节；桌面与栏解耦（命名属桌面，内容属栏）。
@@ -808,7 +812,8 @@ struct AppSettings: Codable {
 
 **内容与冻结开关（用户从三个方案里选定「随桌面 + 冻结开关」）**：
 
-- 内容 = 当前桌面的 `effectiveConfig(for:).pinnedApps`（Finder 幻影置首 + 启动台首位复用
+- 内容 = 当前桌面的 `effectiveConfig(for:).pinnedApps`（**2026-10-06 起：不插 Finder、不补启动台**，
+  栏里有什么就画什么；下文「Finder 幻影置首/启动台首位」为历史记载）
   `DockStripRules`），**切桌面瞬间换内容**（换视图，零重启、零写入）。
 - 设置「冻结原生 Dock 的逐桌面切换」——**默认开（2026-10-04 用户修订：原生 Dock 全桌面
   一致、不逐桌面重启）**：开启后 `applyForDesktopSwitch` 整条跳过——原生 Dock 保持一套

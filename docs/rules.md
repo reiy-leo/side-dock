@@ -353,9 +353,10 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
     `SecondaryDockLayout.barSize` 按 `content.items.count` 撑开、iconSize 冻结模式取默认
     Dock / 未冻结取该桌面配置。原「固定槽位防切桌面跳变」的理由在方案 ② 下不成立——切桌面
     条必经「沉没位再升起」，宽度变化静默发生在沉没位（`sizingSlots` 字段与
-    `AppState.secondaryDockMaxSlots` 已删，别按旧结论加回来）。改条目口径时记得
+    `AppState.secondaryDockMaxSlots` 已删，别按旧结论加回来）。~~改条目口径时记得
     `SecondaryDockContentBuilder` 的 Finder 幻影（+1）与 `normalizedApps` 缺启动台补一枚
-    会改变条宽。
+    会改变条宽。~~ **2026-10-06 更新：Finder 幻影与启动台补枚都已移除**（栏不固定任何 App，
+    条内容 = 栏内容 1:1）——这条旧注意作废。
 12. **「手势切换时条不滑动」零权限下做不到（实验 24，别再试窗口配方）**：窗口层级
     （`CGSSetWindowLevel` 20/24/25）、复制原生 Dock 的 `CGSSetWindowTags`、
     `CGSSetWindowWorkspace`（15.8.1 不存在）、每空间独立窗口，全部真人手测证伪——
@@ -437,6 +438,19 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
    字面量 `{ self?.make() }` 报「cannot convert NSMenu? to NSMenu」。别硬转——属性声明成
    `(() -> NSMenu?)?`，调用处先在辅助方法里把双可选展平再 `guard let`（见
    `SecondaryDockHostingView.menuForRightClick`）。
+
+### 2026-10-06 应用栏交互修订的新坑（栏不固定 App / NameField）
+
+1. **`normalizedApps` 与 `barApps` 是两个口径，别混用**：前者给**默认 Dock** 用
+   （启动台必须补首、空数组也要有启动台）；后者给 **Dock 栏**用（只去重、允许空）。
+   混用会把栏变成"永远至少一个启动台"，或把默认 Dock 的启动台弄丢。
+2. **`NSViewRepresentable` 默认吃满可用宽度**：自绘 `NameField` 在 HStack / LabeledContent
+   里要被 `.fixedSize()` 钉住，否则名称框会拉成一整行（快照才发现）。
+3. **超长截断必须跳过输入法组字**：在 `controlTextDidChange` 里先查
+   `field.currentEditor().hasMarkedText()`——marked text 期间改 `stringValue` 会打断候选词。
+   截断本身按**字素簇** `prefix(10)`（emoji 组合不被劈开）；提交仍过一次 `DesktopNaming.normalize`。
+4. **别在 `NSTextField` 上直接调内边距**：没有 `textInsets` 这种东西（那是 UIKit）——
+   内边距要靠容器视图 `layout()` 摆子视图（`NameFieldContainer`）。
 
 ### 2026-10-06 拆五页 + 锁屏式名称展示的新坑
 

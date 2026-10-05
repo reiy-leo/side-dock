@@ -27,31 +27,20 @@ struct SecondaryDockContentSnapshot {
 /// 从一套 `DockConfig` 构建条目。**纯函数**（`runningBundleIDs` 由调用方注入），
 /// 方便脱离 `NSWorkspace` 单测。
 ///
-/// 规则沿用 `DockStripRules`：
-/// - Finder 幻影置首（原生 Dock 里 Finder 永远存在，但它在偏好域里没有表示）；
-/// - 启动台首位（`normalizedApps`）；
-/// - 只取 `pinnedApps`——`otherItems`（文件夹/堆栈）的展开视图是另一套交互，v1 不做。
+/// 2026-10-06 起（用户规格：栏不固定任何 App）：**不插 Finder 幻影、不补启动台**——
+/// 栏里有什么就显示什么，顺序原样；空栏没有可显示条目。
+/// 只取 `pinnedApps`——`otherItems`（文件夹/堆栈）的展开视图是另一套交互，v1 不做。
 enum SecondaryDockContentBuilder {
-    /// 没有可显示的条目时返回 nil（调用方应把条隐藏）。
-    ///
-    /// 空判口径与 `applyConfigForDesktop` 一致：看**原始** `pinnedApps` 是否为空 ——
-    /// `normalizedApps` 会给空数组补一枚启动台，不能拿它当判据。
+    /// 没有可显示的条目时返回 nil（调用方应把条隐藏）。空判看 `pinnedApps` 本身。
     static func snapshot(
         from config: DockConfig,
         runningBundleIDs: Set<String>,
         iconSize: CGFloat
     ) -> SecondaryDockContentSnapshot? {
-        guard !config.pinnedApps.isEmpty else { return nil }
-        let apps = DockStripRules.normalizedApps(config.pinnedApps)
+        let apps = DockStripRules.barApps(config.pinnedApps)
+        guard !apps.isEmpty else { return nil }
 
-        var items: [SecondaryDockItem] = [SecondaryDockItem(
-            id: "finder",
-            label: "访达",
-            icon: DockStripRules.icon(forPath: DockStripRules.finderPath, size: iconSize),
-            launchPath: DockStripRules.finderPath,
-            isInstalled: true,
-            isRunning: true
-        )]
+        var items: [SecondaryDockItem] = []
         for tile in apps {
             items.append(SecondaryDockItem(
                 id: tile.normalizedKey,

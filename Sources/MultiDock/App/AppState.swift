@@ -273,6 +273,12 @@ final class AppState {
 
     func removeDockBar(id: UUID) {
         guard let bar = dockBar(id: id) else { return }
+        // 只有**未绑定**的栏可以删（2026-10-06 用户规格）：绑了桌面的栏要删得先解绑，
+        // 否则那条桌面会突然什么都没有——这一步交给用户显式做。
+        guard bar.spaceID == nil else {
+            append(.warning, "「\(bar.name)」还绑着桌面，先解绑才能删除")
+            return
+        }
         updateSettings { $0.dockBars.removeAll { $0.id == id } }
         append(.info, "已删除 Dock 栏「\(bar.name)」")
         secondaryDock?.refresh()

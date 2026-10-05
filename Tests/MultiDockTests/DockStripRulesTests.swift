@@ -118,33 +118,34 @@ final class DockStripRulesTests: XCTestCase {
         XCTAssertEqual(DockStripRules.normalizedApps(once), once)
     }
 
-    // MARK: - 可编辑部分
+    // MARK: - Dock 栏内容（barApps：不插启动台、不固定任何 App）
 
-    func testEditableAppsExcludesLaunchpad() {
-        let apps = DockStripRules.normalizedApps([
+    func testBarAppsKeepsLaunchpadWhereTheUserPutIt() {
+        // 2026-10-06 用户规格：栏不固定任何 App —— 启动台只是普通条目，可删可排。
+        let apps = [
             appTile("/Applications/Safari.app", label: "Safari"),
-            appTile("/Applications/Xcode.app", label: "Xcode"),
-        ])
+            DockStripRules.makeLaunchpadTile(),
+        ]
 
-        let editable = DockStripRules.editableApps(apps)
+        let normalized = DockStripRules.barApps(apps)
 
-        XCTAssertEqual(editable.map(\.label), ["Safari", "Xcode"])
+        XCTAssertEqual(normalized.map(\.label), ["Safari", "启动台"], "顺序原样保留，不把启动台挪到首位")
     }
 
-    func testAppsFromEditableReinjectsLaunchpadAtFront() {
-        let rebuilt = DockStripRules.apps(fromEditable: [appTile("/Applications/Xcode.app", label: "Xcode")])
+    func testBarAppsDoesNotSynthesiseLaunchpadForOrdinaryApps() {
+        let normalized = DockStripRules.barApps([appTile("/Applications/Safari.app", label: "Safari")])
 
-        XCTAssertEqual(rebuilt.count, 2)
-        XCTAssertTrue(DockStripRules.isLaunchpad(rebuilt[0]))
-        XCTAssertEqual(rebuilt[1].label, "Xcode")
+        XCTAssertEqual(normalized.map(\.label), ["Safari"], "没有启动台也不补一个")
     }
 
-    func testEmptyEditableStillKeepsLaunchpad() {
-        // 用户把图标全删了：Dock 上仍该有启动台，而不是彻底空掉。
-        let rebuilt = DockStripRules.apps(fromEditable: [])
+    func testBarAppsAllowsEmpty() {
+        // 用户可以清空栏（与默认 Dock 不同：那里启动台必须保留）。
+        XCTAssertTrue(DockStripRules.barApps([]).isEmpty)
+    }
 
-        XCTAssertEqual(rebuilt.count, 1)
-        XCTAssertTrue(DockStripRules.isLaunchpad(rebuilt[0]))
+    func testBarAppsCollapsesDuplicates() {
+        let safari = appTile("/Applications/Safari.app", label: "Safari")
+        XCTAssertEqual(DockStripRules.barApps([safari, safari]).count, 1)
     }
 
     // MARK: - URL 形式

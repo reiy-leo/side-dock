@@ -624,6 +624,30 @@ final class AppStateDockTests: XCTestCase {
         XCTAssertNil(state.dockBar(id: id))
     }
 
+    func testBoundBarCannotBeRemovedUntilUnbound() {
+        // 2026-10-06 用户规格：只有没绑定桌面的栏能删 —— 绑着的先解绑，
+        // 否则那条桌面会突然什么都没有。
+        let fixture = twoDesktops()
+        let state = makeState(
+            preferences: FakePreferences(domain: baseDomain()),
+            stores: makeStores("bound-remove"),
+            provider: fixture.provider
+        )
+        state.start()
+        defer { state.stop() }
+
+        let id = state.addDockBar()
+        state.bindDockBar(id, to: fixture.spaces[0].id)
+
+        state.removeDockBar(id: id)
+        XCTAssertNotNil(state.dockBar(id: id), "绑着桌面的栏删不掉")
+        XCTAssertTrue(state.log.contains { $0.message.contains("先解绑才能删除") }, "拦下来要说明原因，不静默失败")
+
+        state.bindDockBar(id, to: nil)
+        state.removeDockBar(id: id)
+        XCTAssertNil(state.dockBar(id: id), "解绑之后可以删")
+    }
+
     func testRenameDockBarNormalizesAndPersists() throws {
         let stores = makeStores("bar-rename")
         let state = makeState(preferences: FakePreferences(domain: baseDomain()), stores: stores)
@@ -1189,6 +1213,7 @@ final class AppStateDockTests: XCTestCase {
 
         // 改乱当前状态，再导入回来，必须整份还原。
         state.setDefaultDockAppCount(1)
+        state.bindDockBar(barID, to: nil)   // 绑着桌面的栏不能直接删（2026-10-06 规则）
         state.removeDockBar(id: barID)
         XCTAssertNotEqual(state.settings.defaultDockAppCount, 6)
 

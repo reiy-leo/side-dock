@@ -5,10 +5,12 @@ import Foundation
 ///
 /// 两条 P0 实测结论决定了这里的形状：
 /// 1. **Finder 在 `com.apple.dock` 里没有任何表示** —— 全量域 34 个键里找不到它。
-///    所以"钉住 Finder"这件事**天然成立、无需代码**；UI 里把它画出来只是为了符合用户预期，
-///    它绝不参与写入，也不该有拖拽手柄。
+///    所以"钉住 Finder"这件事**天然成立、无需代码**。2026-10-06 起次级条与设置页
+///    都不再画 Finder 幻影条目（用户规格：栏不固定任何 App）。
 /// 2. **启动台是普通条目**（`persistent-apps[0]`，`bundle-identifier = com.apple.launchpad.launcher`，
-///    `file-type = 169`，`dock-extra = false`）。它必须存在，所以由本类型负责"保证它在首位"。
+///    `file-type = 169`，`dock-extra = false`）。它**只在默认 Dock（最近添加的应用）里**
+///    由 `normalizedApps` 保证在首位；**Dock 栏不用它**（2026-10-06 起栏内容 = 用户放什么就是什么，
+///    启动台没有特权、可删可排）。
 enum DockStripRules {
 
     /// 启动台的真实路径与标识（本机实测值）。
@@ -40,6 +42,10 @@ enum DockStripRules {
     /// 把用户给的条目整理成"可写入"的顺序：
     /// 去掉重复的启动台，然后**把启动台放到首位**。
     ///
+    /// **只用于默认 Dock（最近添加的应用）**——它要保住历史配置里
+    /// `persistent-apps[0]` 的启动台。Dock 栏（2026-10-06 起）用 `barApps`，
+    /// 不插入任何固定条目。
+    ///
     /// 幂等：已经是这个形状时返回等值数组。
     ///
     /// **已存在的启动台条目原样保留**（连 `GUID` / `book` / `file-mod-date` 一起）。
@@ -54,17 +60,13 @@ enum DockStripRules {
         return [apps.first(where: isLaunchpad) ?? makeLaunchpadTile()] + rest
     }
 
-    /// 用户可编辑的部分（去掉启动台）。
-    static func editableApps(_ apps: [DockTile]) -> [DockTile] {
-        apps.filter { !isLaunchpad($0) }
-    }
-
-    /// 把可编辑部分写回完整数组（启动台自动补回首位）。
+    /// Dock 栏的内容归一化（2026-10-06 用户规格：栏不固定任何 App）：
+    /// **只按归一化键去重，保留顺序与原始字段**，不插入启动台、不保证任何条目在首。
     ///
-    /// - Parameter existing: 当前完整数组。用于把**已有的启动台条目原样搬回来**，
-    ///   而不是现造一个新的（会丢掉 `GUID` / `book`）。
-    static func apps(fromEditable editable: [DockTile], preserving existing: [DockTile] = []) -> [DockTile] {
-        normalizedApps(existing.filter(isLaunchpad) + editable)
+    /// 空数组保持为空 —— 空栏在界面上就是"没有图标"，次级条随之隐藏。
+    static func barApps(_ apps: [DockTile]) -> [DockTile] {
+        var seen = Set<String>()
+        return apps.filter { seen.insert($0.normalizedKey).inserted }
     }
 
     // MARK: - 其他项（persistent-others：文件夹 / 堆栈，计划 §3.2）

@@ -174,7 +174,8 @@ final class UISnapshotTests: XCTestCase {
     }
 
     /// 让两个 Tab 都有内容可看：默认 Dock 是注入的最近应用（有真实图标）、
-    /// 第一个桌面绑了一根 Dock 栏 + 自定义名，第二个桌面沿用默认。
+    /// 第一个桌面绑了一根 Dock 栏 + 自定义名，第二个桌面沿用默认；
+    /// 另加一根**未绑定**的空栏（除了展示删除按钮，也覆盖空栏状态）。
     private func seed(_ state: AppState) {
         state.rebuildDefaultDock(reason: "快照预览")
 
@@ -189,6 +190,7 @@ final class UISnapshotTests: XCTestCase {
             spaceID: first.id,
             apps: DockStripRules.normalizedApps(Self.previewApps())
         ))
+        state.addDockBar()
     }
 
     // MARK: - 离屏渲染

@@ -11,10 +11,6 @@ import SwiftUI
 struct DesktopsTab: View {
     @Bindable var state: AppState
 
-    /// 桌面命名草稿。**不直接绑到模型**：中文输入法组字期间改写绑定值会打断候选词。
-    @State private var desktopNameDrafts: [String: String] = [:]
-    @FocusState private var focusedDesktop: String?
-
     var body: some View {
         Form {
             Section("桌面名称") {
@@ -29,7 +25,7 @@ struct DesktopsTab: View {
                 }
                 HStack {
                     Button("刷新桌面列表") { state.refreshDesktops() }
-                    Text("列表自动每 300 ms 刷新 · 名字最长 \(DesktopNaming.maxLength) 个字符，切换到该桌面时展示")
+                    Text("列表自动每 300 ms 刷新 · 名字最长 \(DesktopNaming.maxLength) 个字符（超出即截断），切换到该桌面时展示")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -50,35 +46,22 @@ struct DesktopsTab: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear {
-            syncDrafts()
-        }
-        .onChange(of: state.desktopListGeneration) {
-            syncDrafts()
-        }
-        .onChange(of: focusedDesktop) { previous, _ in
-            // 失焦即提交，避免用户改完直接点别处导致改动丢失。
-            guard let previous, let space = state.desktops.first(where: { $0.id == previous }) else { return }
-            commitDesktopName(space)
-        }
     }
 
     private func desktopNameRow(_ space: DesktopSpace) -> some View {
-        let draft = desktopNameDrafts[space.id] ?? state.customName(for: space) ?? ""
         let isActive = space.id == state.activeSpace?.id
         return LabeledContent {
-            HStack(spacing: 6) {
-                // ⚠️ 分组 Form 会把 TextField 的**标题**提升成行首加粗标签——标题走
-                // `prompt:` 留在框内，不生成行标签。
-                TextField("", text: desktopNameDraftBinding(for: space), prompt: Text("名称"))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 200)
-                    .focused($focusedDesktop, equals: space.id)
-                    .onSubmit { commitDesktopName(space) }
-                Text("\(draft.count)/\(DesktopNaming.maxLength)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(draft.count > DesktopNaming.maxLength ? Color.orange : Color.secondary)
-            }
+            NameField(
+                value: state.customName(for: space) ?? "",
+                placeholder: "名称",
+                width: 200,
+                onCommit: { raw in
+                    state.setCustomName(raw, for: space)
+                    return state.customName(for: space) ?? ""
+                }
+            )
+            // representable 默认吃满可用宽度，这里钉回固定尺寸。
+            .fixedSize()
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: isActive ? "largecircle.fill.circle" : "circle")
@@ -88,30 +71,6 @@ struct DesktopsTab: View {
                 Text("桌面 \(space.ordinal)")
             }
         }
-    }
-
-    // MARK: - 草稿与提交
-
-    private func desktopNameDraftBinding(for space: DesktopSpace) -> Binding<String> {
-        Binding(
-            get: { desktopNameDrafts[space.id] ?? state.customName(for: space) ?? "" },
-            set: { desktopNameDrafts[space.id] = $0 }
-        )
-    }
-
-    /// 提交桌面名：归一化（去空白、截断到 10）并落盘，草稿对齐成归一化后的结果。
-    private func commitDesktopName(_ space: DesktopSpace) {
-        let raw = desktopNameDrafts[space.id] ?? state.customName(for: space) ?? ""
-        state.setCustomName(raw, for: space)
-        desktopNameDrafts[space.id] = state.customName(for: space) ?? ""
-    }
-
-    private func syncDrafts() {
-        var desktops: [String: String] = [:]
-        for space in state.desktops {
-            desktops[space.id] = state.customName(for: space) ?? ""
-        }
-        desktopNameDrafts = desktops
     }
 
     // MARK: - 绑定

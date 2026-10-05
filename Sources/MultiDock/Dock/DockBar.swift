@@ -33,7 +33,8 @@ enum DockBarPosition: String, Codable, Sendable, CaseIterable {
 /// 与旧版「逐桌面 override」的关系：栏是**主实体**，通过 `spaceID` 指向一个桌面；
 /// 没绑栏的桌面在冻结模式下只有原生 Dock（默认 Dock = 最近添加的应用）可看。
 struct DockBar: Codable, Hashable, Sendable, Identifiable {
-    /// 每栏最多图标数（用户规格：最多 15、最少 1）。
+    /// 每栏最多图标数（用户规格：最多 15）。**2026-10-06 起没有下限**——栏不固定任何 App，
+    /// 允许清空（空栏的次级条隐藏）。
     static let maxApps = 15
     /// 设置页编辑器默认露出的槽位数，超出走滚动。
     static let visibleSlots = 8
