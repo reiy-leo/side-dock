@@ -503,6 +503,20 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 4. **源图边缘可能有低 alpha 噪声**（本次 1–3/255 散在画布边缘）：生成前把 alpha<8
    的像素清零，否则 bbox 会量到画布边缘。
 
+### 2026-10-06 菜单栏标题对齐的新坑（图标 + 数字）
+
+1. **`button.title = " \(n)"` 的数字会偏高 ~1.2pt**：数字没有下伸部（descent），而
+   `NSStatusBarButton` 按整段行盒垂直居中 → 数字墨迹比图标高。修法 = `attributedTitle` +
+   `.baselineOffset`（生产值 `MenuBarController.titleBaselineOffset = -0.75`）。
+   **别退回 `button.title`**（回归守卫：`MenuBarControllerTests`）。
+2. **这个偏移量是排版像素量化的，必须"扫桶"而不是算零点**：实测最优桶 = `-0.55 … -1.0`
+   （残余一律 -0.48px@2x，不到半像素；`-1.1` 翻到 +0.52）。改字号/图标尺寸后要复测——
+   脚本 `scripts/measure-menubar-baseline.swift`（真实 NSStatusItem 离屏渲染 + alpha 加权
+   墨心，零权限；`swift scripts/measure-menubar-baseline.swift -0.5 -0.75 -1.0` 可指定候选）。
+3. **`attributedTitle` 不要写 `foregroundColor`**：不写时按钮自动按菜单栏亮/暗着色
+   （aqua 黑 / darkAqua 白，已验证）；写死一个颜色会在另一种菜单栏里看不清。
+   同理不要写死 `.font`——用 `button.font`，拿不到再回落系统字号。
+
 ---
 
 # 已解决问题台账（D1–D26，留档别重复查；编号接 AGENTS.md §6.3）

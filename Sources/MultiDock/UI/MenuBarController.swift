@@ -60,9 +60,30 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     // MARK: - 图标标题
 
+    /// 序号标题的基线下压量（pt）。数字没有下伸部，`NSStatusBarButton` 按整段行盒
+    /// （含下伸部预留）垂直居中 → 数字墨迹整体偏高。实测（@2x，app-window-mac 图标）：
+    /// 图标墨心 21.1px、数字 18.6px，偏 ~1.2pt，肉眼一眼可见（2026-10-06 用户报告）。
+    /// 下压 -0.75 落在排版像素量化后的最优桶（残余 -0.24pt = 不到半个像素 @2x）。
+    /// 重新测量：`swift scripts/measure-menubar-baseline.swift`。
+    /// ⚠️ 别再退回 `button.title = " \(n)"` —— 那正是偏高 1.2pt 的写法。
+    static let titleBaselineOffset: CGFloat = -0.75
+
+    /// 图标旁「序号」的富文本标题。抽成静态函数供单测钉住 baselineOffset（对齐回归）。
+    /// **不带 `foregroundColor`**：让按钮按菜单栏亮/暗与高亮态自动着色（已实测两态）。
+    static func attributedTitle(ordinal: Int, font: NSFont?) -> NSAttributedString {
+        NSAttributedString(string: " \(ordinal)", attributes: [
+            .font: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize),
+            .baselineOffset: titleBaselineOffset,
+        ])
+    }
+
     private func refreshTitle() {
-        let ordinal = state.activeSpace?.ordinal
-        statusItem.button?.title = ordinal.map { " \($0)" } ?? ""
+        guard let button = statusItem.button else { return }
+        if let ordinal = state.activeSpace?.ordinal {
+            button.attributedTitle = Self.attributedTitle(ordinal: ordinal, font: button.font)
+        } else {
+            button.title = ""
+        }
     }
 
     /// `withObservationTracking` 只回调一次，所以要重新注册自己。

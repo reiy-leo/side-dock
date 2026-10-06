@@ -3,6 +3,37 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 58 次）— 菜单栏「图标 + 数字」垂直对齐修复
+
+**用户说**：「如图，菜单栏中的图标和数字没有居中对齐」（附截图，数字明显偏高）。
+
+**做了什么**：
+
+1. **量化**：截图换算 + 离屏复现（真实 `NSStatusItem` 按钮 `cacheDisplay`）双向确认——
+   数字墨迹中心比图标高 **1.24pt**（@2x：图标墨心 21.12px / 数字 18.64px）。
+   根因：数字没有下伸部，`NSStatusBarButton` 按整段行盒（含 descent 预留）垂直居中。
+2. **修法**（`UI/MenuBarController.swift`）：标题改 `attributedTitle` +
+   `.baselineOffset = -0.75`（`titleBaselineOffset` 常量）。排版像素量化（步进 ~0.5pt），
+   扫出的最优桶是 `-0.55 … -1.0`（残余 -0.48px@2x = 0.24pt，不到半像素），取中间值留余量；
+   `-1.1` 会翻到 +0.52。抽了静态构造函数 `attributedTitle(ordinal:font:)` 供单测。
+   **不写 `foregroundColor`**（亮/暗菜单栏由按钮自动着色，实测 aqua 黑 / darkAqua 白）；
+   字体用 `button.font`，拿不到回落系统字号。
+3. **测量脚本**：`scripts/measure-menubar-baseline.swift`（真实 NSStatusItem 离屏渲染 +
+   alpha 加权墨心；可带候选偏移参数复测）。修复前后对比图（8x 放大 + 墨心参考线）人工核对：
+   修复后数字中心与图标墨心线重合。
+4. **测试**：`MenuBarControllerTests` 3 例——baselineOffset 必须为负且等于生产值、
+   不许写死颜色、无字体时回落系统字号 → **428 全绿**（425 + 3）。
+5. **文档**：PLAN §3.7 第 8 轮 + 菜单栏小节、rules.md「菜单栏标题对齐的新坑」3 条、
+   本记录。重打包 `build/MultiDock.app`。
+
+**影响 / 未解决**：
+
+- 换菜单栏图标（五选一）或改图标尺寸后偏移量理论上不变（偏差来自字体行盒而非图标），
+  但肉眼如再觉不齐，跑 `scripts/measure-menubar-baseline.swift` 复测再定值。
+- 真机观感待用户确认（离屏验证与截图分析一致，但最终以菜单栏实机为准）。
+
+---
+
 ### 2026-10-06（第 57 次）— 通用页重排：三节合并、删「次级 Dock 条」节
 
 **用户说**：「通用设置中，"退出行为""启动和自愈"合并在一个section，删掉"次级Dock条"section，"应用""Dock应用""桌面行为"合并在一个section」。
