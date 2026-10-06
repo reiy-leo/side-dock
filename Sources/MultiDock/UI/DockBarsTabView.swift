@@ -12,6 +12,7 @@ struct DockBarsTab: View {
     @Bindable var state: AppState
 
     @State private var selection: UUID?
+    @State private var hoveredRow: UUID?
     @State private var confirmingUnbind = false
 
     private var selectedBar: DockBar? {
@@ -19,14 +20,21 @@ struct DockBarsTab: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            barList
-            Divider()
-            editor
+        // 整页可滚动（栏多时可往下滚）+ 列表**按内容自适应高度**（2026-10-06 用户规格 ⑥：
+        // 列表不该撑满整页、在底部留一大片空）。不用 `List`：它的白底会一路铺到窗口顶部，
+        // 看着像"列表延伸上去了"（用户规格 ①），而这里只需要几行自定义行 + 手绘选中态。
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                barList
+                editor
+            }
+            // 与其它页的 Form 分组保持同一版心：两侧各让 60 pt
+            // （实测 Form 分组框距面板边缘 ≈61 pt；统一后各页签内容列对齐）。
+            .padding(.horizontal, 60)
+            .padding(.top, 16)
+            .padding(.bottom, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        // 与其它页的 Form 分组保持同一版心：两侧各让 60 pt
-        // （实测 Form 分组框距面板边缘 ≈61 pt；统一后各页签内容列对齐）。
-        .padding(.horizontal, 60)
         .onAppear {
             // 打开就选中第一根栏：编辑器不用等一次点击才出现，中部也不留大片空白。
             if selection == nil {
@@ -37,48 +45,58 @@ struct DockBarsTab: View {
 
     // MARK: - Dock 栏列表
 
+    /// 标题行（计数 + 右上角「＋」）+ 行列表 + 一句规则提示，全部**按内容撑高**。
     private var barList: some View {
-        VStack(spacing: 0) {
-            List(selection: $selection) {
-                Section(L("Dock 栏（\(state.dockBars.count)）", "Dock Bars (\(state.dockBars.count))")) {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(L("Dock 栏（\(state.dockBars.count)）", "Dock Bars (\(state.dockBars.count))"))
+                    .font(.headline)
+                Spacer(minLength: 8)
+                // 「添加」用「＋」，放在右上角（2026-10-06 用户规格 ②）。
+                Button {
+                    selection = state.addDockBar()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help(L("添加 Dock 栏", "Add Dock Bar"))
+            }
+            .padding(.bottom, 6)
+
+            if state.dockBars.isEmpty {
+                Text(L("还没有 Dock 栏，点右上角「＋」添加。", "No Dock bars yet — use “+” at the top right."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 8)
+            } else {
+                VStack(spacing: 2) {
                     ForEach(state.dockBars) { bar in
-                        barRow(bar).tag(bar.id)
+                        barRow(bar)
                     }
                 }
             }
-            .listStyle(.inset)
-            .overlay(alignment: .bottom) {
-                if state.dockBars.isEmpty {
-                    Text(L("还没有 Dock 栏，点下面「添加 Dock 栏」。", "No Dock bars yet — use “Add Dock Bar” below."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.bottom, 8)
-                }
-            }
 
-            // 列表脚注：添加动作 + 一句规则提示（系统设置里也是这种"列表 → 按钮条"收尾）。
-            Divider()
-            HStack(spacing: 8) {
-                Button(L("添加 Dock 栏", "Add Dock Bar")) {
-                    selection = state.addDockBar()
-                }
-                Spacer(minLength: 8)
-                Text(L("一个桌面只挂一根栏 · 原生 Dock \(state.dockSideShortDescription)",
-                       "One bar per desktop · Native Dock \(state.dockSideShortDescription)"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .help(state.dockSideDescription)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            Text(L("一个桌面只挂一根栏 · 原生 Dock \(state.dockSideShortDescription)",
+                   "One bar per desktop · Native Dock \(state.dockSideShortDescription)"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.top, 8)
+                .help(state.dockSideDescription)
 
             orphanBanner
         }
     }
 
+    /// 一行：**手绘选中/悬停态**（原 `List` 的选中高亮换成同一个圆角底色配方），
+    /// 点行即选中（决定下方编辑器编辑哪根栏）。
     private func barRow(_ bar: DockBar) -> some View {
-        HStack(spacing: 8) {
+        let isSelected = selection == bar.id
+        let isHovered = hoveredRow == bar.id
+        return HStack(spacing: 8) {
             NameField(
                 value: bar.name,
                 placeholder: L("名称", "Name"),
@@ -98,7 +116,20 @@ struct DockBarsTab: View {
             trailingAccessory(for: bar)
                 .frame(width: 20)
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isSelected
+                      ? Color.primary.opacity(0.10)
+                      : (isHovered ? Color.primary.opacity(0.05) : Color.clear))
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { selection = bar.id }
+        .onHover { inside in
+            if inside { hoveredRow = bar.id }
+            else if hoveredRow == bar.id { hoveredRow = nil }
+        }
     }
 
     /// 行尾配件：未绑定 = 可删（−），绑定 = 锁形（先解绑）。
@@ -209,25 +240,18 @@ struct DockBarsTab: View {
 
     // MARK: - 选中栏的编辑器
 
+    /// 选中栏的图标编辑器。**没有标题行与分割线**（2026-10-06 用户规格 ③：
+    /// 「预览上方的文字和分割线去掉」）——编辑哪根栏由上方行的选中态指示。
+    /// 只有异常提示（绑定的桌面不存在）仍会出现在条上方 —— 那是报警，不是标题。
     @ViewBuilder
     private var editor: some View {
         if let bar = selectedBar {
-            let boundSpace = bar.spaceID.flatMap { id in state.desktops.first { $0.id == id } }
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Text(L("「\(bar.name)」的图标", "Icons in “\(bar.name)”"))
-                        .font(.headline)
-                    if let boundSpace {
-                        Text(L("显示在 \(state.displayName(for: boundSpace))", "Shown on \(state.displayName(for: boundSpace))"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if state.orphanedBars.contains(where: { $0.id == bar.id }) {
-                        Label(L("绑定的桌面已不存在", "Bound desktop no longer exists"), systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                    Spacer()
+            VStack(alignment: .leading, spacing: 8) {
+                if state.orphanedBars.contains(where: { $0.id == bar.id }) {
+                    Label(L("「\(bar.name)」绑定的桌面已不存在", "“\(bar.name)” is bound to a desktop that no longer exists"),
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
                 DockBarEditor(
                     bar: barBinding(for: bar),
@@ -251,22 +275,19 @@ struct DockBarsTab: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
         } else {
             Text(L("在上方选一根 Dock 栏编辑它的图标", "Select a Dock bar above to edit its icons"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
-                .padding(14)
+                .padding(.vertical, 8)
         }
     }
 
     /// 孤儿栏提示：绑定的桌面被系统删了 / 显示器被拔了。**只解绑不删栏**（应用要保留）。
+    /// 底色卡片而不是分割线 + 裸文字（列表改成手绘行之后，分割线样式不再成套）。
     @ViewBuilder
     private var orphanBanner: some View {
         if !state.orphanedBars.isEmpty {
-            Divider()
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
@@ -284,6 +305,11 @@ struct DockBarsTab: View {
                 Button(L("解绑", "Unbind")) { confirmingUnbind = true }
             }
             .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.orange.opacity(0.10))
+            )
+            .padding(.top, 8)
             .alert(L("解绑 \(state.orphanedBars.count) 根失效栏的桌面绑定？",
                      "Unbind \(state.orphanedBars.count) orphaned bar(s)?"),
                    isPresented: $confirmingUnbind) {

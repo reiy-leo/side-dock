@@ -25,6 +25,8 @@ struct DockBarEditor: View {
     @State private var dragging: String?
     @State private var hovered: String?
     @State private var isFileTargeted = false
+    /// 图标正被拖到垃圾桶上方（驱动它的红色背景）。
+    @State private var isRemoveTargeted = false
     /// 拖入被拒（文件夹 / 普通文件 / 超出上限）时的说明。**不留静默失败**。
     @State private var rejectionMessage: String?
 
@@ -40,8 +42,16 @@ struct DockBarEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            strip
-            controls
+            // 图标条 + 垃圾桶**同行**（2026-10-06 用户规格 ④：垃圾桶在预览右边）。
+            HStack(alignment: .center, spacing: 10) {
+                strip
+                removeZone
+                Spacer(minLength: 0)
+            }
+            // 下面的说明只在出错时出现（计数与「拖到这里移除」已按用户规格 ③⑤ 去掉）。
+            if let rejectionMessage {
+                rejectionRow(rejectionMessage)
+            }
         }
     }
 
@@ -158,59 +168,56 @@ struct DockBarEditor: View {
     /// 「添加」槽的悬停键（与图标的 `normalizedKey` 不会撞——那是路径）。
     private var appendKey: String { "+" }
 
-    // MARK: - 底部控件
+    // MARK: - 拖入被拒的说明
 
-    private var controls: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(L("\(editable.count)/\(DockBar.maxApps) 个图标", "\(editable.count)/\(DockBar.maxApps) icons"))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                Spacer()
-                removeZone
-                // 提示只在拖拽进行时出现（呼应动作方向；平时不占视线，Apple §8/§16 简洁性）。
-                Text(L("拖到这里移除", "Drop here to remove"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .opacity(dragging == nil ? 0 : 1)
-                    .animation(.easeOut(duration: 0.12), value: dragging == nil)
-            }
-
-            // 拖入被拒时说清原因 —— 静默失败会让人以为程序坏了。
-            if let rejectionMessage {
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                    Text(rejectionMessage)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                    Button(L("知道了", "OK")) { self.rejectionMessage = nil }
-                        .font(.caption)
-                }
-            }
+    /// 拖入被拒时说清原因 —— 静默失败会让人以为程序坏了。
+    private func rejectionRow(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button(L("知道了", "OK")) { rejectionMessage = nil }
+                .font(.caption)
         }
     }
 
+    /// 垃圾桶：**在图标条右边、正方形**（2026-10-06 用户规格 ④），
+    /// 拖拽经过/悬停时**红色背景**（危险动作的标准配色，拖拽中才有颜色）。
+    ///
+    /// 尺寸跟图标槽一致（`slotSize`）——比图标高一点点，视觉上是个"目的地"而不是小图标。
     private var removeZone: some View {
-        Image(systemName: "trash")
-            .font(.caption)
-            .foregroundStyle(dragging == nil ? Color.secondary : Color.primary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
+        let isActive = isRemoveTargeted
+        return Image(systemName: "trash")
+            .font(.system(size: 18, weight: .medium))
+            .foregroundStyle(isActive ? Color.white : Color.secondary)
+            .frame(width: slotSize, height: slotSize)
             .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(
-                        style: StrokeStyle(lineWidth: 1, dash: [4, 3])
-                    )
-                    .foregroundStyle(dragging == nil ? Color(nsColor: .separatorColor) : Color.accentColor)
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(isActive ? Color.red : Color.clear)
             )
-            .onDrop(of: [.text], delegate: BarRemoveDropDelegate(
-                currentDragging: { dragging },
-                apps: $bar.apps,
-                onRemove: { note in onCommit(bar, note) }
-            ))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(
+                        style: StrokeStyle(lineWidth: 1, dash: isActive ? [] : [4, 3])
+                    )
+                    .foregroundStyle(isActive ? Color.red : Color(nsColor: .separatorColor))
+            )
+            .contentShape(Rectangle())
+            .help(L("拖动图标到这里移除", "Drag an icon here to remove it"))
+            // 用带 `isTargeted` 的形态（而不是 DropDelegate）：红色背景要靠它驱动。
+            .onDrop(of: [.text], isTargeted: $isRemoveTargeted) { _ in
+                guard let dragged = dragging else { return false }
+                var edited = DockStripRules.barApps(bar.apps)
+                guard edited.contains(where: { $0.normalizedKey == dragged }) else { return false }
+                edited.removeAll { $0.normalizedKey == dragged }
+                bar.apps = DockStripRules.barApps(edited)
+                onCommit(bar, L("从 Dock 栏移除一个 App", "Removed an app from the Dock bar"))
+                return true
+            }
     }
 
     // MARK: - 编辑动作
@@ -340,21 +347,5 @@ private struct BarAppendDropDelegate: DropDelegate {
     }
 }
 
-/// 拖到垃圾桶 = 移除。栏不再有「至少留 1 个」的下限（2026-10-06：可以清空）。
-private struct BarRemoveDropDelegate: DropDelegate {
-    let currentDragging: () -> String?
-    @Binding var apps: [DockTile]
-    let onRemove: (String) -> Void
-
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
-
-    func performDrop(info: DropInfo) -> Bool {
-        guard let dragged = currentDragging() else { return false }
-        var editable = DockStripRules.barApps(apps)
-        guard editable.contains(where: { $0.normalizedKey == dragged }) else { return false }
-        editable.removeAll { $0.normalizedKey == dragged }
-        apps = DockStripRules.barApps(editable)
-        onRemove(L("从 Dock 栏移除一个 App", "Removed an app from the Dock bar"))
-        return true
-    }
-}
+// 「拖到垃圾桶移除」改为 `removeZone` 里的闭包式 `onDrop(isTargeted:)`（2026-10-06）——
+// 那个形态能看到"正在拖到它上方"，红色背景靠它驱动；DropDelegate 形态没有这个信号。
