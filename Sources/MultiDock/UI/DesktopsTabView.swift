@@ -52,9 +52,16 @@ struct DesktopsTab: View {
         .formStyle(.grouped)
     }
 
+    /// 一行 = 缩略图 + 桌面名 + 名称输入框，**单行对齐**（2026-10-06 用户规格：
+    /// 去掉行首的"当前桌面"圆点指示、名称与标签同行）。
+    ///
+    /// 不用 `LabeledContent`：它把标签与控件分列两侧、各按自身高度居中，输入框比文字高，
+    /// 视觉上会错开半行。这里显式 `HStack` 保证三者同一基线排布。
     private func desktopNameRow(_ space: DesktopSpace) -> some View {
-        let isActive = space.id == state.activeSpace?.id
-        return LabeledContent {
+        HStack(spacing: 8) {
+            SpaceThumbnailView(spaceID: space.id, width: 24, height: 15)
+            Text(L("桌面 \(space.ordinal)", "Desktop \(space.ordinal)"))
+            Spacer(minLength: 12)
             NameField(
                 value: state.customName(for: space) ?? "",
                 placeholder: L("名称", "Name"),
@@ -66,14 +73,6 @@ struct DesktopsTab: View {
             )
             // representable 默认吃满可用宽度，这里钉回固定尺寸。
             .fixedSize()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: isActive ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
-                    .help(isActive ? L("当前桌面", "Current desktop") : "")
-                SpaceThumbnailView(spaceID: space.id, width: 24, height: 15)
-                Text(L("桌面 \(space.ordinal)", "Desktop \(space.ordinal)"))
-            }
         }
     }
 
