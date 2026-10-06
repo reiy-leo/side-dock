@@ -3,6 +3,62 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 60 次）— 双语界面：支持中文、英文
+
+**用户说**：「支持中文、英文」。
+
+**做了什么**（一次贯穿全部层级的本地化，但**不引入 `.strings` 资源体系**）：
+
+1. **方案：调用点内嵌双语 `L("中文", "English")`**，不建 key 表。
+   理由：编译器保证两侧都写了，永远不存在「查表落空、英文界面冒中文」的中间态；
+   语言解析只在一处（`L10n`），带插值的句子也照样两侧各自插值。
+   **代价已记进 `L10n` 注释**：插值表达式会被求值两次，必须无副作用
+   （本次 400+ 个调用点全部满足；将来要写带副作用的插值，先落局部常量再传）。
+2. **语言怎么定**（新增 `App/L10n.swift`）：打包 App 读 `Bundle.main.preferredLocalizations`
+   —— `Support/Info.plist` 增加 `CFBundleLocalizations = [en, zh-Hans]`、
+   `CFBundleDevelopmentRegion` 由 `zh_CN` 改 `en`。探针 App 四组对照实测：
+   中文系统 → `zh-Hans`；英文系统 → `en`；**第三语言（日语/法语）→ `en`**（开发区域兜底）；
+   app 域 `AppleLanguages` 覆盖也生效（即「系统设置 → 语言与地区 → 应用程序」的按 App 指定）。
+   **没声明本地化的包（`swift test`、裸二进制）恒定中文** —— 428 条既有断言与文档 grep
+   判据都基于中文，不能被运行环境偷改；`AppState.start()` 会记一行当前语言，便于真机排查。
+3. **接线范围**：设置六页、菜单栏（tooltip / 菜单项 / 副标题）、次级条右键菜单、
+   桌面名称行与占位、数据页（含保存面板默认文件名 `MultiDock-配置-…` → `MultiDock-config-…`）、
+   关于页、调试面板、全部用户可见日志（`AppState` / `LifecycleController` / `DockReloader` /
+   `DockController` / `DockWatcher` / `DockPresenceMonitor` / `SpaceSwitcher` /
+   `SecondaryDockController` / `SkyLightBridge` / `SpaceTransitionGestureMonitor` /
+   `ToastPresenter`）、模型层枚举显示名（`ClickAction` / `DesktopNamePlacement` /
+   `ReloadStrategy` / `DockBarPosition` / `MenuBarIcon` / `DockItemRejection`）、
+   `DesktopSpace.displayName`（「桌面 N」/「Desktop N」）、`ScreenNaming`、`LoginItem`、
+   `SpaceProvider` 降级原因。**技术标识不翻译**：`SIGHUP` / `SIGTERM` / `kickstart` /
+   `type 30` / 键名 / 路径 / UUID。`ReloadOutcome.Method.failed` 的 rawValue 中文去掉，
+   展示走新的 `displayName`。用户数据（自定义桌面名、栏名）不翻译 —— 那是用户写的。
+4. **顺手修两处**：数据页说明里的 `**整份替换**` 星号原样显示（Markdown 在 `Text` 里不生效），
+   中英两版都去掉星号；`MenuBarIcon.treeDeciduous` 英文名用 **Tree** 而非 "Deciduous Tree"
+   （56 pt 格子会截成省略号，快照实测）。
+5. **测试**：`L10nTests` 9 例 —— 语言解析（含第三语言回落 / 未声明包恒中文 / 各 zh 变体）、
+   取词、`Support/Info.plist` 双语言声明守卫，加一条**源码扫描守卫**
+   （`testEveryChineseStringLiteralSitsInsideL`：按词法区间扫 `Sources/MultiDock/**`，
+   每个含中文的字面量必须落在某个 `L(…)` 里，注释整段跳过；已用故意插入的违规串
+   反向验证过会红）。英文 UI 快照 6 张（`settings-en-*.png`）逐张核对。
+   → **438 测试全绿**（428 + 9 新增 + 1 英文快照用例，快照默认跳过）。
+6. **真机验证**：`defaults write local.multidock AppleLanguages -array en` 后启动
+   `build/MultiDock.app`，日志整段英文（`Baseline snapshot already exists` /
+   `Detected 3 user desktop(s)` / `Native Dock is frozen: skipping …`）；删掉覆盖重启，
+   日志恢复中文。两条路都实测过。
+7. **文档**：AGENTS 硬约束 4 与 §1 语言行、模块地图（`L10n.swift`）、PLAN §3.7 第 10 轮、
+   rules.md「双语支持的新坑」四条、本记录。
+
+**影响 / 未解决**：
+
+- **改语言要重启 App**（系统对按 App 指定语言本来也是这个要求）；**没做设置页语言选择器**
+  —— 与「界面跟随系统」的既有定位一致（用户规格只说"支持"，没说要做选择器）。
+- 新增文案一律走 `L("中文", "English")`，源码守卫会在 `swift test` 里拦住漏网的。
+- A13 手测追加：把系统语言切成英文（或系统设置里给 MultiDock 单独指定英文）跑一遍
+  六页与菜单栏，看英文文案有没有挤/截断（英文普遍更长，已按快照修掉两处）。
+- **已知不翻译**：技术日志里的键名/符号名、用户自己的桌面名与栏名。
+
+---
+
 ### 2026-10-06（第 59 次）— 「菜单栏」拆出独立页：侧边栏六页
 
 **用户说**：「设置 侧边栏单独一个"菜单栏"tab，把通用中的菜单栏设置move here」。

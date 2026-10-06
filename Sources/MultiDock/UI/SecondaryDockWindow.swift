@@ -238,7 +238,7 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     /// 测试见证位：装配与 target 分发必须可断言（rules.md「见证位」教训）。
     func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
-        menu.title = "屏幕位置"
+        menu.title = L("屏幕位置", "Screen Position")
         for item in SecondaryDockContextMenuBuilder.items(
             current: currentPosition,
             available: availablePositionsProvider()

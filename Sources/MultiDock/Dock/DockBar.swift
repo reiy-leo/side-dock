@@ -11,9 +11,9 @@ enum DockBarPosition: String, Codable, Sendable, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .bottom: return "底部"
-        case .left: return "左侧"
-        case .right: return "右侧"
+        case .bottom: return L("底部", "Bottom")
+        case .left: return L("左侧", "Left")
+        case .right: return L("右侧", "Right")
         }
     }
 

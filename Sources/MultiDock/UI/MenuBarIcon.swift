@@ -22,11 +22,13 @@ enum MenuBarIcon: String, Codable, Sendable, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .treeDeciduous: return "落叶树"
-        case .parasol: return "遮阳伞"
-        case .sparkles: return "闪光"
-        case .appWindowMac: return "窗口"
-        case .shell: return "贝壳"
+        // 英文名要短：设置页格子宽 56pt，「Deciduous Tree」会被截成省略号（实测）。
+        // Lucide 的完整名在 tooltip 里（`lucideName`）。
+        case .treeDeciduous: return L("落叶树", "Tree")
+        case .parasol: return L("遮阳伞", "Parasol")
+        case .sparkles: return L("闪光", "Sparkles")
+        case .appWindowMac: return L("窗口", "Window")
+        case .shell: return L("贝壳", "Shell")
         }
     }
 

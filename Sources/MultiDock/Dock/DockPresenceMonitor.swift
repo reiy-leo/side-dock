@@ -122,7 +122,7 @@ final class DockPresenceMonitor {
         if let pid = process.dockPID(), pid > 0 {
             if consecutiveMisses >= missThreshold {
                 recoveryCount += 1
-                log("Dock 已归位（PID \(pid)，第 \(recoveryCount) 次恢复）")
+                log(L("Dock 已归位（PID \(pid)，第 \(recoveryCount) 次恢复）", "Dock is back (PID \(pid), recovery #\(recoveryCount))"))
                 if isPersistentlyDown {
                     isPersistentlyDown = false
                     onRevived(recoveryCount)
@@ -140,7 +140,7 @@ final class DockPresenceMonitor {
             isPersistentlyDown = true
             let seconds = Int((Double(consecutiveMisses) * pollIntervalSeconds).rounded())
             onPersistentlyDown(
-                "Dock 已连续约 \(seconds) 秒没有回来，已尝试用 launchctl 拉回 \(kickstartCount) 次"
+                L("Dock 已连续约 \(seconds) 秒没有回来，已尝试用 launchctl 拉回 \(kickstartCount) 次", "The Dock has been gone for ~\(seconds) s; launchctl pull-back tried \(kickstartCount)×")
             )
         }
 
@@ -151,8 +151,8 @@ final class DockPresenceMonitor {
         kickstartCount += 1
         let recovered = process.kickstart()
         log(recovered
-            ? "检测到 Dock 不在（连续 \(consecutiveMisses) 次），已用 launchctl 拉回"
-            : "检测到 Dock 不在（连续 \(consecutiveMisses) 次），launchctl 拉回失败，会继续重试")
+            ? L("检测到 Dock 不在（连续 \(consecutiveMisses) 次），已用 launchctl 拉回", "Dock missing (\(consecutiveMisses) consecutive checks); pulled back via launchctl")
+            : L("检测到 Dock 不在（连续 \(consecutiveMisses) 次），launchctl 拉回失败，会继续重试", "Dock missing (\(consecutiveMisses) consecutive checks); launchctl pull-back failed, will keep retrying"))
     }
 
     /// 立刻再试一次拉回。给 UI 上那个「再试一次拉回」按钮用。
@@ -162,7 +162,7 @@ final class DockPresenceMonitor {
     func reviveNow() -> Bool {
         kickstartCount += 1
         let started = process.kickstart()
-        log(started ? "手动重试拉回 Dock" : "手动重试拉回 Dock 失败（launchctl 没跑起来）")
+        log(started ? L("手动重试拉回 Dock", "Manual retry: pulling the Dock back") : L("手动重试拉回 Dock 失败（launchctl 没跑起来）", "Manual retry failed (launchctl didn't run)"))
         return started
     }
 }

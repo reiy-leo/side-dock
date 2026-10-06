@@ -13,9 +13,11 @@ struct DesktopsTab: View {
 
     var body: some View {
         Form {
-            Section("桌面名称") {
+            Section(L("桌面名称", "Desktop Names")) {
                 if state.desktops.isEmpty {
-                    Text(state.spaceProviderAvailable ? "未识别到桌面" : "桌面功能不可用")
+                    Text(state.spaceProviderAvailable
+                         ? L("未识别到桌面", "No desktops detected")
+                         : L("桌面功能不可用", "Desktop features unavailable"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
@@ -24,22 +26,24 @@ struct DesktopsTab: View {
                     }
                 }
                 HStack {
-                    Button("刷新桌面列表") { state.refreshDesktops() }
-                    Text("列表自动每 300 ms 刷新 · 名字最长 \(DesktopNaming.maxLength) 个字符（超出即截断），切换到该桌面时展示")
+                    Button(L("刷新桌面列表", "Refresh Desktop List")) { state.refreshDesktops() }
+                    Text(L("列表自动每 300 ms 刷新 · 名字最长 \(DesktopNaming.maxLength) 个字符（超出即截断），切换到该桌面时展示",
+                           "The list refreshes every 300 ms · names are at most \(DesktopNaming.maxLength) characters (truncated), shown when switching to that desktop"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
-            Section("名称展示") {
-                Toggle("切换桌面时显示桌面名称", isOn: toastBinding)
-                Picker("显示位置", selection: placementBinding) {
+            Section(L("名称展示", "Name Display")) {
+                Toggle(L("切换桌面时显示桌面名称", "Show Desktop Name When Switching"), isOn: toastBinding)
+                Picker(L("显示位置", "Position"), selection: placementBinding) {
                     ForEach(DesktopNamePlacement.allCases, id: \.self) { placement in
                         Text(placement.displayName).tag(placement)
                     }
                 }
                 .pickerStyle(.segmented)
-                Text("样式对标 iPhone 锁屏时钟：大号极细白字压在壁纸上，1 秒后自动消失。不抢焦点、不挡点击；「顶部」即锁屏时钟的位置。")
+                Text(L("样式对标 iPhone 锁屏时钟：大号极细白字压在壁纸上，1 秒后自动消失。不抢焦点、不挡点击；「顶部」即锁屏时钟的位置。",
+                       "Styled after the iPhone lock screen clock: large, ultra-light white text over the wallpaper, gone after one second. It never steals focus or blocks clicks; “Top” matches the lock-screen clock position."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -53,7 +57,7 @@ struct DesktopsTab: View {
         return LabeledContent {
             NameField(
                 value: state.customName(for: space) ?? "",
-                placeholder: "名称",
+                placeholder: L("名称", "Name"),
                 width: 200,
                 onCommit: { raw in
                     state.setCustomName(raw, for: space)
@@ -66,9 +70,9 @@ struct DesktopsTab: View {
             HStack(spacing: 6) {
                 Image(systemName: isActive ? "largecircle.fill.circle" : "circle")
                     .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
-                    .help(isActive ? "当前桌面" : "")
+                    .help(isActive ? L("当前桌面", "Current desktop") : "")
                 SpaceThumbnailView(spaceID: space.id, width: 24, height: 15)
-                Text("桌面 \(space.ordinal)")
+                Text(L("桌面 \(space.ordinal)", "Desktop \(space.ordinal)"))
             }
         }
     }

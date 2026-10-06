@@ -66,11 +66,11 @@ struct SettingsView: View {
     private var sidebar: some View {
         List(selection: tabSelection) {
             Section {
-                Label("通用", systemImage: "gearshape").tag(SettingsTab.general)
-                Label("菜单栏", systemImage: "menubar.rectangle").tag(SettingsTab.menuBar)
-                Label("应用栏", systemImage: "dock.rectangle").tag(SettingsTab.appBars)
-                Label("桌面", systemImage: "rectangle.3.group").tag(SettingsTab.desktop)
-                Label("数据", systemImage: "externaldrive").tag(SettingsTab.data)
+                Label(L("通用", "General"), systemImage: "gearshape").tag(SettingsTab.general)
+                Label(L("菜单栏", "Menu Bar"), systemImage: "menubar.rectangle").tag(SettingsTab.menuBar)
+                Label(L("应用栏", "Dock Bars"), systemImage: "dock.rectangle").tag(SettingsTab.appBars)
+                Label(L("桌面", "Desktops"), systemImage: "rectangle.3.group").tag(SettingsTab.desktop)
+                Label(L("数据", "Data"), systemImage: "externaldrive").tag(SettingsTab.data)
             }
         }
         // 无 titlebar 的窗口里红绿灯浮在侧边栏上，默认行距顶太近 —— 顶部再让出一截
@@ -80,7 +80,7 @@ struct SettingsView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             List(selection: tabSelection) {
-                Label("关于", systemImage: "info.circle").tag(SettingsTab.about)
+                Label(L("关于", "About"), systemImage: "info.circle").tag(SettingsTab.about)
             }
             // 高度 = 单行 sidebar List 的自然高度（上下 contentInset ~10 + 行 ~28）。
             // 行高是系统固定值，窗口缩放不影响。
@@ -112,7 +112,7 @@ enum SettingsWindowFactory {
         // 仍保留 .titled —— 红绿灯与顶部隐藏拖拽区靠它；fullSizeContentView 让内容
         // 占满全高，侧边栏材质（NavigationSplitView 左列）因此延伸进原 titlebar 区。
         // title 只给「窗口」菜单与辅助功能用，界面上不再显示。
-        window.title = "MultiDock 设置"
+        window.title = L("MultiDock 设置", "MultiDock Settings")
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -169,7 +169,7 @@ private struct MenuBarIconChoice: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("\(icon.displayName)（Lucide \(icon.lucideName)）")
+        .help(L("\(icon.displayName)（Lucide \(icon.lucideName)）", "\(icon.displayName) (Lucide \(icon.lucideName))"))
     }
 }
 
@@ -187,16 +187,17 @@ private struct WarningBanner: View {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.red)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("Dock 拉不回来")
+                            Text(L("Dock 拉不回来", "Can't Bring the Dock Back"))
                                 .font(.headline)
-                            Text("\(reason)。可以点右边重试，或到「数据 → 备份与还原」恢复一份历史备份。")
+                            Text(L("\(reason)。可以点右边重试，或到「数据 → 备份与还原」恢复一份历史备份。",
+                                   "\(reason). Retry on the right, or restore a backup from Data → Backups & Restore."))
                                 .font(.caption)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer(minLength: 12)
                         VStack(alignment: .trailing, spacing: 4) {
-                            Button("再试一次拉回") { state.retryDockRevival() }
-                            Button("立即还原到原始 Dock") { state.restoreToBaselineNow() }
+                            Button(L("再试一次拉回", "Try Again")) { state.retryDockRevival() }
+                            Button(L("立即还原到原始 Dock", "Restore Original Dock")) { state.restoreToBaselineNow() }
                         }
                     }
                 }
@@ -206,9 +207,10 @@ private struct WarningBanner: View {
                         Image(systemName: "exclamationmark.octagon.fill")
                             .foregroundStyle(.orange)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("桌面切换不可用")
+                            Text(L("桌面切换不可用", "Desktop Switching Unavailable"))
                                 .font(.headline)
-                            Text("\(reason)。Dock 配置仍能手动应用，但不会随桌面自动切换，菜单栏的切换按钮也不起作用。")
+                            Text(L("\(reason)。Dock 配置仍能手动应用，但不会随桌面自动切换，菜单栏的切换按钮也不起作用。",
+                                   "\(reason). Dock configuration can still be applied manually, but it won't follow desktops automatically, and the menu bar switcher won't work."))
                                 .font(.caption)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -236,8 +238,8 @@ private struct MenuBarTab: View {
 
     var body: some View {
         Form {
-            Section("点击行为") {
-                Picker("左键单击", selection: clickActionBinding) {
+            Section(L("点击行为", "Click Behavior")) {
+                Picker(L("左键单击", "Left Click"), selection: clickActionBinding) {
                     ForEach(ClickAction.allCases, id: \.self) { action in
                         Text(action.displayName).tag(action)
                     }
@@ -247,19 +249,21 @@ private struct MenuBarTab: View {
                 // 系统拦在投递层，阳性对照 Cmd+Tab 也不生效——开关能开也无效就是假开关）。
                 // 研究留档：docs/spikes.md 实验 28；config 里有 `animatedDesktopSwitch` 供
                 // 换机器/系统放开后手工开启。
-                Text("右键或 ⌥+左键始终打开菜单。⇧+左键切上一个桌面；左键若设为「打开菜单」，⇧+左键也一并打开菜单。")
+                Text(L("右键或 ⌥+左键始终打开菜单。⇧+左键切上一个桌面；左键若设为「打开菜单」，⇧+左键也一并打开菜单。",
+                       "Right-click or ⌥-click always opens the menu. ⇧-click switches to the previous desktop; if Left Click is set to “Open Menu”, ⇧-click opens the menu too."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Section("图标") {
+            Section(L("图标", "Icon")) {
                 HStack(spacing: 8) {
                     ForEach(MenuBarIcon.allCases, id: \.self) { icon in
                         MenuBarIconChoice(icon: icon, selection: menuBarIconBinding)
                     }
                 }
-                Text("换图标立即生效；图标旁的数字是当前桌面序号。")
+                Text(L("换图标立即生效；图标旁的数字是当前桌面序号。",
+                       "Icon changes apply immediately; the number next to the icon is the current desktop index."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -299,7 +303,7 @@ private struct GeneralTab: View {
                     VStack(alignment: .leading, spacing: 6) { applyButtons }
                 }
                 if let reason = state.activeDesktopApplyBlockedReason {
-                    Text("不能应用：\(reason)。")
+                    Text(L("不能应用：\(reason)。", "Can't apply: \(reason)."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -308,44 +312,49 @@ private struct GeneralTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Toggle("编辑后立即应用", isOn: autoApplyBinding)
-                Toggle("识别真实 Dock 上的手动改动并回存", isOn: autoCaptureBinding)
-                Picker("重载方式", selection: reloadStrategyBinding) {
+                Toggle(L("编辑后立即应用", "Apply Immediately After Edits"), isOn: autoApplyBinding)
+                Toggle(L("识别真实 Dock 上的手动改动并回存", "Detect Manual Edits in the Real Dock and Save Back"), isOn: autoCaptureBinding)
+                Picker(L("重载方式", "Reload Method"), selection: reloadStrategyBinding) {
                     ForEach(ReloadStrategy.allCases, id: \.self) { strategy in
                         Text(strategy.displayName).tag(strategy)
                     }
                 }
-                Text("实测：写偏好后 Dock 不会自己重读，改配置要重启 Dock 进程 —— SIGHUP 约 0.1 秒不可用，SIGTERM 约 0.4 秒。")
+                Text(L("实测：写偏好后 Dock 不会自己重读，改配置要重启 Dock 进程 —— SIGHUP 约 0.1 秒不可用，SIGTERM 约 0.4 秒。",
+                       "Measured: the Dock doesn't re-read preferences on its own, so applying a config restarts the Dock process — SIGHUP costs ~0.1 s of downtime, SIGTERM ~0.4 s."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Toggle("根据最近使用自动重排空间（mru-spaces）", isOn: mruSpacesBinding)
+                Toggle(L("根据最近使用自动重排空间（mru-spaces）", "Reorder Spaces by Recent Use (mru-spaces)"), isOn: mruSpacesBinding)
                     .disabled(state.mruSpaces == nil)
-                Text("本机默认是开的。开着时系统会按最近使用重排桌面顺序，菜单栏的「切到下一个桌面」会变得不符合直觉，建议关掉。这个键不在常规写入范围内 —— 只有你在这里点开关才会改，改完会自动重启一次 Dock 生效。")
+                Text(L("本机默认是开的。开着时系统会按最近使用重排桌面顺序，菜单栏的「切到下一个桌面」会变得不符合直觉，建议关掉。这个键不在常规写入范围内 —— 只有你在这里点开关才会改，改完会自动重启一次 Dock 生效。",
+                       "On by default on this Mac. When on, macOS reorders desktops by recent use and “Switch to Next Desktop” becomes unintuitive, so turning it off is recommended. This key is outside the normal write set — only this switch changes it, and it takes effect after one Dock restart."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if state.mruSpaces == nil {
-                    Text("当前 macOS 的 com.apple.dock 里没有这个键，因此不提供开关。")
+                    Text(L("当前 macOS 的 com.apple.dock 里没有这个键，因此不提供开关。",
+                           "This macOS build has no such key in com.apple.dock, so no switch is offered."))
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
-            Section("启动、退出与自愈") {
-                Toggle("退出 App 时还原为原始 Dock", isOn: restoreOnQuitBinding)
-                Text("无痕原则：首次运行会把当时的 Dock 完整存为基准快照，退出时自动还原；被强杀或崩溃时，下次启动也会自动还原，并在屏幕上给出提示。")
+            Section(L("启动、退出与自愈", "Launch, Quit & Self-Healing")) {
+                Toggle(L("退出 App 时还原为原始 Dock", "Restore the Original Dock When Quitting"), isOn: restoreOnQuitBinding)
+                Text(L("无痕原则：首次运行会把当时的 Dock 完整存为基准快照，退出时自动还原；被强杀或崩溃时，下次启动也会自动还原，并在屏幕上给出提示。",
+                       "Trace-free principle: on first launch the Dock is saved in full as a baseline snapshot and restored on quit; after a force-quit or crash, the next launch restores it too and shows an on-screen notice."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Toggle("登录时自动启动", isOn: loginItemBinding)
+                Toggle(L("登录时自动启动", "Launch at Login"), isOn: loginItemBinding)
                     .disabled(!LoginItem.isAvailable)
                 Text(state.loginItemStatus)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !LoginItem.isAvailable {
-                    Text("当前不在 .app 包里运行，登录启动不可用。用 ./scripts/build-app.sh 打包后再开。")
+                    Text(L("当前不在 .app 包里运行，登录启动不可用。用 ./scripts/build-app.sh 打包后再开。",
+                           "Not running from an .app bundle, so Launch at Login is unavailable. Build with ./scripts/build-app.sh first."))
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -356,7 +365,7 @@ private struct GeneralTab: View {
                         .foregroundStyle(.orange)
                 }
                 if let stale = state.interruptedSession {
-                    Text("上次未正常退出：PID \(String(stale.pid))")
+                    Text(L("上次未正常退出：PID \(String(stale.pid))", "Last quit was abnormal: PID \(String(stale.pid))"))
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                 }
@@ -369,13 +378,14 @@ private struct GeneralTab: View {
     @ViewBuilder
     private var applyButtons: some View {
         // 应用的是**当前桌面绑定的 Dock 栏**（2026-10-06 起没有自动内容源）。
-        Button("应用当前桌面的 Dock 栏") { state.applyActiveDesktopDock() }
+        Button(L("应用当前桌面的 Dock 栏", "Apply This Desktop's Dock Bar")) { state.applyActiveDesktopDock() }
             .disabled(state.activeDesktopApplyBlockedReason != nil)
-        Button("立即还原到原始 Dock") { state.restoreToBaselineNow() }
-        Button("把当前 Dock 设为新基准") { state.resetBaselineToCurrent() }
-        Button("撤销自动回存") { state.undoLastAutoCapture() }
+        Button(L("立即还原到原始 Dock", "Restore Original Dock")) { state.restoreToBaselineNow() }
+        Button(L("把当前 Dock 设为新基准", "Use Current Dock as New Baseline")) { state.resetBaselineToCurrent() }
+        Button(L("撤销自动回存", "Undo Auto Save-Back")) { state.undoLastAutoCapture() }
             .disabled(!state.canUndoAutoCapture())
-            .help("撤销上一次「识别到你在真实 Dock 上的改动并回存」的覆盖（回存只落在活动桌面绑定的栏上）。")
+            .help(L("撤销上一次「识别到你在真实 Dock 上的改动并回存」的覆盖（回存只落在活动桌面绑定的栏上）。",
+                    "Undo the last automatic save-back from the real Dock (save-backs only target the active desktop's bound bar)."))
     }
 
     private var restoreOnQuitBinding: Binding<Bool> {

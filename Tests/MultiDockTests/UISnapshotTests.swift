@@ -45,6 +45,38 @@ final class UISnapshotTests: XCTestCase {
         print("UI 快照 → \(outDir.path)")
     }
 
+    /// **英文界面快照**（2026-10-06 双语支持）：同一套夹具与装配，只把语言切成 en。
+    /// 用途：核对英文文案在六页里有没有溢出/截断，并确认没有中文残留（人工逐张看）。
+    func testSnapshotSettingsTabsInEnglish() throws {
+        guard ProcessInfo.processInfo.environment["MULTIDOCK_UI_SNAPSHOT"] == "1" else {
+            throw XCTSkip("需要 MULTIDOCK_UI_SNAPSHOT=1（生成 /tmp/multidock-ui-snapshot/*.png）")
+        }
+
+        let outDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("multidock-ui-snapshot", isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        // 语言要在建 `AppState` **之前**切 —— 它的几个默认文案是存储属性，构造时求值。
+        let previous = L10n.language
+        defer { L10n.language = previous }
+        L10n.language = .en
+
+        let state = makeState()
+        state.refreshDesktops()
+        state.refreshDockCapabilities()
+        seed(state)
+        let tabModel = SettingsTabModel()
+        let window = SettingsWindowFactory.makeWindow(state: state, tabModel: tabModel)
+
+        for (tab, name) in [(SettingsTab.general, "general"), (SettingsTab.menuBar, "menu-bar"),
+                            (SettingsTab.appBars, "app-bars"), (SettingsTab.desktop, "desktop"),
+                            (SettingsTab.data, "data"), (SettingsTab.about, "about")] {
+            tabModel.tab = tab
+            try capture(window, to: outDir.appendingPathComponent("settings-en-\(name).png"))
+        }
+        print("英文快照 → \(outDir.path)")
+    }
+
     /// 次级 Dock 条：与真窗口同一条装配路径（`SecondaryDockWindowFactory`），
     /// 摆放用与运行时同一套几何（底部 Dock、内缩 53），验图标条本身的视觉。
     func testSnapshotSecondaryDockInLightAndDark() throws {

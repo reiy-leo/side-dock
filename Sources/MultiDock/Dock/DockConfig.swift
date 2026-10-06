@@ -257,8 +257,8 @@ enum ClickAction: String, Codable, Sendable, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .nextDesktop: return "切换到下一个桌面"
-        case .openMenu: return "打开菜单"
+        case .nextDesktop: return L("切换到下一个桌面", "Switch to Next Desktop")
+        case .openMenu: return L("打开菜单", "Open Menu")
         }
     }
 }
@@ -275,9 +275,9 @@ enum DesktopNamePlacement: String, Codable, Sendable, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .top: return "顶部"
-        case .middle: return "中部"
-        case .bottom: return "底部"
+        case .top: return L("顶部", "Top")
+        case .middle: return L("中部", "Middle")
+        case .bottom: return L("底部", "Bottom")
         }
     }
 }
@@ -291,8 +291,8 @@ enum ReloadStrategy: String, Codable, Sendable, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .auto: return "自动（SIGHUP，约 0.1 秒）"
-        case .sigterm: return "SIGTERM 重启（约 0.4 秒）"
+        case .auto: return L("自动（SIGHUP，约 0.1 秒）", "Automatic (SIGHUP, ~0.1 s)")
+        case .sigterm: return L("SIGTERM 重启（约 0.4 秒）", "SIGTERM Restart (~0.4 s)")
         }
     }
 }

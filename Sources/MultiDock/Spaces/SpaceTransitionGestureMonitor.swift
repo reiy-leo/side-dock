@@ -74,7 +74,7 @@ final class SpaceTransitionGestureMonitor {
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
             if attempts == 1 || attempts % 10 == 0 {
-                log("手势监视器：tap 创建失败（第 \(attempts) 次），\(Self.retryInterval) 后重试")
+                log(L("手势监视器：tap 创建失败（第 \(attempts) 次），\(Self.retryInterval) 后重试", "Gesture monitor: tap creation failed (attempt \(attempts)); retrying in \(Self.retryInterval)"))
             }
             return
         }
@@ -83,7 +83,7 @@ final class SpaceTransitionGestureMonitor {
         runLoopSource = source
         self.tap = tap
         CGEvent.tapEnable(tap: tap, enable: true)
-        log("手势监视器：type 30 listen-only tap 已挂（零权限）")
+        log(L("手势监视器：type 30 listen-only tap 已挂（零权限）", "Gesture monitor: type 30 listen-only tap installed (zero permissions)"))
     }
 
     /// tap 回调（主线程）：type 30 = 切桌面前置手势；tap 被系统超时禁用时立即重挂。

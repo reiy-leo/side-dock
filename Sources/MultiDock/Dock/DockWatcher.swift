@@ -110,8 +110,8 @@ final class DockWatcher {
         guard let config = readLiveConfig() else { return }
 
         detectedCount += 1
-        log("检测到真实 Dock 上的手动改动：\(config.pinnedApps.count) 个图标、"
-            + "\(config.otherItems.count) 个其他项")
+        log(L("检测到真实 Dock 上的手动改动：\(config.pinnedApps.count) 个图标、", "Manual change detected in the real Dock: \(config.pinnedApps.count) icons, ")
+            + L("\(config.otherItems.count) 个其他项", "\(config.otherItems.count) other items"))
         onUserEdit(config)
     }
 

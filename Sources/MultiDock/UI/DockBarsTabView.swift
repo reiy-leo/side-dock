@@ -40,7 +40,7 @@ struct DockBarsTab: View {
     private var barList: some View {
         VStack(spacing: 0) {
             List(selection: $selection) {
-                Section("Dock 栏（\(state.dockBars.count)）") {
+                Section(L("Dock 栏（\(state.dockBars.count)）", "Dock Bars (\(state.dockBars.count))")) {
                     ForEach(state.dockBars) { bar in
                         barRow(bar).tag(bar.id)
                     }
@@ -49,7 +49,7 @@ struct DockBarsTab: View {
             .listStyle(.inset)
             .overlay(alignment: .bottom) {
                 if state.dockBars.isEmpty {
-                    Text("还没有 Dock 栏，点下面「添加 Dock 栏」。")
+                    Text(L("还没有 Dock 栏，点下面「添加 Dock 栏」。", "No Dock bars yet — use “Add Dock Bar” below."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.bottom, 8)
@@ -59,11 +59,12 @@ struct DockBarsTab: View {
             // 列表脚注：添加动作 + 一句规则提示（系统设置里也是这种"列表 → 按钮条"收尾）。
             Divider()
             HStack(spacing: 8) {
-                Button("添加 Dock 栏") {
+                Button(L("添加 Dock 栏", "Add Dock Bar")) {
                     selection = state.addDockBar()
                 }
                 Spacer(minLength: 8)
-                Text("一个桌面只挂一根栏 · 原生 Dock \(state.dockSideShortDescription)")
+                Text(L("一个桌面只挂一根栏 · 原生 Dock \(state.dockSideShortDescription)",
+                       "One bar per desktop · Native Dock \(state.dockSideShortDescription)"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -80,7 +81,7 @@ struct DockBarsTab: View {
         HStack(spacing: 8) {
             NameField(
                 value: bar.name,
-                placeholder: "名称",
+                placeholder: L("名称", "Name"),
                 width: 100,
                 onCommit: { raw in
                     state.renameDockBar(bar.id, to: raw)
@@ -115,12 +116,12 @@ struct DockBarsTab: View {
                 Image(systemName: "minus.circle")
             }
             .buttonStyle(.borderless)
-            .help("删除这根 Dock 栏")
+            .help(L("删除这根 Dock 栏", "Delete this Dock bar"))
         } else {
             Image(systemName: "lock.fill")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
-                .help("这根栏绑着桌面，先解绑才能删除")
+                .help(L("这根栏绑着桌面，先解绑才能删除", "Bound to a desktop; unbind before deleting"))
         }
     }
 
@@ -144,7 +145,7 @@ struct DockBarsTab: View {
                 }
             }
             Menu {
-                Toggle("未绑定", isOn: binding(bar, isBoundTo: nil))
+                Toggle(L("未绑定", "Unbound"), isOn: binding(bar, isBoundTo: nil))
                 Divider()
                 ForEach(state.desktops) { space in
                     Toggle(
@@ -159,7 +160,8 @@ struct DockBarsTab: View {
             }
             .frame(width: 150)
         }
-        .help("这根栏显示在哪个桌面上。缩略图是空间的壁纸（本机各空间共用系统壁纸时显示同一张）。")
+        .help(L("这根栏显示在哪个桌面上。缩略图是空间的壁纸（本机各空间共用系统壁纸时显示同一张）。",
+                "Which desktop this bar appears on. The thumbnail is the space's wallpaper (the same one when spaces share the system wallpaper)."))
     }
 
     /// 下拉关闭态的短文案：绑定了就只显示桌面名（不带显示器名，避免截断）。
@@ -167,7 +169,7 @@ struct DockBarsTab: View {
         guard
             let spaceID = bar.spaceID,
             let space = state.desktops.first(where: { $0.id == spaceID })
-        else { return "未绑定" }
+        else { return L("未绑定", "Unbound") }
         return state.displayName(for: space)
     }
 
@@ -193,7 +195,8 @@ struct DockBarsTab: View {
         .labelsHidden()
         .pickerStyle(.segmented)
         .frame(width: 132)
-        .help("栏贴在哪条屏幕边。台前调度开启时自动避开左侧。")
+        .help(L("栏贴在哪条屏幕边。台前调度开启时自动避开左侧。",
+                "Which screen edge the bar sticks to. The left edge is avoided while Stage Manager is on."))
     }
 
     private func positionOptions(for bar: DockBar) -> [DockBarPosition] {
@@ -212,15 +215,15 @@ struct DockBarsTab: View {
             let boundSpace = bar.spaceID.flatMap { id in state.desktops.first { $0.id == id } }
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
-                    Text("「\(bar.name)」的图标")
+                    Text(L("「\(bar.name)」的图标", "Icons in “\(bar.name)”"))
                         .font(.headline)
                     if let boundSpace {
-                        Text("显示在 \(state.displayName(for: boundSpace))")
+                        Text(L("显示在 \(state.displayName(for: boundSpace))", "Shown on \(state.displayName(for: boundSpace))"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     if state.orphanedBars.contains(where: { $0.id == bar.id }) {
-                        Label("绑定的桌面已不存在", systemImage: "exclamationmark.triangle")
+                        Label(L("绑定的桌面已不存在", "Bound desktop no longer exists"), systemImage: "exclamationmark.triangle")
                             .font(.caption)
                             .foregroundStyle(.orange)
                     }
@@ -230,7 +233,8 @@ struct DockBarsTab: View {
                     bar: barBinding(for: bar),
                     onCommit: { state.dockBarEdited($0, reason: $1) }
                 )
-                Text("从访达拖 .app 进来，或点「＋」添加；拖动排序，拖到垃圾桶移除。栏可以清空，最多 \(DockBar.maxApps) 个，超出 \(DockBar.visibleSlots) 个横向滚动。")
+                Text(L("从访达拖 .app 进来，或点「＋」添加；拖动排序，拖到垃圾桶移除。栏可以清空，最多 \(DockBar.maxApps) 个，超出 \(DockBar.visibleSlots) 个横向滚动。",
+                       "Drag .app bundles in from Finder, or click “+”; drag to reorder, drop on the trash to remove. Bars can be empty; up to \(DockBar.maxApps) icons, scrolling past \(DockBar.visibleSlots)."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -238,7 +242,7 @@ struct DockBarsTab: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
         } else {
-            Text("在上方选一根 Dock 栏编辑它的图标")
+            Text(L("在上方选一根 Dock 栏编辑它的图标", "Select a Dock bar above to edit its icons"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
@@ -255,22 +259,27 @@ struct DockBarsTab: View {
                 Image(systemName: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("有 \(state.orphanedBars.count) 根栏绑定的桌面已不存在")
+                    Text(L("有 \(state.orphanedBars.count) 根栏绑定的桌面已不存在",
+                           "\(state.orphanedBars.count) bar(s) are bound to desktops that no longer exist"))
                         .font(.caption)
-                    Text("可能是桌面被删了，也可能是外接显示器被拔走。插回来还能继续用，所以不会自动动它们。")
+                    Text(L("可能是桌面被删了，也可能是外接显示器被拔走。插回来还能继续用，所以不会自动动它们。",
+                           "The desktop may have been deleted or an external display unplugged. They're left untouched in case it comes back."))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
-                Button("解绑") { confirmingUnbind = true }
+                Button(L("解绑", "Unbind")) { confirmingUnbind = true }
             }
             .padding(10)
-            .alert("解绑 \(state.orphanedBars.count) 根失效栏的桌面绑定？", isPresented: $confirmingUnbind) {
-                Button("解绑", role: .destructive) { state.unbindOrphanedBars() }
-                Button("取消", role: .cancel) {}
+            .alert(L("解绑 \(state.orphanedBars.count) 根失效栏的桌面绑定？",
+                     "Unbind \(state.orphanedBars.count) orphaned bar(s)?"),
+                   isPresented: $confirmingUnbind) {
+                Button(L("解绑", "Unbind"), role: .destructive) { state.unbindOrphanedBars() }
+                Button(L("取消", "Cancel"), role: .cancel) {}
             } message: {
-                Text("只解除绑定，栏的名字、位置与图标都保留。")
+                Text(L("只解除绑定，栏的名字、位置与图标都保留。",
+                       "Only the binding is removed; the bar's name, position and icons are kept."))
             }
         }
     }
@@ -292,7 +301,7 @@ struct DockBarsTab: View {
                 guard newValue != bar.position, let current = state.dockBar(id: bar.id) else { return }
                 var updated = current
                 updated.position = newValue
-                state.dockBarEdited(updated, reason: "位置改为\(newValue.displayName)")
+                state.dockBarEdited(updated, reason: L("位置改为\(newValue.displayName)", "Position changed to \(newValue.displayName)"))
             }
         )
     }

@@ -72,13 +72,13 @@ final class DockController {
 
         /// 给日志/界面用的一句话。
         var summary: String {
-            var text = "\(result.rawValue)：\(reason)"
+            var text = L("\(result.rawValue)：\(reason)", "\(result.rawValue): \(reason)")
             if let reload { text += "；\(reload.description)" }
             if let quitRestart { text += "；\(quitRestart.description)" }
-            if result == .applied { text += "；写入 \(writtenKeys) 个键" }
-            if verifyAttempts > 1 { text += "；校验重试 \(verifyAttempts) 次" }
-            text += String(format: "；总耗时 %.0f ms", elapsed * 1000)
-            if let note { text += "；注意：\(note)" }
+            if result == .applied { text += L("；写入 \(writtenKeys) 个键", "; wrote \(writtenKeys) keys") }
+            if verifyAttempts > 1 { text += L("；校验重试 \(verifyAttempts) 次", "; verification retried \(verifyAttempts)×") }
+            text += String(format: L("；总耗时 %.0f ms", "; total %.0f ms"), elapsed * 1000)
+            if let note { text += L("；注意：\(note)", "; note: \(note)") }
             return text
         }
     }
@@ -302,13 +302,13 @@ final class DockController {
         do {
             try backup()
         } catch {
-            note = "写入前的备份失败：\(error.localizedDescription)（基准快照仍在，可一键还原）"
+            note = L("写入前的备份失败：\(error.localizedDescription)（基准快照仍在，可一键还原）", "Pre-write backup failed: \(error.localizedDescription) (the baseline snapshot is intact — one-click restore is available)")
         }
 
         // 3. 读全量域 → 只覆盖白名单键 → 单次原子写。
         let domain = preferences.readDomain()
         guard !domain.isEmpty else {
-            return Outcome(result: .failed, reason: "\(reason)（读不到 com.apple.dock 偏好域）", reload: nil,
+            return Outcome(result: .failed, reason: L("\(reason)（读不到 com.apple.dock 偏好域）", "\(reason) (can't read the com.apple.dock preference domain)"), reload: nil,
                            writtenKeys: 0, verifyAttempts: 0, elapsed: elapsed(), note: note,
                            fingerprint: config.fingerprint)
         }

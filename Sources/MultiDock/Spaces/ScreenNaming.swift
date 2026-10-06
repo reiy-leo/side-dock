@@ -35,8 +35,8 @@ enum ScreenNaming {
     /// 方便用户照调试面板核对，而不是显示一个错的显示器名。
     static func displayName(for displayUUID: String, screens: [Screen]) -> String {
         if let name = name(for: displayUUID, screens: screens) { return name }
-        if displayUUID.isEmpty { return "未知显示器" }
-        return "未识别显示器（\(displayUUID.prefix(8))…）"
+        if displayUUID.isEmpty { return L("未知显示器", "Unknown display") }
+        return L("未识别显示器（\(displayUUID.prefix(8))…）", "Unrecognized display (\(displayUUID.prefix(8))…)")
     }
 
     /// 当前接的所有显示器，与 `NSScreen.screens` 同序（主屏在最前）。

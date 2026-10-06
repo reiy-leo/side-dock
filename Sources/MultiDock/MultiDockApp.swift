@@ -16,6 +16,9 @@ enum MultiDockMain {
     private static let delegate = AppDelegate()
 
     static func main() {
+        // 界面语言（2026-10-06）：跟随系统解析一次，之后所有 `L("中文", "English")`
+        // 都按它取。必须在任何 UI 构造之前——`AppState` 的默认文案在实例化时就求值了。
+        L10n.applySystemLanguage()
         let app = NSApplication.shared
         app.delegate = delegate
         // 菜单栏 App：不在 Dock 里显示图标、没有主窗口。

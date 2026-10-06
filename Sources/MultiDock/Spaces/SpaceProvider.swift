@@ -14,7 +14,8 @@ struct DesktopSpace: Hashable, Sendable, Identifiable {
 
     var id: String { "\(displayUUID)#\(spaceUUID)" }
 
-    var displayName: String { "桌面 \(ordinal)" }
+    /// 未命名桌面的默认名（双语，随界面语言）。
+    var displayName: String { L("桌面 \(ordinal)", "Desktop \(ordinal)") }
 }
 
 /// 桌面枚举与切换的能力抽象。
@@ -113,9 +114,10 @@ enum SpaceProviderFactory {
         if let bridge = SkyLightBridge.shared {
             return SkyLightSpaceProvider(bridge: bridge)
         }
-        let reason = SkyLightBridge.loadError ?? "未知原因"
+        let reason = SkyLightBridge.loadError ?? L("未知原因", "unknown reason")
         return UnavailableSpaceProvider(
-            reason: "无法加载 SkyLight 私有 API（\(reason)）。桌面识别与切换不可用，只能手动改 Dock。"
+            reason: L("无法加载 SkyLight 私有 API（\(reason)）。桌面识别与切换不可用，只能手动改 Dock。",
+                      "Can't load the SkyLight private API (\(reason)). Desktop detection and switching are unavailable; only manual Dock edits work.")
         )
     }
 }

@@ -503,6 +503,24 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 4. **源图边缘可能有低 alpha 噪声**（本次 1–3/255 散在画布边缘）：生成前把 alpha<8
    的像素清零，否则 bbox 会量到画布边缘。
 
+### 2026-10-06 双语支持的新坑（中 / 英）
+
+1. **`Bundle.main.preferredLocalizations` 只在 Info.plist 声明了 `CFBundleLocalizations`
+   之后才有意义**：不声明时它恒为 `en`（探针 App 实测），中文系统也会整片英文。
+   `Support/Info.plist` 里 `CFBundleLocalizations = [en, zh-Hans]` +
+   `CFBundleDevelopmentRegion = en`（开发区域决定**第三语言**往哪落：日语/法语系统会
+   拿到 `en`，所以要 en 而不是 zh）。`L10nTests.testInfoPlistDeclaresBothLocalizations`
+   钉住这三项。
+2. **`swift test` / 裸二进制没有本地化元数据**（`Bundle.main.localizations` 为空）——
+   `L10n.resolvedLanguage` 对这种情况**恒定中文**。别"顺手"改成 `Locale.preferredLanguages`：
+   测试进程会跟着系统语言漂移，400+ 条中文断言与 `docs/` 的 grep 判据全会受影响。
+3. **`L()` 的插值会被求值两次**（两种语言各一次）。只允许无副作用的表达式；
+   要拼接有副作用/高开销的值，先在局部算好变量再传进 `L("…\(x)…", "…\(x)…")`。
+4. **新增用户可见文案必须走 `L("中文", "English")`**，否则英文界面漏中文 ——
+   `L10nTests.testEveryChineseStringLiteralSitsInsideL` 按词法区间扫描源码拦漏网
+   （注释跳过、`L` 可跨行、插值里的嵌套字面量算素材）。**技术标识不翻译**
+   （SIGHUP / kickstart / 键名 / 路径）；**用户数据不翻译**（自定义桌面名、栏名）。
+
 ### 2026-10-06 菜单栏标题对齐的新坑（图标 + 数字）
 
 1. **`button.title = " \(n)"` 的数字会偏高 ~1.2pt**：数字没有下伸部（descent），而

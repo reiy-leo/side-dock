@@ -15,13 +15,13 @@ struct DataView: View {
 
     var body: some View {
         Form {
-            Section("配置文件") {
+            Section(L("配置文件", "Configuration File")) {
                 HStack(spacing: 8) {
-                    Button("导出配置…") { exportConfiguration() }
-                    Button("导入配置…") { importConfiguration() }
+                    Button(L("导出配置…", "Export Config…")) { exportConfiguration() }
+                    Button(L("导入配置…", "Import Config…")) { importConfiguration() }
                     Spacer()
                 }
-                Text("导出 = 把当前全部设置（Dock 栏、绑定、命名、各开关）存成一个 JSON 文件；导入会用文件里的内容**整份替换**当前设置并落盘（与启动加载同一套归一化/迁移）。次级条与绑定导入即生效；原生 Dock 由「立即应用」（通用页）/ 切桌面 / 下次启动跟上。")
+                Text(L("导出 = 把当前全部设置（Dock 栏、绑定、命名、各开关）存成一个 JSON 文件；导入会用文件里的内容整份替换当前设置并落盘（与启动加载同一套归一化/迁移）。次级条与绑定导入即生效；原生 Dock 由「立即应用」（通用页）/ 切桌面 / 下次启动跟上。", "Export saves all current settings (Dock bars, bindings, names, switches) as one JSON file; import replaces the whole configuration with the file's content and writes it to disk (same normalization/migration as launch). Secondary bars and bindings take effect immediately; the native Dock follows via “Apply” (General tab) / desktop switching / next launch."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -38,7 +38,7 @@ struct DataView: View {
                 }
                 // 路径是"查证用"的次级信息，收进脚注行、弱化呈现（craft：主次分明）。
                 HStack(spacing: 6) {
-                    Text("文件")
+                    Text(L("文件", "File"))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                     Text(state.configPath)
@@ -50,9 +50,9 @@ struct DataView: View {
                 }
             }
 
-            Section("备份与还原") {
+            Section(L("备份与还原", "Backups & Restore")) {
                 if state.backups.isEmpty {
-                    Text("还没有历史备份。每次真正写 Dock 之前都会自动留一份，最多保留 20 份。")
+                    Text(L("还没有历史备份。每次真正写 Dock 之前都会自动留一份，最多保留 20 份。", "No backups yet. One is kept automatically before every real Dock write, up to 20."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -65,17 +65,17 @@ struct DataView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            Button("恢复") { pendingBackup = entry }
+                            Button(L("恢复", "Restore")) { pendingBackup = entry }
                         }
                     }
                     if state.backups.count > 5 {
-                        Text("只列出最近 5 份，共 \(state.backups.count) 份。")
+                        Text(L("只列出最近 5 份，共 \(state.backups.count) 份。", "Showing the latest 5 of \(state.backups.count)."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
-                Button("刷新列表") { state.refreshBackups() }
-                Text("恢复备份只覆盖 Dock 的图标等内容，不动热角、启动台网格等设置 —— 因为我们从来只写那几项。")
+                Button(L("刷新列表", "Refresh List")) { state.refreshBackups() }
+                Text(L("恢复备份只覆盖 Dock 的图标等内容，不动热角、启动台网格等设置 —— 因为我们从来只写那几项。", "Restoring a backup only overwrites Dock contents (icons etc.), not hot corners or Launchpad layout — we only ever write those few keys."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -84,20 +84,20 @@ struct DataView: View {
         .formStyle(.grouped)
         .onAppear { state.refreshBackups() }
         .alert(
-            "恢复这份备份？",
+            L("恢复这份备份？", "Restore This Backup?"),
             isPresented: Binding(
                 get: { pendingBackup != nil },
                 set: { if !$0 { pendingBackup = nil } }
             ),
             presenting: pendingBackup
         ) { entry in
-            Button("恢复", role: .destructive) {
+            Button(L("恢复", "Restore"), role: .destructive) {
                 state.restoreBackup(entry)
                 pendingBackup = nil
             }
-            Button("取消", role: .cancel) { pendingBackup = nil }
+            Button(L("取消", "Cancel"), role: .cancel) { pendingBackup = nil }
         } message: { entry in
-            Text("会用 \(entry.fileName) 里的内容覆盖当前 Dock，并重启一次 Dock（约 0.1 秒不可用）。")
+            Text(L("会用 \(entry.fileName) 里的内容覆盖当前 Dock，并重启一次 Dock（约 0.1 秒不可用）。", "The contents of \(entry.fileName) will overwrite the current Dock, restarting it once (~0.1 s unavailable)."))
         }
     }
 
@@ -106,8 +106,8 @@ struct DataView: View {
     private func exportConfiguration() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "MultiDock-配置-\(dateStamp).json"
-        panel.prompt = "导出"
+        panel.nameFieldStringValue = L("MultiDock-配置-\(dateStamp).json", "MultiDock-config-\(dateStamp).json")
+        panel.prompt = L("导出", "Export")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         state.exportConfiguration(to: url)
     }
@@ -117,7 +117,7 @@ struct DataView: View {
         panel.allowedContentTypes = [.json]
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.prompt = "导入"
+        panel.prompt = L("导入", "Import")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         state.importConfiguration(from: url)
     }

@@ -262,14 +262,14 @@ enum QuitRestart: Sendable, Equatable {
     var description: String {
         switch self {
         case let .revived(oldPID, newPID, elapsed):
-            return String(format: "SIGHUP 成功：PID %d → %d，Dock 不可用 %.0f ms", oldPID, newPID, elapsed * 1000)
+            return String(format: L("SIGHUP 成功：PID %d → %d，Dock 不可用 %.0f ms", "SIGHUP succeeded: PID %d → %d, Dock unavailable %.0f ms"), oldPID, newPID, elapsed * 1000)
         case let .signaled(oldPID):
-            return "已发出重启信号，但 1.5 秒内没看到 Dock 归位（launchd 多半在退避）；"
-                + "偏好已写回基准，Dock 下次启动会直接读到（旧 PID \(oldPID)）"
+            return L("已发出重启信号，但 1.5 秒内没看到 Dock 归位（launchd 多半在退避）；", "The restart signal was sent, but the Dock didn't come back within 1.5 s (launchd is probably backing off); ")
+                + L("偏好已写回基准，Dock 下次启动会直接读到（旧 PID \(oldPID)）", "preferences were written back to the baseline and will be read on the Dock's next launch (old PID \(oldPID))")
         case .dockWasDown:
-            return "Dock 进程本来就不在，没有可重启的对象；偏好已写回基准，launchd 拉起时即生效"
+            return L("Dock 进程本来就不在，没有可重启的对象；偏好已写回基准，launchd 拉起时即生效", "The Dock process wasn't running — nothing to restart; preferences were written back to the baseline and apply as soon as launchd starts it")
         case let .notDelivered(oldPID):
-            return "重启信号没能发出去（PID \(oldPID)）；偏好已写回基准，等 Dock 下次启动生效"
+            return L("重启信号没能发出去（PID \(oldPID)）；偏好已写回基准，等 Dock 下次启动生效", "The restart signal couldn't be delivered (PID \(oldPID)); preferences were written back to the baseline and apply on the Dock's next launch")
         }
     }
 }
@@ -284,7 +284,14 @@ struct ReloadOutcome: Sendable, Equatable {
         case sigterm = "SIGTERM"
         /// launchd 拉回。
         case kickstart = "kickstart"
-        case failed = "失败"
+        /// 失败。rawValue 保持英文 —— 日志展示走 `displayName`（rawValue 不再直接进 UI）。
+        case failed
+
+        /// 日志里显示的名字。`SIGHUP` / `SIGTERM` / `kickstart` 是技术标识原样用；
+        /// `failed` 是普通词，按语言展示。
+        var displayName: String {
+            self == .failed ? L("失败", "failed") : rawValue
+        }
     }
 
     var method: Method
@@ -326,24 +333,24 @@ struct ReloadOutcome: Sendable, Equatable {
 
     var description: String {
         let wait = spacingWait > 0.01
-            ? String(format: "（先等了 %.0f ms 错开节流，期间 Dock 可用）", spacingWait * 1000)
+            ? String(format: L("（先等了 %.0f ms 错开节流，期间 Dock 可用）", " (waited %.0f ms to clear the restart throttle; the Dock stayed available)"), spacingWait * 1000)
             : ""
         // 存活性只在**慢重启**上记（`elapsed > 1`），保证快路径的日志行一个字节都不变。
         let liveness = (elapsed > 1 && waitPolls > 0)
-            ? String(format: "；轮询 %d 次，最长间隔 %d ms", waitPolls, waitLongestGapMS)
+            ? String(format: L("；轮询 %d 次，最长间隔 %d ms", "; %d polls, longest gap %d ms"), waitPolls, waitLongestGapMS)
             : ""
         let probe = probeTimeline.isEmpty
             ? ""
-            : "；慢重启取证：" + probeTimeline.joined(separator: "｜")
+            : L("；慢重启取证：", "; slow-restart evidence: ") + probeTimeline.joined(separator: "｜")
         let sandwich = revealFailed
-            ? "；⚠️ 三明治恢复可见性失败，Dock 暂时隐藏（下次 apply 自动恢复）"
-            : (hiddenRestart ? "；隐藏中重启（无闪烁）" : "")
+            ? L("；⚠️ 三明治恢复可见性失败，Dock 暂时隐藏（下次 apply 自动恢复）", "; warning: the sandwich failed to restore visibility — the Dock is hidden for now (the next apply recovers it)")
+            : (hiddenRestart ? L("；隐藏中重启（无闪烁）", "; restarted while hidden (no flicker)") : "")
         guard succeeded else {
-            return String(format: "%@ 失败（%.0f ms，旧 PID %@）%@%@%@%@", method.rawValue, elapsed * 1000,
-                          oldPID.map(String.init) ?? "无", wait, liveness, probe, sandwich)
+            return String(format: L("%@ 失败（%.0f ms，旧 PID %@）%@%@%@%@", "%@ failed (%.0f ms, old PID %@)%@%@%@%@"), method.displayName, elapsed * 1000,
+                          oldPID.map(String.init) ?? L("无", "none"), wait, liveness, probe, sandwich)
         }
-        return String(format: "%@ 成功：PID %@ → %@，Dock 不可用 %.0f ms%@%@%@%@",
-                      method.rawValue, oldPID.map(String.init) ?? "?", String(newPID!), elapsed * 1000,
+        return String(format: L("%@ 成功：PID %@ → %@，Dock 不可用 %.0f ms%@%@%@%@", "%@ succeeded: PID %@ → %@, Dock unavailable %.0f ms%@%@%@%@"),
+                      method.displayName, oldPID.map(String.init) ?? "?", String(newPID!), elapsed * 1000,
                       wait, liveness, probe, sandwich)
     }
 }
@@ -552,7 +559,7 @@ final class DockReloader {
             return outcome(.sigterm, oldPID: oldPID, newPID: newPID,
                            started: started, spacingWait: spacingWait,
                            probeTimeline: Self.mergeTimelines([
-                               ("主路径", wait.probeTimeline), ("升级 SIGTERM 后", grace.probeTimeline),
+                               (L("主路径", "primary path"), wait.probeTimeline), (L("升级 SIGTERM 后", "after SIGTERM escalation"), grace.probeTimeline),
                            ]),
                            polls: grace.polls, longestGapMS: grace.longestGapMS)
         }
@@ -562,9 +569,9 @@ final class DockReloader {
             return outcome(.kickstart, oldPID: oldPID, newPID: newPID,
                            started: started, spacingWait: spacingWait,
                            probeTimeline: Self.mergeTimelines([
-                               ("主路径", wait.probeTimeline),
-                               ("升级 SIGTERM 后", grace.probeTimeline),
-                               ("kickstart 后", kicked.probeTimeline),
+                               (L("主路径", "primary path"), wait.probeTimeline),
+                               (L("升级 SIGTERM 后", "after SIGTERM escalation"), grace.probeTimeline),
+                               (L("kickstart 后", "after kickstart"), kicked.probeTimeline),
                            ]),
                            polls: kicked.polls, longestGapMS: kicked.longestGapMS)
         }
@@ -575,9 +582,9 @@ final class DockReloader {
                              elapsed: Date().timeIntervalSince(started),
                              spacingWait: spacingWait,
                              probeTimeline: Self.mergeTimelines([
-                                 ("主路径", wait.probeTimeline),
-                                 ("升级 SIGTERM 后", grace.probeTimeline),
-                                 ("kickstart 后", kicked.probeTimeline),
+                                 (L("主路径", "primary path"), wait.probeTimeline),
+                                 (L("升级 SIGTERM 后", "after SIGTERM escalation"), grace.probeTimeline),
+                                 (L("kickstart 后", "after kickstart"), kicked.probeTimeline),
                              ]),
                              waitPolls: wait.polls, waitLongestGapMS: wait.longestGapMS)
     }
@@ -728,7 +735,7 @@ final class DockReloader {
                 process.kickstart()
                 if timeline.count < probeSampleCap {
                     let ms = Int((Self.seconds(start.duration(to: now)) * 1000).rounded())
-                    timeline.append("\(ms)ms 催 kickstart #\(nudges)（Dock 还没归位）")
+                    timeline.append(L("\(ms)ms 催 kickstart #\(nudges)（Dock 还没归位）", "\(ms)ms nudge kickstart #\(nudges) (the Dock isn't back yet)"))
                 }
             }
             if now >= nextProbeAt {

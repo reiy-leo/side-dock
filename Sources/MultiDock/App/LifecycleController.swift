@@ -61,10 +61,10 @@ final class LifecycleController {
         marker = newMarker
         do {
             try baselineStore.writeSessionMarker(newMarker)
-            let suffix = inheritsDebt ? "，继承上次未完成的自愈" : ""
-            state.append(.info, "会话标记已建立（PID \(newMarker.pid)\(suffix)）")
+            let suffix = inheritsDebt ? L("，继承上次未完成的自愈", ", inheriting the previous unfinished self-heal") : ""
+            state.append(.info, L("会话标记已建立（PID \(newMarker.pid)\(suffix)）", "Session marker created (PID \(newMarker.pid)\(suffix))"))
         } catch {
-            state.append(.warning, "会话标记写入失败，强杀自愈将不可用：\(error.localizedDescription)")
+            state.append(.warning, L("会话标记写入失败，强杀自愈将不可用：\(error.localizedDescription)", "Failed to write the session marker; force-quit self-heal will be unavailable: \(error.localizedDescription)"))
         }
     }
 
@@ -87,22 +87,22 @@ final class LifecycleController {
     /// 手动拖了图标，无条件写回基准会把他的改动一起抹掉，那就不是无痕，是破坏。
     func shouldTerminate() -> Bool {
         guard state.settings.restoreOnQuit else {
-            state.append(.info, "已关闭退出还原，直接退出")
+            state.append(.info, L("已关闭退出还原，直接退出", "Restore-on-quit is off; quitting directly"))
             clearMarkerAndFinish()
             return true
         }
         guard sessionChangedDock else {
-            state.append(.info, "本次运行没有改动过 Dock，无需还原")
+            state.append(.info, L("本次运行没有改动过 Dock，无需还原", "The Dock wasn't changed this run; nothing to restore"))
             clearMarkerAndFinish()
             return true
         }
         guard let restore = restoreHandler else {
-            state.append(.warning, "改过 Dock 但还原动作未接线，直接退出")
-            keepMarkerAndFinish(reason: "还原动作未接线")
+            state.append(.warning, L("改过 Dock 但还原动作未接线，直接退出", "The Dock was changed but no restore action is wired up; quitting directly"))
+            keepMarkerAndFinish(reason: L("还原动作未接线", "restore action not wired up"))
             return true
         }
 
-        state.append(.info, "开始退出还原…")
+        state.append(.info, L("开始退出还原…", "Starting restore-on-quit…"))
         terminationTask = Task { @MainActor in
             // **先等排队的应用跑完再还原**。`DockController.request` 是异步排队的，
             // 如果还有一笔待办没落地，它会在还原**之后**才写进去 ——
@@ -114,22 +114,22 @@ final class LifecycleController {
             let started = Date()
             let outcome = await restore()
             let elapsed = Date().timeIntervalSince(started)
-            state.append(.info, String(format: "退出还原流程结束，用时 %.2fs", elapsed))
+            state.append(.info, String(format: L("退出还原流程结束，用时 %.2fs", "Restore-on-quit finished in %.2fs"), elapsed))
             if elapsed > 5 {
-                state.append(.warning, "还原用时超过 5 秒，请检查 Dock 是否正常")
+                state.append(.warning, L("还原用时超过 5 秒，请检查 Dock 是否正常", "Restore took longer than 5 s — check that the Dock is healthy"))
             }
 
             if outcome?.succeeded == true, !settled {
                 // 还原本身写干净了，但退出时还有一笔应用没落地 —— 它可能在我们之后又写了一次。
                 // **不能清标记**：让下次启动的自检去看真实域，不一致就还原。
-                keepMarkerAndFinish(reason: "退出时还有一次应用没落地")
+                keepMarkerAndFinish(reason: L("退出时还有一次应用没落地", "an apply hadn't finished when quitting"))
             } else if outcome?.succeeded == true {
                 clearMarkerAndFinish()
             } else {
                 // 还原没成功 → **标记必须留着**。这正是"强杀自愈"要接手的场景，
                 // 清掉标记等于把下次启动的自愈能力一起扔了。
                 keepMarkerAndFinish(
-                    reason: outcome.map { "还原结果 \($0.result.rawValue)" } ?? "读不到基准快照"
+                    reason: outcome.map { L("还原结果 \($0.result.rawValue)", "restore result \($0.result.rawValue)") } ?? L("读不到基准快照", "can't read the baseline snapshot")
                 )
             }
         }
@@ -159,7 +159,7 @@ final class LifecycleController {
             marker.pid = 0
             try? baselineStore.writeSessionMarker(marker)
         }
-        state.append(.warning, "还原未完成（\(reason)），已留下标记，下次启动会自动重试")
+        state.append(.warning, L("还原未完成（\(reason)），已留下标记，下次启动会自动重试", "Restore incomplete (\(reason)); a marker was left behind and the next launch retries automatically"))
         state.stop()
         finishTermination()
     }
@@ -171,10 +171,10 @@ final class LifecycleController {
     /// 由下次启动的自愈接手。**不要**在这里改成"同步阻塞等还原" —— 会拖住关机。
     func systemWillPowerOff() {
         guard state.settings.restoreOnQuit, sessionChangedDock else {
-            state.append(.info, "系统即将关机/注销，本次未改动过 Dock，无需还原")
+            state.append(.info, L("系统即将关机/注销，本次未改动过 Dock，无需还原", "System is powering off/logging out; the Dock wasn't changed this run, nothing to restore"))
             return
         }
-        state.append(.warning, "系统即将关机/注销，正在尽力还原 Dock")
+        state.append(.warning, L("系统即将关机/注销，正在尽力还原 Dock", "System is powering off/logging out; restoring the Dock as best we can"))
         guard let restore = restoreHandler else { return }
 
         // 先留标记：即使下面的还原没跑完，下次启动也会自愈。
@@ -185,7 +185,8 @@ final class LifecycleController {
         }
         Task { @MainActor in
             let outcome = await restore()
-            state.append(.info, "关机前还原：\(outcome?.summary ?? "读不到基准快照")")
+            state.append(.info, L("关机前还原：\(outcome?.summary ?? "读不到基准快照")",
+                                  "Pre-shutdown restore: \(outcome?.summary ?? "can't read the baseline snapshot")"))
             if outcome?.succeeded == true {
                 self.baselineStore.clearSessionMarker()
             }

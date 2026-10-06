@@ -139,7 +139,7 @@ final class SecondaryDockController {
             isRevealed = false
             applyCurrentFrame(animated: false)
             deps.presenter.hideForSpaceTransition()
-            deps.log("次级 Dock 条：切桌面前置手势 → 预隐藏")
+            deps.log(L("次级 Dock 条：切桌面前置手势 → 预隐藏", "Secondary Dock: pre-switch gesture → pre-hide"))
         }
         gestureRevealTask?.cancel()
         gestureRevealTask = Task { [timeout = deps.gestureRevealTimeout, weak self] in
@@ -157,7 +157,7 @@ final class SecondaryDockController {
         isPreHidden = false
         lastStateMachineEventAt = clock.now
         deps.presenter.fadeBackFromSpaceTransition()
-        deps.log("次级 Dock 条：超时无切换 → 分步渐回（误扫）")
+        deps.log(L("次级 Dock 条：超时无切换 → 分步渐回（误扫）", "Secondary Dock: no switch within the timeout → stepped fade-back (false gesture)"))
     }
 
     /// 安全网（实验 26 26e/26f）：animator 卡死 / 孤儿空间绑定 / 渐回中断的兜底。
@@ -179,8 +179,8 @@ final class SecondaryDockController {
         lastStateMachineEventAt = clock.now
         deps.presenter.pullToActiveSpace()
         deps.log(
-            "次级 Dock 条：安全网 #\(netBackoff) 兜底重挂"
-                + "（不在当前空间=\(stuckOffSpace) 卡半透明=\(stuckDimmed)）"
+            L("次级 Dock 条：安全网 #\(netBackoff) 兜底重挂", "Secondary Dock: safety net #\(netBackoff) re-attaching")
+                + L("（不在当前空间=\(stuckOffSpace) 卡半透明=\(stuckDimmed)）", " (off the active space=\(stuckOffSpace) stuck dimmed=\(stuckDimmed))")
         )
     }
 
@@ -210,7 +210,8 @@ final class SecondaryDockController {
             lastDockArea = SecondaryDockLayout.dockArea(of: fresh)
             lastFaceOrientation = fresh.orientation
         }
-        deps.log("次级 Dock 条：Dock 几何变化 → \(fresh.map { "\($0.orientation) 内缩 \($0.visible)" } ?? "探测不到")")
+        deps.log(L("次级 Dock 条：Dock 几何变化 → \(fresh.map { "\($0.orientation) 内缩 \($0.visible)" } ?? "探测不到")",
+                   "Secondary Dock: Dock geometry changed → \(fresh.map { "\($0.orientation) inset \($0.visible)" } ?? "not detected")"))
         applyCurrentState()
     }
 

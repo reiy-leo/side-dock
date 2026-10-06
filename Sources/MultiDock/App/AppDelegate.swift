@@ -206,7 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let window = makeWindow(
-            title: "MultiDock 调试面板",
+            title: L("MultiDock 调试面板", "MultiDock Debug Panel"),
             size: NSSize(width: 760, height: 620),
             content: DebugPanelView(state: state)
         )

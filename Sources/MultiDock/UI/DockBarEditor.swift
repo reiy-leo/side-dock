@@ -14,7 +14,7 @@ import UniformTypeIdentifiers
 /// 迁移带进来的其他项不在本编辑器显示（原生 Dock 写入时随栏一并写回）。
 struct DockBarEditor: View {
     @Binding var bar: DockBar
-    /// 一次编辑完成（排序落定 / 移除 / 添加）后回调，参数是给日志看的中文说明。
+    /// 一次编辑完成（排序落定 / 移除 / 添加）后回调，参数是给日志看的说明。
     var onCommit: (DockBar, String) -> Void
 
     @State private var dragging: String?
@@ -93,7 +93,7 @@ struct DockBarEditor: View {
                 if inside { hovered = tile.normalizedKey }
                 else if hovered == tile.normalizedKey { hovered = nil }
             }
-            .help(installed ? tile.label : "\(tile.label)（磁盘上找不到这个 App）")
+            .help(installed ? tile.label : L("\(tile.label)（磁盘上找不到这个 App）", "\(tile.label) (app not found on disk)"))
             .onDrag {
                 dragging = tile.normalizedKey
                 return NSItemProvider(object: tile.normalizedKey as NSString)
@@ -104,11 +104,11 @@ struct DockBarEditor: View {
                     target: tile,
                     currentDragging: { dragging },
                     apps: $bar.apps,
-                    onFinish: { onCommit(bar, "调整「\(bar.name)」的图标顺序") }
+                    onFinish: { onCommit(bar, L("调整「\(bar.name)」的图标顺序", "Reordered icons in “\(bar.name)”")) }
                 )
             )
             .contextMenu {
-                Button("从 Dock 栏移除") { remove(tile) }
+                Button(L("从 Dock 栏移除", "Remove from Dock Bar")) { remove(tile) }
             }
     }
 
@@ -120,7 +120,7 @@ struct DockBarEditor: View {
                 Image(systemName: editable.count >= DockBar.maxApps ? "checkmark" : "plus")
                     .font(.system(size: 18, weight: .medium))
                     .frame(width: iconSize, height: iconSize)
-                Text(editable.count >= DockBar.maxApps ? "已满" : "添加")
+                Text(editable.count >= DockBar.maxApps ? L("已满", "Full") : L("添加", "Add"))
                     .font(.caption2)
             }
             .frame(width: slotSize, height: slotSize)
@@ -138,14 +138,14 @@ struct DockBarEditor: View {
         }
         .disabled(editable.count >= DockBar.maxApps)
         .help(editable.count >= DockBar.maxApps
-              ? "每根栏最多 \(DockBar.maxApps) 个图标"
-              : "从访达拖 .app 到图标条上，或点这里选择。")
+              ? L("每根栏最多 \(DockBar.maxApps) 个图标", "Up to \(DockBar.maxApps) icons per bar")
+              : L("从访达拖 .app 到图标条上，或点这里选择。", "Drag an .app from Finder onto the strip, or click to choose."))
         .onDrop(
             of: [.text],
             delegate: BarAppendDropDelegate(
                 currentDragging: { dragging },
                 apps: $bar.apps,
-                onFinish: { onCommit(bar, "把 App 移到「\(bar.name)」末尾") }
+                onFinish: { onCommit(bar, L("把 App 移到「\(bar.name)」末尾", "Moved an app to the end of “\(bar.name)”")) }
             )
         )
     }
@@ -158,13 +158,13 @@ struct DockBarEditor: View {
     private var controls: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text("\(editable.count)/\(DockBar.maxApps) 个图标")
+                Text(L("\(editable.count)/\(DockBar.maxApps) 个图标", "\(editable.count)/\(DockBar.maxApps) icons"))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                 Spacer()
                 removeZone
                 // 提示只在拖拽进行时出现（呼应动作方向；平时不占视线，Apple §8/§16 简洁性）。
-                Text("拖到这里移除")
+                Text(L("拖到这里移除", "Drop here to remove"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .opacity(dragging == nil ? 0 : 1)
@@ -181,7 +181,7 @@ struct DockBarEditor: View {
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    Button("知道了") { self.rejectionMessage = nil }
+                    Button(L("知道了", "OK")) { self.rejectionMessage = nil }
                         .font(.caption)
                 }
             }
@@ -220,7 +220,7 @@ struct DockBarEditor: View {
     private func remove(_ tile: DockTile) {
         var apps = editable
         apps.removeAll { $0.normalizedKey == tile.normalizedKey }
-        commitApps(apps, note: "从「\(bar.name)」移除「\(tile.label)」")
+        commitApps(apps, note: L("从「\(bar.name)」移除「\(tile.label)」", "Removed “\(tile.label)” from “\(bar.name)”"))
     }
 
     /// 从访达拖进来的 URL：只接受 `.app`；文件夹 / 普通文件 / 超出上限**明确拒绝并说明原因**。
@@ -230,7 +230,8 @@ struct DockBarEditor: View {
         var rejection: String?
         for url in urls {
             if apps.count >= DockBar.maxApps {
-                rejection = "每根栏最多 \(DockBar.maxApps) 个图标，「\(url.deletingPathExtension().lastPathComponent)」没有加进来"
+                rejection = L("每根栏最多 \(DockBar.maxApps) 个图标，「\(url.deletingPathExtension().lastPathComponent)」没有加进来",
+                              "Up to \(DockBar.maxApps) icons per bar — “\(url.deletingPathExtension().lastPathComponent)” was not added")
                 continue
             }
             if let reason = DockStripRules.rejectionReason(for: url.path) {
@@ -247,7 +248,7 @@ struct DockBarEditor: View {
         }
         rejectionMessage = rejection
         guard added > 0 else { return false }
-        commitApps(apps, note: "拖入 \(added) 个 App 到「\(bar.name)」")
+        commitApps(apps, note: L("拖入 \(added) 个 App 到「\(bar.name)」", "Added \(added) app(s) to “\(bar.name)”"))
         return true
     }
 
@@ -259,7 +260,7 @@ struct DockBarEditor: View {
         panel.canChooseFiles = true
         panel.allowedContentTypes = [.applicationBundle]
         panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
-        panel.prompt = "添加到 Dock 栏"
+        panel.prompt = L("添加到 Dock 栏", "Add to Dock Bar")
         guard panel.runModal() == .OK else { return }
         _ = addDropped(panel.urls)
     }
@@ -340,7 +341,7 @@ private struct BarRemoveDropDelegate: DropDelegate {
         guard editable.contains(where: { $0.normalizedKey == dragged }) else { return false }
         editable.removeAll { $0.normalizedKey == dragged }
         apps = DockStripRules.barApps(editable)
-        onRemove("从 Dock 栏移除一个 App")
+        onRemove(L("从 Dock 栏移除一个 App", "Removed an app from the Dock bar"))
         return true
     }
 }

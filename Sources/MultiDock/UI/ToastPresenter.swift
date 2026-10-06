@@ -95,7 +95,7 @@ final class ToastPresenter {
         sink.show(text: text, displayUUID: displayUUID)
         currentSink = sink
         shownCount += 1
-        log("toast 显示「\(text)」")
+        log(L("toast 显示「\(text)」", "toast shown: “\(text)”"))
 
         hideTask = Task { [weak self, duration] in
             try? await Task.sleep(for: duration)
@@ -103,7 +103,7 @@ final class ToastPresenter {
             self.currentSink?.hide()
             self.currentSink = nil
             self.hideTask = nil
-            self.log("toast 隐藏")
+            self.log(L("toast 隐藏", "toast hidden"))
         }
     }
 

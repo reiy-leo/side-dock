@@ -28,7 +28,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             button.action = #selector(statusItemClicked(_:))
             // 关键：同时接收左右键，否则拿不到右键事件。
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            button.toolTip = "MultiDock — 左键切下一个桌面，⇧+左键切上一个，右键打开菜单"
+            button.toolTip = L("MultiDock — 左键切下一个桌面，⇧+左键切上一个，右键打开菜单", "MultiDock — click for next desktop, ⇧-click for previous, right-click for menu")
         }
         applyIcon()
 
@@ -134,13 +134,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         if !state.spaceProviderAvailable {
             let warning = NSMenuItem(
-                title: "桌面功能不可用",
+                title: L("桌面功能不可用", "Desktop features unavailable"),
                 action: nil,
                 keyEquivalent: ""
             )
-            warning.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "桌面功能不可用")
+            warning.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: L("桌面功能不可用", "Desktop features unavailable"))
             if #available(macOS 14.4, *) {
-                warning.subtitle = "详见调试面板"
+                warning.subtitle = L("详见调试面板", "See the debug panel")
             }
             warning.isEnabled = false
             menu.addItem(warning)
@@ -149,7 +149,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         // 桌面列表：当前项打勾，点选即切换
         if state.desktops.isEmpty {
-            let empty = NSMenuItem(title: "未识别到桌面", action: nil, keyEquivalent: "")
+            let empty = NSMenuItem(title: L("未识别到桌面", "No desktops detected"), action: nil, keyEquivalent: "")
             empty.isEnabled = false
             menu.addItem(empty)
         } else {
@@ -169,31 +169,31 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let next = NSMenuItem(title: "下一个桌面", action: #selector(goNextDesktop), keyEquivalent: "")
+        let next = NSMenuItem(title: L("下一个桌面", "Next Desktop"), action: #selector(goNextDesktop), keyEquivalent: "")
         next.target = self
         next.isEnabled = state.spaceProviderAvailable && state.desktops.count > 1
         menu.addItem(next)
 
-        let previous = NSMenuItem(title: "上一个桌面", action: #selector(goPreviousDesktop), keyEquivalent: "")
+        let previous = NSMenuItem(title: L("上一个桌面", "Previous Desktop"), action: #selector(goPreviousDesktop), keyEquivalent: "")
         previous.target = self
         previous.isEnabled = state.spaceProviderAvailable && state.desktops.count > 1
         // 图标上的等价操作写进副标题：菜单栏图标宽窄有限，靠 tooltip 不够显眼。
         // （macOS 14.4 起 NSMenuItem 原生支持副标题；更早的版本没有副标题，行为不变。）
         if #available(macOS 14.4, *) {
-            previous.subtitle = "⇧+左键点菜单栏图标同效"
+            previous.subtitle = L("⇧+左键点菜单栏图标同效", "⇧-click the menu bar icon does the same")
         }
         menu.addItem(previous)
 
         // 计划 §3.7 菜单栏下拉：把此刻真实 Dock 抓下来覆盖当前桌面的配置。
         let resetFromLive = NSMenuItem(
-            title: "用当前 Dock 重置本桌面配置",
+            title: L("用当前 Dock 重置本桌面配置", "Reset This Desktop's Config from the Current Dock"),
             action: #selector(resetFromLiveDock),
             keyEquivalent: ""
         )
         resetFromLive.target = self
         menu.addItem(resetFromLive)
 
-        let refresh = NSMenuItem(title: "刷新桌面列表", action: #selector(refreshDesktops), keyEquivalent: "")
+        let refresh = NSMenuItem(title: L("刷新桌面列表", "Refresh Desktop List"), action: #selector(refreshDesktops), keyEquivalent: "")
         refresh.target = self
         menu.addItem(refresh)
 
@@ -201,7 +201,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         // 手动还原：自愈失败或用户自己拖乱了 Dock 时的出口。与设置页那个按钮同一条路径。
         let restore = NSMenuItem(
-            title: "立即还原到原始 Dock",
+            title: L("立即还原到原始 Dock", "Restore Original Dock"),
             action: #selector(restoreToBaseline),
             keyEquivalent: ""
         )
@@ -210,18 +210,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let debug = NSMenuItem(title: "调试面板…", action: #selector(openDebugPanel), keyEquivalent: "d")
+        let debug = NSMenuItem(title: L("调试面板…", "Debug Panel…"), action: #selector(openDebugPanel), keyEquivalent: "d")
         debug.target = self
         menu.addItem(debug)
 
-        let settings = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ",")
+        let settings = NSMenuItem(title: L("设置…", "Settings…"), action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
 
         menu.addItem(.separator())
 
         // 标题写清"退出会还原"：无痕原则是硬约束，别让用户以为退出后 Dock 会留在改动后的状态。
-        let quit = NSMenuItem(title: "退出并还原 Dock", action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: L("退出并还原 Dock", "Quit and Restore Dock"), action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
     }

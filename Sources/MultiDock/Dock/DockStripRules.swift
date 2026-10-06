@@ -118,14 +118,19 @@ enum DockItemRejection: String, Sendable {
     var message: String {
         switch self {
         case .folder:
-            return "不在这里新建文件夹条目：实测 Dock 不会认领 App 自己拼的目录条目"
+            return L("不在这里新建文件夹条目：实测 Dock 不会认领 App 自己拼的目录条目"
                 + "（不补 GUID/book，字段不全时还会直接崩）。要加文件夹，"
                 + "请直接在访达里把文件夹拖到 Dock 上 —— App 会自动把它记进当前桌面的配置，"
-                + "之后就能在这里排序或移除。"
+                + "之后就能在这里排序或移除。",
+                "Folders can't be created here: the Dock doesn't adopt directory entries the app "
+                + "assembles itself (it adds no GUID/book, and an incomplete entry can crash it). "
+                + "To add a folder, drag it onto the Dock in Finder — the app records it into the "
+                + "current desktop's configuration, where you can then reorder or remove it.")
         case .file:
-            return "不在这里新建普通文件条目，原因同上（实测 Dock 不认领）。请在访达里自己拖到 Dock 上。"
+            return L("不在这里新建普通文件条目，原因同上（实测 Dock 不认领）。请在访达里自己拖到 Dock 上。",
+                     "Regular files can't be created here for the same reason (the Dock doesn't adopt them). Drag them onto the Dock in Finder instead.")
         case .notAnApp:
-            return "只支持 .app 应用包。"
+            return L("只支持 .app 应用包。", "Only .app bundles are supported.")
         }
     }
 }

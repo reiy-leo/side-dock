@@ -37,20 +37,24 @@ enum LoginItem {
     }
 
     static func statusDescription() -> String {
-        guard isAvailable else { return "不可用（当前不在 .app 包里运行）" }
+        guard isAvailable else {
+            return L("不可用（当前不在 .app 包里运行）", "Unavailable (not running from an .app bundle)")
+        }
         switch SMAppService.mainApp.status {
         case .enabled:
-            return "已开启（SMAppService）"
+            return L("已开启（SMAppService）", "On (SMAppService)")
         case .notRegistered:
             return FileManager.default.fileExists(atPath: agentPlistURL.path)
-                ? "已开启（LaunchAgent 退回方案）"
-                : "未开启"
+                ? L("已开启（LaunchAgent 退回方案）", "On (LaunchAgent fallback)")
+                : L("未开启", "Off")
         case .requiresApproval:
-            return "已注册，等你在「系统设置 → 通用 → 登录项」里批准"
+            return L("已注册，等你在「系统设置 → 通用 → 登录项」里批准",
+                     "Registered — waiting for approval in System Settings → General → Login Items")
         case .notFound:
-            return "系统找不到该登录项（App 可能被移动过，先关再开一次）"
+            return L("系统找不到该登录项（App 可能被移动过，先关再开一次）",
+                     "Login item not found (the app may have moved — toggle it off and on again)")
         @unknown default:
-            return "未知状态"
+            return L("未知状态", "Unknown state")
         }
     }
 
@@ -63,7 +67,8 @@ enum LoginItem {
         } catch {
             // 退回 LaunchAgent。这里把 SMAppService 的报错也带上，便于排查。
             try writeAgentPlist()
-            return "LaunchAgent 退回方案（SMAppService 报错：\(error.localizedDescription)）"
+            return L("LaunchAgent 退回方案（SMAppService 报错：\(error.localizedDescription)）",
+                     "LaunchAgent fallback (SMAppService error: \(error.localizedDescription))")
         }
     }
 
@@ -72,13 +77,13 @@ enum LoginItem {
         if isAvailable, SMAppService.mainApp.status != .notRegistered {
             // 注销失败不算致命：可能只是本来就没注册上。继续清 LaunchAgent。
             try? SMAppService.mainApp.unregister()
-            done.append("SMAppService 已注销")
+            done.append(L("SMAppService 已注销", "SMAppService unregistered"))
         }
         if FileManager.default.fileExists(atPath: agentPlistURL.path) {
             try FileManager.default.removeItem(at: agentPlistURL)
-            done.append("LaunchAgent plist 已删除")
+            done.append(L("LaunchAgent plist 已删除", "LaunchAgent plist removed"))
         }
-        return done.isEmpty ? "本来就没开" : done.joined(separator: "；")
+        return done.isEmpty ? L("本来就没开", "wasn't on") : done.joined(separator: L("；", "; "))
     }
 
     /// LaunchAgent plist 的内容。
@@ -109,7 +114,9 @@ enum LoginItemError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .notInAppBundle: return "当前不在 .app 包里运行，无法注册登录项"
+        case .notInAppBundle:
+            return L("当前不在 .app 包里运行，无法注册登录项",
+                     "Not running from an .app bundle; can't register a login item")
         }
     }
 }

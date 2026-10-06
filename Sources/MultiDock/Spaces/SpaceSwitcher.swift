@@ -116,13 +116,15 @@ final class SpaceSwitcher {
             if synthesizer.isPermitted {
                 let posted = synthesizer.synthesizeStep(previous: direction == .previous)
                 if posted {
-                    log("合成 \(direction == .previous ? "⌃←" : "⌃→")：走系统过渡动画切到相邻桌面")
+                    let key = direction == .previous ? "⌃←" : "⌃→"
+                    log(L("合成 \(key)：走系统过渡动画切到相邻桌面",
+                          "Synthesizing \(key): switching to the adjacent desktop with the system transition"))
                     confirmAnimatedStep(to: space, from: observer.activeSpace)
                     return space
                 }
-                log("合成键盘事件失败（会话不可用），回落到硬切")
+                log(L("合成键盘事件失败（会话不可用），回落到硬切", "Failed to synthesize keyboard events (session unavailable); falling back to a hard switch"))
             } else {
-                log("没有辅助功能权限，无法借系统过渡动画（退化为硬切）")
+                log(L("没有辅助功能权限，无法借系统过渡动画（退化为硬切）", "No Accessibility permission, so the system transition can't be used (falling back to a hard switch)"))
             }
         }
 
@@ -154,10 +156,10 @@ final class SpaceSwitcher {
             self.observer.refreshNow()
             let current = self.observer.activeSpace
             guard current?.id == origin?.id else {
-                self.log("合成切换超时，但空间已不在起点（系统过渡迟到），不再兜底硬切")
+                self.log(L("合成切换超时，但空间已不在起点（系统过渡迟到），不再兜底硬切", "Synthesized switch timed out, but the space already left the start point (the transition arrived late); skipping the hard-switch fallback"))
                 return
             }
-            self.log("合成切换未在 \(self.synthesisTimeout) 内生效，改用硬切")
+            self.log(L("合成切换未在 \(self.synthesisTimeout) 内生效，改用硬切", "Synthesized switch didn't take effect within \(self.synthesisTimeout); using a hard switch"))
             if self.observer.provider.setCurrentSpace(target) {
                 self.observer.refreshNow()
             }

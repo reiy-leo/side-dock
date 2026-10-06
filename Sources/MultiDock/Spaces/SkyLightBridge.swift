@@ -23,8 +23,8 @@ final class SkyLightBridge: @unchecked Sendable {
 
         var description: String {
             switch self {
-            case .frameworkUnavailable(let path): return "无法加载 \(path)"
-            case .missingSymbol(let name): return "符号缺失：\(name)"
+            case .frameworkUnavailable(let path): return L("无法加载 \(path)", "Failed to load \(path)")
+            case .missingSymbol(let name): return L("符号缺失：\(name)", "Missing symbol: \(name)")
             }
         }
     }

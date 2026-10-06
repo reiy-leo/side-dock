@@ -18,7 +18,7 @@ enum AppAbout {
         switch (short, build) {
         case let (short?, build?): return "\(short) (\(build))"
         case let (short?, nil): return short
-        default: return "开发版（未打包）"
+        default: return L("开发版（未打包）", "Dev build (unpackaged)")
         }
     }
 
@@ -41,18 +41,18 @@ enum AppAbout {
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else {
-                return .failure("响应不是 HTTP")
+                return .failure(L("响应不是 HTTP", "Response is not HTTP"))
             }
             switch http.statusCode {
             case 200:
                 guard let parsed = UpdateCheck.parseRelease(data: data) else {
-                    return .failure("发布数据格式不对")
+                    return .failure(L("发布数据格式不对", "Malformed release data"))
                 }
                 return parsed
             case 404:
                 return .noRelease
             case 403:
-                return .failure("GitHub 限流（403），稍后再试")
+                return .failure(L("GitHub 限流（403），稍后再试", "GitHub rate limit (403); try again later"))
             default:
                 return .failure("HTTP \(http.statusCode)")
             }
@@ -122,10 +122,10 @@ struct AboutTab: View {
                         .frame(width: 72, height: 72)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(AppAbout.appName).font(.title2.weight(.semibold))
-                        Text("版本 \(AppAbout.displayVersion)")
+                        Text(L("版本 \(AppAbout.displayVersion)", "Version \(AppAbout.displayVersion)"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text("macOS 多桌面（Space）Dock 管理工具。原生 Dock 全桌面一致，每个桌面的差异由 Dock 栏呈现。")
+                        Text(L("macOS 多桌面（Space）Dock 管理工具。原生 Dock 全桌面一致，每个桌面的差异由 Dock 栏呈现。", "A macOS multi-desktop (Space) Dock manager. The native Dock is the same on every desktop; per-desktop differences come from Dock bars."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -134,28 +134,28 @@ struct AboutTab: View {
                 }
             }
 
-            Section("更新") {
+            Section(L("更新", "Updates")) {
                 HStack(spacing: 8) {
-                    Button("检查更新") { state.checkForUpdates() }
+                    Button(L("检查更新", "Check for Updates")) { state.checkForUpdates() }
                         .disabled(state.updateCheckStatus == .checking)
                     Spacer()
                     updateStatusView
                 }
-                Text("检查走 GitHub Releases（api.github.com，零权限）；本机没有发布版时会如实说明。")
+                Text(L("检查走 GitHub Releases（api.github.com，零权限）；本机没有发布版时会如实说明。", "Checks go through GitHub Releases (api.github.com, zero permissions); if there's no release yet it says so."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Section("源代码") {
+            Section(L("源代码", "Source Code")) {
                 HStack(spacing: 8) {
                     Image(systemName: "link")
                         .foregroundStyle(.secondary)
                     Link(AppAbout.repoURL.absoluteString, destination: AppAbout.repoURL)
                     Spacer()
-                    Button("打开仓库") { NSWorkspace.shared.open(AppAbout.repoURL) }
+                    Button(L("打开仓库", "Open Repository")) { NSWorkspace.shared.open(AppAbout.repoURL) }
                 }
-                Text("本地运行、个人自用：不签名、不上架。问题与想法请到仓库提 issue。")
+                Text(L("本地运行、个人自用：不签名、不上架。问题与想法请到仓库提 issue。", "Run locally, for personal use: unsigned, not on the App Store. File issues and ideas on the repo."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -173,28 +173,28 @@ struct AboutTab: View {
     private var updateStatusView: some View {
         switch state.updateCheckStatus {
         case .idle:
-            Text("未检查").font(.caption).foregroundStyle(.secondary)
+            Text(L("未检查", "Not checked")).font(.caption).foregroundStyle(.secondary)
         case .checking:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text("正在检查…").font(.caption).foregroundStyle(.secondary)
+                Text(L("正在检查…", "Checking…")).font(.caption).foregroundStyle(.secondary)
             }
         case .upToDate(let latest):
-            Label("已是最新（仓库最新 \(latest)）", systemImage: "checkmark.circle.fill")
+            Label(L("已是最新（仓库最新 \(latest)）", "Up to date (latest \(latest))"), systemImage: "checkmark.circle.fill")
                 .font(.caption)
                 .foregroundStyle(.green)
         case .available(let latest, let url):
             HStack(spacing: 8) {
-                Label("发现新版本 \(latest)", systemImage: "arrow.down.circle.fill")
+                Label(L("发现新版本 \(latest)", "New version \(latest) available"), systemImage: "arrow.down.circle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
                 if let url {
-                    Button("打开发布页") { NSWorkspace.shared.open(url) }
+                    Button(L("打开发布页", "Open Release Page")) { NSWorkspace.shared.open(url) }
                         .controlSize(.small)
                 }
             }
         case .failed(let reason):
-            Label("检查失败：\(reason)", systemImage: "exclamationmark.triangle")
+            Label(L("检查失败：\(reason)", "Check failed: \(reason)"), systemImage: "exclamationmark.triangle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

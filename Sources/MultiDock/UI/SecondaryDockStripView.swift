@@ -44,7 +44,7 @@ enum SecondaryDockContentBuilder {
         for tile in apps {
             items.append(SecondaryDockItem(
                 id: tile.normalizedKey,
-                label: tile.label.isEmpty ? (tile.bundleIdentifier ?? "应用") : tile.label,
+                label: tile.label.isEmpty ? (tile.bundleIdentifier ?? L("应用", "App")) : tile.label,
                 icon: DockStripRules.icon(for: tile, size: iconSize),
                 launchPath: DockStripRules.filePath(of: tile),
                 isInstalled: DockStripRules.isInstalled(tile),
