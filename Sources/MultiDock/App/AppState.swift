@@ -185,6 +185,7 @@ final class AppState {
         configStore: ConfigStore = ConfigStore(),
         baselineStore: BaselineStore = BaselineStore(),
         provider: (any SpaceProviding)? = nil,
+        synthesizer: (any SpaceStepSynthesizing)? = nil,
         presenceMonitor: DockPresenceMonitor? = nil,
         fileLog: FileLogSink = FileLogSink(),
         recentAppsProvider: @escaping (_ limit: Int) -> [DockTile] = { RecentAppsScanner.scan(limit: $0) },
@@ -199,7 +200,17 @@ final class AppState {
         spaceProviderAvailable = provider.isAvailable
         spaceProviderWarning = provider.unavailableReason
         observer = SpaceObserver(provider: provider)
-        switcher = SpaceSwitcher(observer: observer)
+        // 相邻一步优先合成系统快捷键（借 WindowServer 的滑动过渡，需辅助功能权限）；
+        // 其余走硬切。超时兜底在 SpaceSwitcher 里，不会卡住不切。
+        //
+        // ⚠️ **默认不注入合成器**（nil = 旧版纯硬切行为）：真机由 AppDelegate 显式传入
+        // `HotKeySpaceStepSynthesizer()`。这一条是硬要求 —— 测试进程里 `AXIsProcessTrusted()`
+        // 可能为真，默认注入会让 `swift test` **真的合成按键去切用户的桌面**（实测踩到）。
+        // 日志出口在 init 末尾回接（此处还不能引用 self）。
+        switcher = SpaceSwitcher(
+            observer: observer,
+            synthesizer: synthesizer
+        )
         self.dockController = dockController
         self.configStore = configStore
         self.baselineStore = baselineStore
@@ -221,6 +232,7 @@ final class AppState {
         }
         // 必须在最后：闭包要捕获 `self`，而所有存储属性得先初始化完。
         dockController.onOutcome = { [weak self] outcome in self?.handleDockOutcome(outcome) }
+        switcher.setLogger { [weak self] message in self?.append(.info, message) }
     }
 
     // MARK: - Dock 栏（桌面 Tab 编辑的实体）
@@ -793,7 +805,11 @@ final class AppState {
             return
         }
         applyForDesktopSwitch(target, reason: "预应用：切到 \(displayName(for: target))")
-        guard switcher.switchTo(target) != nil else {
+        // 相邻一步可合成（借系统过渡动画）——**由配置开关控制，默认关**（实验 28：
+        // 本机事件投递被拦，开了也没动画）。权限/相邻条件不满足时 SpaceSwitcher 内部回落硬切。
+        let style: SpaceSwitcher.SwitchStyle =
+            settings.animatedDesktopSwitch ? .animatedStep(.next) : .hard
+        guard switcher.switchTo(target, style: style) != nil else {
             append(.warning, "切换到 \(displayName(for: target)) 失败")
             return
         }
@@ -811,7 +827,9 @@ final class AppState {
             return
         }
         applyForDesktopSwitch(target, reason: "预应用：切到 \(displayName(for: target))")
-        guard switcher.switchTo(target) != nil else {
+        let style: SpaceSwitcher.SwitchStyle =
+            settings.animatedDesktopSwitch ? .animatedStep(.previous) : .hard
+        guard switcher.switchTo(target, style: style) != nil else {
             append(.warning, "切换到 \(displayName(for: target)) 失败")
             return
         }

@@ -327,12 +327,17 @@ struct AppSettings: Codable, Hashable, Sendable {
     var defaultDockAppCount = 10
     /// 菜单栏图标（Lucide 五选一，2026-10-06 用户规格）。换图标立即生效，不重启 Dock。
     var menuBarIcon: MenuBarIcon = .default
+    /// 切相邻桌面时合成 ⌃←/⌃→ 以借系统过渡动画（2026-10-06 实验 28）。
+    /// **默认关**：本机实测事件投递被系统拦下（阳性对照 Cmd+Tab 也不生效），开了也没动画，
+    /// 只会让每次切换多等一次超时。留在 config 里是因为**换机器/系统放开后不用改代码**。
+    /// ⚠️ 刻意**不做设置 UI**：能开也无效的开关就是假开关（项目规矩，见 D1/C7）。
+    var animatedDesktopSwitch = false
 
     enum CodingKeys: String, CodingKey {
         case restoreOnQuit, clickAction, autoApplyOnEdit, autoCaptureUserEdits, reloadStrategy
         case showToastOnDesktopSwitch, desktopNamePlacement
         case showSecondaryDock, freezeNativeDockSwitching
-        case dockBars, defaultDockAppCount, menuBarIcon
+        case dockBars, defaultDockAppCount, menuBarIcon, animatedDesktopSwitch
     }
 
     init() {}
@@ -360,5 +365,7 @@ struct AppSettings: Codable, Hashable, Sendable {
         defaultDockAppCount =
             try container.decodeIfPresent(Int.self, forKey: .defaultDockAppCount) ?? 10
         menuBarIcon = try container.decodeIfPresent(MenuBarIcon.self, forKey: .menuBarIcon) ?? .default
+        animatedDesktopSwitch =
+            try container.decodeIfPresent(Bool.self, forKey: .animatedDesktopSwitch) ?? false
     }
 }

@@ -27,7 +27,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var screenParametersObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let state = AppState()
+        // 真机显式注入合成器：切相邻桌面时合成 ⌃← / ⌃→，借系统自带的滑动过渡
+        //（需要辅助功能权限；未授权时 SpaceSwitcher 内部自动回落硬切）。
+        // **不能把合成器做成 AppState 的默认值**——测试进程里 AXIsProcessTrusted() 可能为真，
+        // 那样 `swift test` 会真的合成按键切用户桌面（实测踩过）。
+        let state = AppState(synthesizer: HotKeySpaceStepSynthesizer())
         self.state = state
         // 关于页的更新检查走 GitHub Releases（零权限）；测试与快照不配置就不会碰网络。
         state.configureUpdateChecking(AppAbout.standardReleaseFetcher())

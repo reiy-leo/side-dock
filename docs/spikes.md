@@ -2031,3 +2031,43 @@ swift scripts/spike-hide-during-anim.swift       # 切换时 orderOut、150 ms �
 抑制/安全网三态/退避）；release 零警告；`build/MultiDock.app` 已重打包。
 真机手测归 A11（清单更新：① 手势切桌面第一拍即隐 + 切换后沉没位升起；② 打断横扫
 600 ms 渐回；③ MC/Launchpad 关掉后 ≤1 s 回来；④ 两指横扫网页不误隐；⑤ ⌃→ 对照）。
+
+---
+
+## 实验 28：合成键盘事件借「切桌面」过渡动画（2026-10-06，结论：**投递被拦，做不到**）
+
+**动机**：用户要求「菜单栏点击切换桌面时也要有左右滑动的效果」。
+
+**背景**：实验 7 已判定程序化切空间是硬切、四条路全断；实验 7.6 把「合成按键」那条路
+归因为**权限问题**（当时零权限约束还在）。2026-10-05 用户解除了「零权限」一票否决，
+所以这条值得重测——**如果只是权限，授权后就应该通**。
+
+**测法**（探针 `scripts/spike-animated-switch.swift`，另跑编译二进制复测）：
+
+| 观测项 | 结果 |
+| --- | --- |
+| `AXIsProcessTrusted()` | **true**（辅助功能已授权） |
+| `CGPreflightPostEventAccess()` | **true** |
+| `CGEventSource(stateID: .hidSystemState)` | 创建成功（非 nil） |
+| 系统热键 79（⌃←）/ 81（⌃→） | `enabled = true`（`AppleSymbolicHotKeys` 实测参数 `[65535, 123/124, 8650752]`） |
+| 合成 ⌃→ 后轮询 1.5 s（2 ms 粒度） | **空间 ID 全程不变** |
+| **阳性对照：合成 Cmd+Tab** | **前台 App 不变**（Google Chrome → Google Chrome） |
+| 换成 `swiftc -O` 编译的独立二进制复测 | **结论相同** → 与进程身份无关 |
+| 替代路：AppleScript `key code 124 using control down` | `NSAppleScriptErrorNumber = -1743`（未授权 Apple Events） |
+
+**结论**：**不是权限、不是 tap 选择、不是参数**。事件在**投递层**被系统拦下 ——
+和实验 7.6 观察到的现象一致，但归因要修正：**实验 7.6 写"权限"是不准确的**，
+授权后仍然不通。
+
+**对产品的处理**（诚实优先，不做假开关）：
+
+1. **默认关闭**：`AppSettings.animatedDesktopSwitch = false`（config.json 可手编）。
+2. **设置 UI 里刻意不出现这个开关** —— 能开也无效的开关就是假开关（项目规矩 D1/C7）。
+3. 代码保留（`Spaces/AnimatedSpaceSwitch.swift` + `SpaceSwitcher` 的合成路径）：
+   它是**唯一正确的那条路**，换机器/系统放开投递闸门后不用改代码即可启用。
+4. 合成路径**带超时兜底 + 防抢跑**：合成没生效就回硬切，绝不会卡住不切
+   （10 条测试覆盖：相邻走合成、跨选/循环不走合成、未授权回退、超时兜底、防抢跑）。
+
+**如果将来要再试**（给下一个 session）：判据是**阳性对照 Cmd+Tab** ——
+先跑 `scripts/spike-animated-switch.swift`，若 Cmd+Tab 生效了，说明投递闸门放开、
+这条通道重新可用；若连 Cmd+Tab 都不动，别在参数上浪费时间（实验 7.6 的教训）。

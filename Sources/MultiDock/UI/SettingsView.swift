@@ -265,6 +265,10 @@ private struct GeneralTab: View {
                         }
                     }
                 }
+                // 切桌面的系统滑动过渡**不做开关**（2026-10-06 实验 28：合成事件在本机被
+                // 系统拦在投递层，阳性对照 Cmd+Tab 也不生效——开关能开也无效就是假开关）。
+                // 研究留档：docs/spikes.md 实验 28；config 里有 `animatedDesktopSwitch` 供
+                // 换机器/系统放开后手工开启。
                 Text("右键或 ⌥+左键始终打开菜单。⇧+左键切上一个桌面；左键若设为「打开菜单」，⇧+左键也一并打开菜单。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
