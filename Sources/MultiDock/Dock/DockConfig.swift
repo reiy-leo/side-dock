@@ -322,9 +322,6 @@ struct AppSettings: Codable, Hashable, Sendable {
     /// Dock 栏列表（桌面 Tab 编辑）。每栏可绑定一个桌面；没绑定栏的桌面在冻结模式下
     /// 只有原生 Dock（默认 Dock）可看。默认 5 栏由加载时的迁移/补齐逻辑保证。
     var dockBars: [DockBar] = []
-    /// 默认 Dock 显示「最近添加的应用」（/Applications + ~/Applications，按修改时间）
-    /// 的个数。范围 1...15，默认 10（2026-10-05 用户规格）。
-    var defaultDockAppCount = 10
     /// 菜单栏图标（Lucide 五选一，2026-10-06 用户规格）。换图标立即生效，不重启 Dock。
     var menuBarIcon: MenuBarIcon = .default
     /// 切相邻桌面时合成 ⌃←/⌃→ 以借系统过渡动画（2026-10-06 实验 28）。
@@ -337,7 +334,7 @@ struct AppSettings: Codable, Hashable, Sendable {
         case restoreOnQuit, clickAction, autoApplyOnEdit, autoCaptureUserEdits, reloadStrategy
         case showToastOnDesktopSwitch, desktopNamePlacement
         case showSecondaryDock, freezeNativeDockSwitching
-        case dockBars, defaultDockAppCount, menuBarIcon, animatedDesktopSwitch
+        case dockBars, menuBarIcon, animatedDesktopSwitch
     }
 
     init() {}
@@ -362,8 +359,6 @@ struct AppSettings: Codable, Hashable, Sendable {
         freezeNativeDockSwitching =
             try container.decodeIfPresent(Bool.self, forKey: .freezeNativeDockSwitching) ?? true
         dockBars = try container.decodeIfPresent([DockBar].self, forKey: .dockBars) ?? []
-        defaultDockAppCount =
-            try container.decodeIfPresent(Int.self, forKey: .defaultDockAppCount) ?? 10
         menuBarIcon = try container.decodeIfPresent(MenuBarIcon.self, forKey: .menuBarIcon) ?? .default
         animatedDesktopSwitch =
             try container.decodeIfPresent(Bool.self, forKey: .animatedDesktopSwitch) ?? false

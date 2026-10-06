@@ -120,7 +120,7 @@ final class BindingHistoryTests: XCTestCase {
         state.updateSettings { $0.autoApplyOnEdit = false }
 
         let id = state.addDockBar()
-        state.updateDockBarInMemory(DockBar(id: id, name: "孤儿", apps: DockStripRules.normalizedApps(apps("A"))))
+        state.updateDockBarInMemory(DockBar(id: id, name: "孤儿", apps: DockStripRules.barApps(apps("A"))))
         state.bindDockBar(id, to: ghostSpace().id)
 
         XCTAssertEqual(state.orphanedBars.count, 1)
@@ -135,7 +135,7 @@ final class BindingHistoryTests: XCTestCase {
         state.updateSettings { $0.autoApplyOnEdit = false }
 
         let id = state.addDockBar()
-        state.updateDockBarInMemory(DockBar(id: id, name: "外接屏", apps: DockStripRules.normalizedApps(apps("A"))))
+        state.updateDockBarInMemory(DockBar(id: id, name: "外接屏", apps: DockStripRules.barApps(apps("A"))))
         state.bindDockBar(id, to: desktops[0].id)
 
         provider.setDesktops([])          // 模拟：所有桌面都不见了（拔屏 / 系统重排）
@@ -152,7 +152,7 @@ final class BindingHistoryTests: XCTestCase {
         state.updateSettings { $0.autoApplyOnEdit = false }
 
         let id = state.addDockBar()
-        state.updateDockBarInMemory(DockBar(id: id, name: "清理", apps: DockStripRules.normalizedApps(apps("A"))))
+        state.updateDockBarInMemory(DockBar(id: id, name: "清理", apps: DockStripRules.barApps(apps("A"))))
         state.bindDockBar(id, to: desktops[0].id)
         provider.setDesktops([])
         state.refreshDesktops()
@@ -161,7 +161,7 @@ final class BindingHistoryTests: XCTestCase {
         XCTAssertTrue(state.orphanedBars.isEmpty)
         let saved = store.load().settings.dockBars.first { $0.id == id }
         XCTAssertEqual(saved?.spaceID, nil, "清理结果（解绑）必须落盘")
-        XCTAssertEqual(saved?.apps.map(\.label), ["启动台", "A"], "栏的应用必须保留")
+        XCTAssertEqual(saved?.apps.map(\.label), ["A"], "栏的应用必须保留")
         XCTAssertEqual(state.unbindOrphanedBars(), 0, "没有孤儿时再清一次应为空操作")
     }
 
@@ -174,16 +174,16 @@ final class BindingHistoryTests: XCTestCase {
         state.updateSettings { $0.autoApplyOnEdit = false }
 
         let id = state.addDockBar()
-        state.updateDockBarInMemory(DockBar(id: id, name: "测试", apps: DockStripRules.normalizedApps(apps("A"))))
+        state.updateDockBarInMemory(DockBar(id: id, name: "测试", apps: DockStripRules.barApps(apps("A"))))
         state.bindDockBar(id, to: desktops[0].id)
-        XCTAssertEqual(state.dockBar(for: desktops[0])?.apps.map(\.label), ["启动台", "A"])
+        XCTAssertEqual(state.dockBar(for: desktops[0])?.apps.map(\.label), ["A"])
 
         state.handleUserDockEdit(DockConfig(pinnedApps: apps("X", "Y", "Z")))   // 模拟"用户在真实 Dock 上改了东西"
         XCTAssertEqual(state.dockBar(for: desktops[0])?.apps.map(\.label), ["X", "Y", "Z"])
 
         XCTAssertTrue(state.canUndoAutoCapture())
         XCTAssertTrue(state.undoLastAutoCapture())
-        XCTAssertEqual(state.dockBar(for: desktops[0])?.apps.map(\.label), ["启动台", "A"])
+        XCTAssertEqual(state.dockBar(for: desktops[0])?.apps.map(\.label), ["A"])
         XCTAssertFalse(state.canUndoAutoCapture(), "撤一次之后栈就空了")
     }
 

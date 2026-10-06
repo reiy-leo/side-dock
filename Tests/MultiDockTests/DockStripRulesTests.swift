@@ -1,8 +1,12 @@
 import XCTest
 @testable import MultiDock
 
-/// 图标条的固定规则（启动台必须在首位、Finder 只是幻影）。
+/// 图标条规则（2026-10-06 起：本 App 不生成任何 Dock 内容，只剩栏内容去重 / 其他项 / 造条目）。
 /// 对应 `docs/PLAN.md` §3.6 / §3.7。
+///
+/// **启动台与 Finder 的专项用例已随功能删除**：本 App 不再合成启动台、也不画 Finder 幻影
+/// （用户指令：去掉「最近添加的应用」整块逻辑）。保留它们的形状知识没必要 ——
+/// 那两条 P0 结论写在 `DockStripRules` 头部注释与 `docs/facts.md` 里。
 final class DockStripRulesTests: XCTestCase {
 
     private func appTile(_ path: String, label: String) -> DockTile {
@@ -13,133 +17,29 @@ final class DockStripRulesTests: XCTestCase {
         )
     }
 
-    // MARK: - 启动台
+    // MARK: - Dock 栏内容（barApps：不插固定项、不固定任何 App）
 
-    func testLaunchpadTileShapeMatchesTheRealDomain() {
-        // 本机实测：file-type 169、dock-extra false、bundle com.apple.launchpad.launcher
-        let tile = DockStripRules.makeLaunchpadTile()
-
-        XCTAssertEqual(tile.tileType, "file-tile")
-        XCTAssertEqual(tile.bundleIdentifier, "com.apple.launchpad.launcher")
-        XCTAssertEqual(tile.label, "启动台")
-        XCTAssertEqual(tile.tileData?["file-type"], .int(169))
-        XCTAssertEqual(tile.tileData?["dock-extra"], .bool(false))
-        XCTAssertEqual(tile.fileURLString, "file:///System/Applications/Launchpad.app/")
-    }
-
-    func testIsLaunchpadRecognisesBundleIdentifier() {
-        XCTAssertTrue(DockStripRules.isLaunchpad(DockStripRules.makeLaunchpadTile()))
-    }
-
-    func testIsLaunchpadRecognisesURLWhenBundleIdentifierIsMissing() {
-        var raw = DockStripRules.makeLaunchpadTile().raw
-        var data = raw["tile-data"]!.dictionaryValue!
-        data.removeValue(forKey: "bundle-identifier")
-        raw["tile-data"] = .dictionary(data)
-
-        XCTAssertTrue(DockStripRules.isLaunchpad(DockTile(raw: raw)),
-                      "没写 bundle-identifier 也要能认出来，否则会插进第二个启动台")
-    }
-
-    func testIsLaunchpadRejectsOrdinaryApps() {
-        XCTAssertFalse(DockStripRules.isLaunchpad(appTile("/Applications/Safari.app", label: "Safari")))
-    }
-
-    func testNormalizationMovesLaunchpadToFront() {
+    func testBarAppsKeepsOrderVerbatim() {
+        // 栏内容 = 用户放什么就是什么：顺序原样保留。
         let apps = [
             appTile("/Applications/Safari.app", label: "Safari"),
-            DockStripRules.makeLaunchpadTile(),
+            appTile("/System/Applications/Launchpad.app", label: "启动台"),
             appTile("/Applications/Xcode.app", label: "Xcode"),
-        ]
-
-        let normalized = DockStripRules.normalizedApps(apps)
-
-        XCTAssertEqual(normalized.count, 3)
-        XCTAssertTrue(DockStripRules.isLaunchpad(normalized[0]))
-        XCTAssertEqual(normalized[1].label, "Safari")
-        XCTAssertEqual(normalized[2].label, "Xcode")
-    }
-
-    func testNormalizationCollapsesDuplicateLaunchpads() {
-        let apps = [
-            DockStripRules.makeLaunchpadTile(),
-            appTile("/Applications/Safari.app", label: "Safari"),
-            DockStripRules.makeLaunchpadTile(),
-        ]
-
-        let normalized = DockStripRules.normalizedApps(apps)
-
-        XCTAssertEqual(normalized.count, 2)
-        XCTAssertEqual(normalized.filter(DockStripRules.isLaunchpad).count, 1)
-    }
-
-    func testNormalizationKeepsTheExistingLaunchpadTileVerbatim() {
-        // 回归：早先版本无条件用合成条目覆盖启动台，会把真实域里的 GUID / book /
-        // file-mod-date 抹掉，逼 Dock 重新推导一遍。功能上能跑，但没必要动人家的数据。
-        var real = DockStripRules.makeLaunchpadTile().raw
-        real["GUID"] = .int(2477364010)
-        var data = real["tile-data"]!.dictionaryValue!
-        data["book"] = .data(Data("bookX".utf8))
-        data["file-mod-date"] = .int(3816403915)
-        real["tile-data"] = .dictionary(data)
-        let existing = DockTile(raw: real)
-
-        let normalized = DockStripRules.normalizedApps([existing, appTile("/Applications/Safari.app", label: "Safari")])
-
-        XCTAssertEqual(normalized[0].raw, real, "已有的启动台条目必须原样保留")
-        XCTAssertEqual(normalized[0].raw["GUID"], .int(2477364010))
-    }
-
-    func testNormalizationSynthesisesLaunchpadOnlyWhenAbsent() {
-        let normalized = DockStripRules.normalizedApps([appTile("/Applications/Safari.app", label: "Safari")])
-
-        XCTAssertEqual(normalized[0].raw, DockStripRules.makeLaunchpadTile().raw)
-    }
-
-    func testNormalizationInjectsLaunchpadWhenMissing() {
-        let normalized = DockStripRules.normalizedApps([appTile("/Applications/Safari.app", label: "Safari")])
-
-        XCTAssertEqual(normalized.count, 2)
-        XCTAssertTrue(DockStripRules.isLaunchpad(normalized[0]))
-    }
-
-    func testNormalizationCollapsesDuplicateApps() {
-        let safari = appTile("/Applications/Safari.app", label: "Safari")
-        let normalized = DockStripRules.normalizedApps([safari, safari, safari])
-
-        XCTAssertEqual(normalized.count, 2, "同一个 App 被拖进来三次也只留一个")
-    }
-
-    func testNormalizationIsIdempotent() {
-        let once = DockStripRules.normalizedApps([
-            appTile("/Applications/Xcode.app", label: "Xcode"),
-            DockStripRules.makeLaunchpadTile(),
-        ])
-        XCTAssertEqual(DockStripRules.normalizedApps(once), once)
-    }
-
-    // MARK: - Dock 栏内容（barApps：不插启动台、不固定任何 App）
-
-    func testBarAppsKeepsLaunchpadWhereTheUserPutIt() {
-        // 2026-10-06 用户规格：栏不固定任何 App —— 启动台只是普通条目，可删可排。
-        let apps = [
-            appTile("/Applications/Safari.app", label: "Safari"),
-            DockStripRules.makeLaunchpadTile(),
         ]
 
         let normalized = DockStripRules.barApps(apps)
 
-        XCTAssertEqual(normalized.map(\.label), ["Safari", "启动台"], "顺序原样保留，不把启动台挪到首位")
+        XCTAssertEqual(normalized.map(\.label), ["Safari", "启动台", "Xcode"])
     }
 
-    func testBarAppsDoesNotSynthesiseLaunchpadForOrdinaryApps() {
+    func testBarAppsDoesNotSynthesiseAnything() {
         let normalized = DockStripRules.barApps([appTile("/Applications/Safari.app", label: "Safari")])
 
-        XCTAssertEqual(normalized.map(\.label), ["Safari"], "没有启动台也不补一个")
+        XCTAssertEqual(normalized.map(\.label), ["Safari"], "只去重，不补启动台、不插任何固定项")
     }
 
     func testBarAppsAllowsEmpty() {
-        // 用户可以清空栏（与默认 Dock 不同：那里启动台必须保留）。
+        // 用户可以清空栏（空栏在界面上就是"没有图标"，次级条随之隐藏）。
         XCTAssertTrue(DockStripRules.barApps([]).isEmpty)
     }
 
@@ -189,14 +89,14 @@ final class DockStripRulesTests: XCTestCase {
     }
 
     func testIsInstalledDetectsMissingApps() {
-        XCTAssertTrue(DockStripRules.isInstalled(appTile(DockStripRules.launchpadPath, label: "启动台")))
+        XCTAssertTrue(DockStripRules.isInstalled(appTile("/System/Applications/Launchpad.app", label: "启动台")))
         XCTAssertFalse(DockStripRules.isInstalled(appTile("/Applications/NoSuchApp-xyz.app", label: "不存在")))
     }
 
     // MARK: - 从磁盘造条目
 
     func testTileForAppReadsBundleIdentifierFromDisk() throws {
-        let tile = try XCTUnwrap(DockStripRules.tile(forAppAt: DockStripRules.launchpadPath))
+        let tile = try XCTUnwrap(DockStripRules.tile(forAppAt: "/System/Applications/Launchpad.app"))
 
         XCTAssertEqual(tile.bundleIdentifier, "com.apple.launchpad.launcher")
         XCTAssertEqual(tile.fileURLString, "file:///System/Applications/Launchpad.app/")
@@ -256,7 +156,7 @@ final class DockStripRulesTests: XCTestCase {
     }
 
     func testDockItemRejectionAcceptsRealAppBundles() {
-        XCTAssertNil(DockStripRules.rejectionReason(for: DockStripRules.launchpadPath))
+        XCTAssertNil(DockStripRules.rejectionReason(for: "/System/Applications/Launchpad.app"))
     }
 }
 
@@ -275,7 +175,7 @@ final class AppSettingsCodingTests: XCTestCase {
         XCTAssertFalse(settings.autoApplyOnEdit)
         XCTAssertEqual(settings.reloadStrategy, .sigterm)
         XCTAssertTrue(settings.dockBars.isEmpty, "老配置里没有 Dock 栏，就是空的")
-        XCTAssertEqual(settings.defaultDockAppCount, 10, "老配置里没有显示数量，用默认 10")
+
     }
 
     func testDecodingEmptyObjectYieldsDefaults() throws {
@@ -289,18 +189,22 @@ final class AppSettingsCodingTests: XCTestCase {
 
     func testRoundTripPreservesDockBars() throws {
         var settings = AppSettings()
-        settings.defaultDockAppCount = 7
+        settings.menuBarIcon = .parasol
         settings.dockBars = [
             DockBar(
                 name: "工作",
                 position: .right,
                 spaceID: "DISP#SPACE",
-                apps: DockStripRules.normalizedApps([
-                    DockStripRules.makeLaunchpadTile(),
+                apps: DockStripRules.barApps([
                     DockTile.makeFileTile(
                         url: URL(fileURLWithPath: "/Applications/Xcode.app", isDirectory: true),
                         label: "Xcode",
                         bundleIdentifier: "com.apple.dt.Xcode"
+                    ),
+                    DockTile.makeFileTile(
+                        url: URL(fileURLWithPath: "/Applications/Safari.app", isDirectory: true),
+                        label: "Safari",
+                        bundleIdentifier: "com.apple.Safari"
                     ),
                 ])
             ),
@@ -313,7 +217,7 @@ final class AppSettingsCodingTests: XCTestCase {
         XCTAssertEqual(restored, settings)
         XCTAssertEqual(restored.dockBars.count, 2)
         XCTAssertEqual(restored.dockBars[0].position, .right)
-        XCTAssertEqual(restored.dockBars[0].apps.map(\.label), ["启动台", "Xcode"])
+        XCTAssertEqual(restored.dockBars[0].apps.map(\.label), ["Xcode", "Safari"])
         XCTAssertEqual(restored.dockBars[0].spaceID, "DISP#SPACE")
         XCTAssertEqual(restored.dockBars[1].position, .bottom)
     }

@@ -71,16 +71,18 @@ final class StartupSelfHealTests: XCTestCase {
             ),
             configStore: ConfigStore(fileURL: directory.appendingPathComponent("config.json")),
             baselineStore: baselineStore,
-            provider: FakeSpaceProvider(isAvailable: false, reason: "测试替身"),
+            // 自愈用例需要「先真实写一笔」再验还原；2026-10-06 起内容只来自绑定栏，
+            // 绑定需要活动桌面 —— 所以这里给一个可用的单桌面替身（不再需要扫描内容注入）。
+            provider: FakeSpaceProvider(
+                desktops: FakeSpaceProvider.desktops(count: 1),
+                activeSpaceID: FakeSpaceProvider.desktops(count: 1)[0].id64
+            ),
             // 真的监视器会去问系统的 Dock 进程；测试里换成替身。
             presenceMonitor: DockPresenceMonitor(
                 process: FakeDockProcess(),
                 pollInterval: .seconds(60)
             ),
-            fileLog: makeTestFileLog(),
-            // 默认 Dock = 「最近添加的应用」。测试注入一份固定内容（启动台 + Safari），
-            // 让 applyDefaultDock / 冻结对齐有东西可写。
-            recentAppsProvider: { _ in Self.defaultApps() }
+            fileLog: makeTestFileLog()
         )
         // 冻结是产品默认值；自愈用例测的是还原链路本身，按「未冻结」跑。
         state.updateSettings { $0.freezeNativeDockSwitching = false }
@@ -112,15 +114,25 @@ final class StartupSelfHealTests: XCTestCase {
         )
     }
 
-    /// 默认 Dock 的注入内容：启动台 + Safari（`rebuildDefaultDock` 会做归一化补首）。
-    private static func defaultApps() -> [DockTile] {
-        DockStripRules.normalizedApps([
-            DockTile.makeFileTile(
-                url: URL(fileURLWithPath: "/Applications/Safari.app", isDirectory: true),
-                label: "Safari",
-                bundleIdentifier: "com.apple.Safari"
-            ),
-        ])
+    /// 给「当前桌面」绑一根可见内容的栏 —— 自愈用例需要**先有一次真实写入**，
+    /// 才谈得上"待办/还原"。2026-10-06 起内容唯一来源是绑定栏，没有自动内容可注入了。
+    @discardableResult
+    private static func bindVisibleBar(_ fixture: Fixture, name: String = "自愈栏") -> UUID {
+        let id = fixture.state.addDockBar()
+        fixture.state.updateDockBarInMemory(DockBar(
+            id: id,
+            name: name,
+            apps: DockStripRules.barApps([
+                DockTile.makeFileTile(
+                    url: URL(fileURLWithPath: "/Applications/Safari.app", isDirectory: true),
+                    label: "Safari",
+                    bundleIdentifier: "com.apple.Safari"
+                ),
+            ])
+        ))
+        // 直接绑到这个替身唯一的那张桌面（不依赖 state.activeSpace 的采样时机）。
+        fixture.state.bindDockBar(id, to: FakeSpaceProvider.desktops(count: 1)[0].id)
+        return id
     }
 
     // MARK: - 启动自愈
@@ -241,7 +253,8 @@ final class StartupSelfHealTests: XCTestCase {
         fixture.state.start()
         defer { fixture.state.stop() }
 
-        fixture.state.applyDefaultDock()
+        Self.bindVisibleBar(fixture)
+        fixture.state.applyActiveDesktopDock()
         // `request()` 是同步建任务的，所以这里写盘还没发生。
         XCTAssertEqual(fixture.preferences.writeCount, 0)
         XCTAssertTrue(fixture.state.dockController.isApplying, "前面那句必须真的排上了一笔待办")
@@ -293,7 +306,8 @@ final class StartupSelfHealTests: XCTestCase {
         defer { fixture.state.stop() }
 
         fixture.state.updateSettings { $0.reloadStrategy = .sigterm }
-        fixture.state.applyDefaultDock()
+        Self.bindVisibleBar(fixture)
+        fixture.state.applyActiveDesktopDock()
         // 让那笔应用真的起跑（跑到降级链里等着），才谈得上"在飞"。
         // 不 yield 的话它还躺在 pending 里，会被上界之外的第一步直接丢掉。
         await Task.yield()

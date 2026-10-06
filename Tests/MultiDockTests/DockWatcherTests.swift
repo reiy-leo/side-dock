@@ -9,7 +9,7 @@ import XCTest
 final class DockWatcherTests: XCTestCase {
 
     private func makeConfig(apps: [String] = ["Safari"]) -> DockConfig {
-        DockConfig(pinnedApps: DockStripRules.normalizedApps(
+        DockConfig(pinnedApps: DockStripRules.barApps(
             apps.map {
                 DockTile.makeFileTile(
                     url: URL(fileURLWithPath: "/Applications/\($0).app", isDirectory: true),

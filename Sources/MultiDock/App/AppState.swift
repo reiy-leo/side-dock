@@ -34,10 +34,11 @@ struct LogEntry: Identifiable, Sendable {
 /// `observer` 本身是 `@Observable`，SwiftUI 读 `appState.desktops` 时会穿过转发拿到
 /// `SpaceObserver.desktops` 的依赖，更新照常生效。
 ///
-/// **内容模型（2026-10-05 用户修订）**：
-/// - 默认 Dock = 「最近添加的应用」自动生成（`RecentAppsScanner`），只存个数不存内容；
-/// - 逐桌面差异由 **Dock 栏**（`DockBar`）承载：栏绑定桌面、可设屏幕位置，桌面上没绑栏
-///   就只有原生 Dock（默认 Dock）可看；
+/// **内容模型（2026-10-06 用户修订：不再自动生成任何内容）**：
+/// - **原生 Dock 归用户自己**：不再扫描 Applications、不存在「默认 Dock」；冻结模式下
+///   本 App 从不改写原生 Dock（切桌面零写入），未冻结模式只写**绑定到该桌面的 Dock 栏**。
+/// - 逐桌面差异由 **Dock 栏**（`DockBar`）承载：栏绑定桌面、可设屏幕位置；
+///   没绑栏的桌面**什么都不写**（原生 Dock 保持原样）。
 /// - 大小 / 放大 / 自动隐藏 / 特效 / 最小化到应用**跟随系统**，App 不再读写外观键。
 @MainActor
 @Observable
@@ -54,9 +55,6 @@ final class AppState {
     private(set) var settings = AppSettings()
     /// 桌面命名（`customName`）。Dock 内容已改由 `settings.dockBars` 承载。
     private(set) var bindings: [DesktopBinding] = []
-    /// 默认 Dock 的**运行时内容**：最近添加的应用（启动 / 改个数 / 手动应用前重建）。
-    /// 不落 config.json —— 配置里只存 `defaultDockAppCount`，内容以扫描结果为准。
-    private(set) var defaultDock = DockConfig()
 
     // MARK: - 运行状况
 
@@ -127,13 +125,6 @@ final class AppState {
     /// 自愈任务是否已经跑完。**退出前的等待靠轮询这个标志**，
     /// 而不是 `await selfHealTask.value` —— 见 `settleSelfHeal(within:)`。
     private var selfHealFinished = false
-    /// 冻结模式的启动对齐任务：自愈结束后把原生 Dock 对齐到默认 Dock。
-    /// 留句柄是为了测试能等它跑完（`waitForFrozenDockAlignment`）。
-    private var frozenDockAlignmentTask: Task<Void, Never>?
-
-    /// 「最近添加的应用」的来源。默认扫 `/Applications` + `~/Applications`（按修改时间），
-    /// 测试注入固定结果。
-    private let recentAppsProvider: (_ limit: Int) -> [DockTile]
     /// 环境读取：台前调度开关 + 原生 Dock 方位（都零权限）。测试注入固定值。
     private let environmentReader: () -> EnvironmentReading
 
@@ -188,7 +179,6 @@ final class AppState {
         synthesizer: (any SpaceStepSynthesizing)? = nil,
         presenceMonitor: DockPresenceMonitor? = nil,
         fileLog: FileLogSink = FileLogSink(),
-        recentAppsProvider: @escaping (_ limit: Int) -> [DockTile] = { RecentAppsScanner.scan(limit: $0) },
         environmentReader: @escaping () -> EnvironmentReading = {
             EnvironmentReading(
                 stageManagerActive: StageManagerStatus.isActive(),
@@ -216,7 +206,6 @@ final class AppState {
         self.baselineStore = baselineStore
         self.injectedPresenceMonitor = presenceMonitor
         self.fileLog = fileLog
-        self.recentAppsProvider = recentAppsProvider
         self.environmentReader = environmentReader
         observer.onActiveSpaceChanged = { [weak self] space in
             guard let self else { return }
@@ -418,14 +407,9 @@ final class AppState {
         hasReadEnvironment = true
     }
 
-    /// 打开设置窗口时的快照刷新（用户规格 2026-10-06：**只有打开设置窗口才重扫**最近应用），
-    /// 顺带即刷环境（不等 2 s 轮询拍）。
-    ///
-    /// 重扫只更新内存里的默认 Dock（预览跟着变）；**不会自动应用**——
-    /// 把新内容写进 Dock 仍由「立即应用」/ 数量改动 / 下次启动对齐触发，
-    /// 否则每次开设置都可能白重启一次 Dock。
+    /// 打开设置窗口时即刷环境（不等 2 s 轮询拍）：台前调度开关与原生 Dock 方位
+    /// 决定位置选项与提示。
     func prepareSettingsPresentation() {
-        rebuildDefaultDock(reason: "打开设置窗口重扫")
         refreshEnvironment()
     }
 
@@ -439,49 +423,53 @@ final class AppState {
         }
     }
 
-    // MARK: - 默认 Dock（最近添加的应用）
+    // MARK: - 应用当前桌面的 Dock（「立即应用」）
 
-    /// 重建默认 Dock 内容：扫 `/Applications` + `~/Applications`，取最新的 N 个。
+    /// 「立即应用」：把**当前桌面绑定的 Dock 栏**内容推到真实 Dock。
     ///
-    /// 重建时机：启动、改显示个数、「立即应用」与冻结对齐之前。**不做周期性重扫**：
-    /// 装了新应用要等下一次重建（或手动点「立即应用」）才会进 Dock ——
-    /// 自发改写 Dock 意味着不可预期的重启，宁少勿滥。
-    func rebuildDefaultDock(reason: String) {
-        let apps = recentAppsProvider(settings.defaultDockAppCount)
-        // 启动台补首（与真实 Dock 的既有口径一致）：默认 Dock 是冻结模式下原生 Dock 的内容，
-        // 历史配置里启动台永远在 persistent-apps[0]，自动内容不能把它弄丢。
-        let normalized = DockStripRules.normalizedApps(apps)
-        let changed = normalized != defaultDock.pinnedApps
-        defaultDock = DockConfig(pinnedApps: normalized)
-        if changed || reason.contains("重扫") {
-            append(.info, "默认 Dock 重算（\(reason)）：\(apps.count) 个最近添加的应用")
+    /// 2026-10-06 起没有「默认 Dock」这个自动内容源（用户指令：去掉「最近添加的应用」），
+    /// 所以这个按钮只对**绑了栏**的桌面有意义；没绑栏就如实说明，不做无效动作。
+    func applyActiveDesktopDock() {
+        guard let space = activeSpace else {
+            append(.warning, "当前不在用户桌面上（可能是全屏 App），没有可应用的 Dock 栏")
+            return
         }
+        guard let bar = dockBar(for: space) else {
+            append(.warning, "\(displayName(for: space)) 未绑定 Dock 栏，没有可应用的内容")
+            return
+        }
+        guard !bar.apps.isEmpty else {
+            append(.warning, "Dock 栏「\(bar.name)」还没有图标，跳过应用")
+            return
+        }
+        applyConfigForDesktop(space, reason: "手动应用「\(bar.name)」")
     }
 
-    /// 改默认 Dock 显示的应用个数（1...15，默认 10）。
-    func setDefaultDockAppCount(_ count: Int) {
-        let clamped = min(max(count, 1), DockBar.maxApps)
-        guard settings.defaultDockAppCount != clamped else { return }
-        updateSettings { $0.defaultDockAppCount = clamped }
-        rebuildDefaultDock(reason: "显示数量改为 \(clamped)")
-        if settings.autoApplyOnEdit {
-            applyDock(defaultDock, reason: "默认 Dock 数量改为 \(clamped)")
-        }
+    /// 「立即应用」按钮的禁用说明（nil = 可以点）。绑定栏是唯一的内容来源。
+    var activeDesktopApplyBlockedReason: String? {
+        guard let space = activeSpace else { return "当前不在用户桌面上" }
+        guard let bar = dockBar(for: space) else { return "当前桌面未绑定 Dock 栏（在「应用栏」页配一根）" }
+        if bar.apps.isEmpty { return "Dock 栏「\(bar.name)」还没有图标" }
+        return nil
     }
 
     // MARK: - 桌面生效配置
 
-    /// 某个桌面实际生效的 Dock：绑定的栏优先，否则默认 Dock。
-    func effectiveConfig(for space: DesktopSpace) -> DockConfig {
-        guard let bar = dockBar(for: space) else { return defaultDock }
+    /// 某个桌面实际生效的 Dock 配置：**只有绑定了 Dock 栏的桌面才有**。
+    /// 没绑栏 = nil —— 本 App 不生成内容、也不改写原生 Dock（2026-10-06 用户指令）。
+    func effectiveConfig(for space: DesktopSpace) -> DockConfig? {
+        guard let bar = dockBar(for: space) else { return nil }
         return DockConfig(pinnedApps: bar.apps, otherItems: bar.otherItems)
     }
 
-    /// 应用某个桌面实际生效的 Dock。
+    /// 应用某个桌面实际生效的 Dock。**没绑栏的桌面没有可应用的内容**（什么都不写）。
     func applyConfigForDesktop(_ space: DesktopSpace, reason: String) {
-        let config = effectiveConfig(for: space)
+        guard let config = effectiveConfig(for: space) else {
+            append(.info, "\(displayName(for: space)) 未绑定 Dock 栏，原生 Dock 保持原样")
+            return
+        }
         guard !config.pinnedApps.isEmpty else {
-            append(.warning, "\(displayName(for: space)) 的 Dock 是空的，跳过应用 —— 先给它配一套图标")
+            append(.warning, "\(displayName(for: space)) 的 Dock 栏是空的，跳过应用 —— 先给它配图标")
             return
         }
         dockController.request(config, reason: reason, strategy: settings.reloadStrategy)
@@ -502,41 +490,15 @@ final class AppState {
 
     /// 「冻结原生 Dock 逐桌面切换」开关（设置页调用）。
     ///
-    /// 除了翻转设置，两个方向都要让原生 Dock **立刻**与新模式一致，别等下一次切换：
-    /// - 开：冻结的那套固定配置就是**默认 Dock**（最近添加的应用）—— 先重扫再对齐
-    ///   （内容一致会被指纹短路，不写不重启）。不补这一下，原生 Dock 可能停在某个桌面的
-    ///   旧内容上，而次级条显示的却是各自绑定栏的内容，两套内容并排各说各话。
-    /// - 关：恢复逐桌面切换 —— 当前桌面的生效配置立即应用（有绑栏就上栏的内容）。
+    /// 2026-10-06 起没有「默认 Dock」可对齐了，语义因此最诚实：
+    /// **开 = 本 App 不再改写原生 Dock**（原生 Dock 保持用户自己现在的样子，切桌面零写入）；
+    /// **关 = 恢复逐桌面写绑定栏**。
     func setFreezeNativeDockSwitching(_ enabled: Bool) {
         guard settings.freezeNativeDockSwitching != enabled else { return }
         updateSettings { $0.freezeNativeDockSwitching = enabled }
         secondaryDock?.refresh()
-        if enabled {
-            rebuildDefaultDock(reason: "冻结模式对齐前重扫")
-            applyDock(defaultDock, reason: "冻结模式：原生 Dock 对齐默认 Dock")
-        } else if let space = activeSpace {
+        if !enabled, let space = activeSpace {
             applyForDesktopSwitch(space, reason: "解冻：恢复逐桌面切换")
-        }
-    }
-
-    /// 冻结模式：启动时把原生 Dock 对齐到「默认 Dock」。
-    ///
-    /// 为什么启动要补一次：退出时无痕还原把基准写回去，下次启动原生 Dock 就停在基准上；
-    /// 不补这一下，原生 Dock 与次级条（默认 Dock / 桌面绑定栏）各显一套。
-    /// 内容已经一致时 `apply` 指纹短路，不会重启 Dock。
-    /// **必须排在自愈之后**：自愈先还原基准（清上次欠账），这里再冻结 ——
-    /// 自愈的还原不走 `request` 队列，所以用 `await waitForSelfHeal()` 串行，不能只靠排队。
-    func waitForFrozenDockAlignment() async {
-        await frozenDockAlignmentTask?.value
-    }
-
-    private func reestablishFrozenDockIfNeeded() {
-        guard settings.freezeNativeDockSwitching else { return }
-        frozenDockAlignmentTask = Task { [weak self] in
-            await self?.waitForSelfHeal()
-            guard let self, !Task.isCancelled, self.settings.freezeNativeDockSwitching else { return }
-            self.rebuildDefaultDock(reason: "冻结模式：启动对齐前重扫")
-            self.applyDock(self.defaultDock, reason: "冻结模式：启动对齐默认 Dock")
         }
     }
 
@@ -559,8 +521,7 @@ final class AppState {
         }
 
         if settings.freezeNativeDockSwitching {
-            append(.info, "冻结模式：默认 Dock 由「最近添加的应用」自动生成，手动改动不回存"
-                + "（下次对齐会被覆盖）")
+            append(.info, "冻结模式：本 App 不改写原生 Dock，手动改动不回存")
             return
         }
 
@@ -569,7 +530,7 @@ final class AppState {
             return
         }
         guard var bar = dockBar(for: space) else {
-            append(.info, "当前桌面未绑定 Dock 栏，手动改动不回存（切桌面会被默认内容覆盖）")
+            append(.info, "当前桌面未绑定 Dock 栏，手动改动不回存（本 App 只回存到绑定栏）")
             return
         }
 
@@ -589,30 +550,30 @@ final class AppState {
 
     // MARK: - 撤销自动回存
 
-    /// 回存落点与 `handleUserDockEdit` 同一口径：活动桌面绑定的栏；没有就落默认 Dock（历史遗留）。
-    private func captureTargetKey(for space: DesktopSpace?) -> String {
-        guard let space, let bar = dockBar(for: space) else { return DockEditHistory.defaultDockKey }
+    /// 回存落点与 `handleUserDockEdit` 同一口径：活动桌面绑定的栏。
+    /// 没有绑定栏 = 没有可撤销的落点（本 App 不回存到别处）。
+    private func captureTargetKey(for space: DesktopSpace?) -> String? {
+        guard let space, let bar = dockBar(for: space) else { return nil }
         return bar.id.uuidString
     }
 
     /// 回存永远落在**活动桌面**上，所以撤销的落点也按活动桌面算，不能由 UI 传。
     func canUndoAutoCapture() -> Bool {
-        editHistory.canUndo(for: captureTargetKey(for: activeSpace))
+        guard let key = captureTargetKey(for: activeSpace) else { return false }
+        return editHistory.canUndo(for: key)
     }
 
     /// 撤销上一次自动回存。返回是否真的撤了。
     @discardableResult
     func undoLastAutoCapture() -> Bool {
-        let key = captureTargetKey(for: activeSpace)
-        guard let previous = editHistory.pop(for: key) else { return false }
-        if let barID = UUID(uuidString: key), var bar = dockBar(id: barID) {
-            bar.apps = previous.pinnedApps
-            bar.otherItems = previous.otherItems
-            dockBarEdited(bar, reason: "撤销上一次自动回存")
-            return true
-        }
-        defaultDock = previous
-        append(.info, "已撤销上一次自动回存：默认 Dock 恢复为 \(previous.pinnedApps.count) 个图标")
+        guard let key = captureTargetKey(for: activeSpace),
+              let barID = UUID(uuidString: key),
+              var bar = dockBar(id: barID),
+              let previous = editHistory.pop(for: key)
+        else { return false }
+        bar.apps = previous.pinnedApps
+        bar.otherItems = previous.otherItems
+        dockBarEdited(bar, reason: "撤销上一次自动回存")
         return true
     }
 
@@ -661,8 +622,8 @@ final class AppState {
         // 自愈必须放在最后：它要走还原链路（写偏好 + 重启 Dock），
         // 得等观察器、watcher、监视器都就位，否则还原完它们才启动，状态会错。
         scheduleSelfHealIfNeeded()
-        // 冻结模式的启动对齐排在自愈之后（它自己会等自愈跑完）。
-        reestablishFrozenDockIfNeeded()
+        // **不再有启动对齐**（2026-10-06）：没有「默认 Dock」要对齐了 ——
+        // 冻结模式本 App 就不写原生 Dock，未冻结模式由观察器首个采样驱动逐桌面应用。
     }
 
     func stop() {
@@ -672,7 +633,6 @@ final class AppState {
         secondaryDock?.stop()
         environmentTask?.cancel()
         environmentTask = nil
-        frozenDockAlignmentTask?.cancel()
         append(.info, "桌面观察已停止")
     }
 
@@ -780,7 +740,6 @@ final class AppState {
             persistConfiguration()
         }
         append(.info, "配置已载入：\(settings.dockBars.count) 根 Dock 栏、\(normalizedBindings.count) 条桌面命名")
-        rebuildDefaultDock(reason: "启动扫描")
     }
 
     func persistConfiguration() {
@@ -893,16 +852,10 @@ final class AppState {
         mruSpaces = dockController.readMRUSpaces()
     }
 
-    /// 「立即应用」：重扫最近应用，把默认 Dock 推到真实 Dock。
-    func applyDefaultDock() {
-        rebuildDefaultDock(reason: "手动应用前重扫")
-        applyDock(defaultDock, reason: "手动应用默认 Dock")
-    }
-
     /// 应用一套配置。连击会被合并，只对最终落点执行一次。
     func applyDock(_ config: DockConfig, reason: String) {
         guard !config.pinnedApps.isEmpty else {
-            append(.warning, "默认 Dock 是空的（没扫到任何应用），跳过「\(reason)」")
+            append(.warning, "配置里没有图标，跳过「\(reason)」")
             return
         }
         append(.info, "准备应用 Dock（\(reason)）：\(config.pinnedApps.count) 个图标，重载方式 \(settings.reloadStrategy.displayName)")
@@ -938,17 +891,6 @@ final class AppState {
         bar.apps = Array(live.pinnedApps.prefix(DockBar.maxApps))
         bar.otherItems = live.otherItems
         dockBarEdited(bar, reason: "用当前 Dock 重置（\(live.pinnedApps.count) 个图标）")
-    }
-
-    /// 编辑器每次改动后调用。受「编辑后立即应用」开关控制。
-    func dockConfigEdited(reason: String) {
-        persistConfiguration()
-        append(.info, "默认 Dock 已修改：\(reason)")
-        guard settings.autoApplyOnEdit else {
-            append(.info, "「编辑后立即应用」已关闭，改动只存在本地配置里")
-            return
-        }
-        applyDock(defaultDock, reason: reason)
     }
 
     /// 「立即还原到原始 Dock」。退出还原（P4）也走同一条路径。
@@ -1300,15 +1242,13 @@ final class AppState {
         bindings = normalizedBindings
         persistConfiguration()
 
-        rebuildDefaultDock(reason: "导入配置后重扫")
         refreshDockCapabilities()
         secondaryDock?.refresh()
-        if settings.freezeNativeDockSwitching != previousFreeze {
-            if settings.freezeNativeDockSwitching {
-                applyDock(defaultDock, reason: "导入配置：冻结模式对齐默认 Dock")
-            } else if let space = activeSpace {
-                applyForDesktopSwitch(space, reason: "导入配置：解冻恢复逐桌面切换")
-            }
+        // 解冻方向要恢复逐桌面写（开向 = 不再写，无需动作）。
+        if settings.freezeNativeDockSwitching != previousFreeze,
+           !settings.freezeNativeDockSwitching,
+           let space = activeSpace {
+            applyForDesktopSwitch(space, reason: "导入配置：解冻恢复逐桌面切换")
         }
 
         append(.info, "配置已导入：\(settings.dockBars.count) 根 Dock 栏、\(normalizedBindings.count) 条桌面命名"

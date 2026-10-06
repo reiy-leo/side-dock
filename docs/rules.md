@@ -455,6 +455,23 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 4. **别在 `NSTextField` 上直接调内边距**：没有 `textInsets` 这种东西（那是 UIKit）——
    内边距要靠容器视图 `layout()` 摆子视图（`NameFieldContainer`）。
 
+### 2026-10-06 去掉「最近添加的应用」的新坑（原生 Dock 归用户）
+
+1. **「默认 Dock」概念删干净了，别再把它引回来**：`RecentAppsScanner`、`AppSettings.defaultDockAppCount`、
+   `rebuildDefaultDock` / `setDefaultDockAppCount` / `reestablishFrozenDockIfNeeded` /
+   `waitForFrozenDockAlignment` 全删。`AppState.effectiveConfig(for:)` 现在**返回可选**：
+   `nil` = 该桌面没绑栏 = **本 App 没有内容可写**（不是"空配置"，是"不写"）。
+2. **冻结语义变了（读代码别按旧的猜）**：`freezeNativeDockSwitching = true`（产品默认）
+   现在的含义是**本 App 不再改写原生 Dock** —— 开关打开**不产生任何写入**（旧版会"对齐默认 Dock"，
+   启动也补一次）；关掉才恢复逐桌面写绑定栏。启动流程里**没有对齐步骤**了，只保留自愈。
+3. **测试夹具的连带影响（这次踩的）**：所有靠"注入最近应用"来制造「有东西可写」的夹具
+   （`recentAppsProvider` 参数）都要改成**先绑一根栏再 `applyActiveDesktopDock()`**；
+   自愈类夹具还需要 provider 里有**真实活动桌面**（否则绑定落不到任何桌面、`isApplying` 永远 false）。
+   断言里的「启动台 + N」计数一律减 1（不再补启动台）。
+4. **`normalizedApps` / `makeLaunchpadTile` / `isLaunchpad` / `finderPath` / `launchpadPath`
+   都不存在了**：内容归一化只剩 `barApps`（去重、保序、允许空）。测试里要启动台条目就自己
+   `DockTile.makeFileTile(url: /System/Applications/Launchpad.app…)` 造一个当**普通数据**用。
+
 ### 2026-10-06 拆五页 + 锁屏式名称展示的新坑
 
 1. **分组 `Form` 里 `TextField` 的标题会被提升成行首加粗标签**（系统设置风格）——

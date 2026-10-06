@@ -228,26 +228,21 @@ private struct GeneralTab: View {
     var body: some View {
         Form {
             Section("应用") {
-                HStack(spacing: 8) {
-                    Button("立即应用") { state.applyDefaultDock() }
-                        .disabled(state.defaultDock.pinnedApps.isEmpty)
-                    Button("立即还原到原始 Dock") { state.restoreToBaselineNow() }
-                    Button("把当前 Dock 设为新基准") { state.resetBaselineToCurrent() }
-                    Button("撤销自动回存") { state.undoLastAutoCapture() }
-                        .disabled(!state.canUndoAutoCapture())
-                        .help("撤销上一次「识别到你在真实 Dock 上的改动并回存」的覆盖（回存只落在活动桌面绑定的栏上）。")
-                    Spacer()
+                // 按钮多、文案长：用自适应换行布局，避免窄窗口下被截断（craft：不许出现省略号）。
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { applyButtons }
+                    VStack(alignment: .leading, spacing: 6) { applyButtons }
+                }
+                if let reason = state.activeDesktopApplyBlockedReason {
+                    Text("不能应用：\(reason)。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Text(state.lastApplySummary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if state.defaultDock.pinnedApps.isEmpty {
-                    Label("没有扫描到任何应用，默认 Dock 是空的，「立即应用」已禁用。", systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
 
             Section("菜单栏") {
@@ -277,14 +272,14 @@ private struct GeneralTab: View {
 
             Section("次级 Dock 条") {
                 Toggle("显示次级 Dock 条", isOn: secondaryDockBinding)
-                Text("每个桌面可以绑定一根 Dock 栏（在「应用栏」页配置）：默认只露一半，鼠标移上去滑出全条，点击图标启动。位置可以贴屏幕底边或侧边（台前调度占用的一侧会自动避开）。")
+                Text("每个桌面可以绑定一根 Dock 栏（在「应用栏」页配置）：默认只露一半，鼠标移上去滑出全条，点击图标启动。位置可以贴屏幕底边或侧边（台前调度占用的一侧会自动避开）。没绑栏的桌面只有原生 Dock。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Toggle("冻结原生 Dock 的逐桌面切换", isOn: freezeNativeDockBinding)
                     .disabled(!state.settings.showSecondaryDock)
                 if state.settings.freezeNativeDockSwitching {
-                    Text("已冻结：原生 Dock 固定为「默认 Dock」（最近添加的应用），切桌面不再重启；每个桌面的差异由绑定到该桌面的 Dock 栏呈现。")
+                    Text("已冻结：本 App 不再改写原生 Dock（切桌面零写入），原生 Dock 保持你自己的样子；每个桌面的差异由绑定到该桌面的 Dock 栏呈现。")
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -365,6 +360,19 @@ private struct GeneralTab: View {
         .formStyle(.grouped)
     }
 
+    /// 「应用」节的四个按钮（HStack / VStack 两种排布共用同一份）。
+    @ViewBuilder
+    private var applyButtons: some View {
+        // 应用的是**当前桌面绑定的 Dock 栏**（2026-10-06 起没有自动内容源）。
+        Button("应用当前桌面的 Dock 栏") { state.applyActiveDesktopDock() }
+            .disabled(state.activeDesktopApplyBlockedReason != nil)
+        Button("立即还原到原始 Dock") { state.restoreToBaselineNow() }
+        Button("把当前 Dock 设为新基准") { state.resetBaselineToCurrent() }
+        Button("撤销自动回存") { state.undoLastAutoCapture() }
+            .disabled(!state.canUndoAutoCapture())
+            .help("撤销上一次「识别到你在真实 Dock 上的改动并回存」的覆盖（回存只落在活动桌面绑定的栏上）。")
+    }
+
     private var clickActionBinding: Binding<ClickAction> {
         Binding(
             get: { state.settings.clickAction },
@@ -442,7 +450,7 @@ private struct GeneralTab: View {
         Binding(
             get: { state.settings.freezeNativeDockSwitching },
             set: { value in
-                // 开/关都要让原生 Dock 立刻与新模式一致（重扫默认 Dock 并对齐 / 恢复逐桌面），
+                // 关向要立刻恢复逐桌面写；开向 = 本 App 停止改写原生 Dock（无需动作）。
                 // 语义在 `AppState.setFreezeNativeDockSwitching` 里，别在这里另写一份。
                 state.setFreezeNativeDockSwitching(value)
             }

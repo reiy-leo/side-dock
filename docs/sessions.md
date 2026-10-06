@@ -3,6 +3,48 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 56 次）— 去掉「最近添加的应用」：原生 Dock 归用户
+
+**用户说**：「去掉默认获取Applications目录中最新app的功能，这块逻辑全部去掉」。
+
+**做了什么**（一次贯穿生产代码与测试的重构）：
+
+1. **删掉整块自动内容链路**：`Dock/RecentApps.swift`（`RecentAppsScanner`）整个文件删除，
+   `StageManagerStatus`/`EnvironmentReading` 迁到新的 `Dock/Environment.swift`（它们只是搭了
+   顺风车）；`AppSettings.defaultDockAppCount` 字段与解码删除；`AppState` 的
+   `defaultDock` / `rebuildDefaultDock` / `setDefaultDockAppCount` / `reestablishFrozenDockIfNeeded` /
+   `waitForFrozenDockAlignment` / `applyDefaultDock` / `dockConfigEdited` 全部删除。
+2. **语义重定**（这是本次的实质）：**原生 Dock 归用户自己**。
+   - `effectiveConfig(for:)` 改成**返回可选**：`nil` = 该桌面没绑栏 = 本 App 不写任何东西
+     （以前回落到"默认 Dock"）。
+   - 冻结开关（默认开）：**开 = 本 App 不再改写原生 Dock**（切桌面零写入、启动也不再"对齐"）；
+     关 = 恢复逐桌面写绑定栏。启动流程里删掉对齐步骤，只留自愈。
+   - 通用页「立即应用」→ **「应用当前桌面的 Dock 栏」**（未绑栏时禁用并显示原因）。
+3. **规则层清理**：`DockStripRules` 删 `normalizedApps`（启动台补首）/ `isLaunchpad` /
+   `makeLaunchpadTile` / `finderPath` / `launchpadPath`；只剩 `barApps`（去重、保序、允许空）+
+   其他项去重 + 造条目/拒绝理由。**那两条 P0 结论（Finder 无表示、启动台是普通条目）留在注释里**，
+   以免将来又被"修"回来。
+4. **测试连带修正**：40 处 `normalizedApps` 引用改 `barApps`；删掉「最近添加」专项（扫描排序/数量/
+   重扫/启动对齐等 ~20 例）；夹具从"注入最近应用"改为"绑栏 + applyActiveDesktopDock"；
+   自愈夹具补上**真实活动桌面**（否则绑定落不到桌面）；所有「启动台 + N」计数减 1。
+   → **425 测试全绿**（445 → 425：删掉 20 例专项，新增「应用当前桌面栏」等 4 例）。
+5. **真机验证**：`open build/MultiDock.app` 后日志显示启动只做自愈还原，
+   **没有任何「重算/对齐默认 Dock」写入**（grep 确认为空）——符合新语义。
+6. **UI**：按钮文案与说明全部更新；四个按钮改 `ViewThatFits` 自适应换行
+   （窄窗口下不再出现省略号）；快照确认。重打包 `build/MultiDock.app`。
+7. **文档**：AGENTS（§1 产品形态/决策演变/现行行为/模块地图/测试数）、PLAN §3.7 顶部修订、
+   rules.md 新增「去掉最近添加的新坑」四条、本记录。
+
+**影响 / 未解决**：
+
+- **产品形态变化（用户指令）**：不再"开箱就有最近应用"。新用户看到的是**原生 Dock 原样**，
+  要差异就得自己在「应用栏」配栏 —— 这是用户明确要的语义。
+- `config.json` 里旧字段 `defaultDockAppCount` 被忽略（解码走 `decodeIfPresent` 不再读它），
+  文件里留着无害。
+- 手测提醒：升级后第一次启动若上次是强杀，会先自愈还原（日志可见），属正常。
+
+---
+
 ### 2026-10-06（第 55 次）— 切桌面过渡动画：实验 28 证伪（投递被拦），诚实回退
 
 **用户说**：「菜单栏点击切换桌面时也要有左右滑动的效果」。

@@ -93,7 +93,7 @@ final class SecondaryDockContextMenuTests: XCTestCase {
         let state = makeState(stores: stores)
         let id = state.addDockBar()
         state.updateDockBarInMemory(
-            DockBar(id: id, name: "测试栏", apps: DockStripRules.normalizedApps(apps(count: 2)))
+            DockBar(id: id, name: "测试栏", apps: DockStripRules.barApps(apps(count: 2)))
         )
 
         state.setDockBarPosition(id: id, to: .right)
@@ -114,7 +114,7 @@ final class SecondaryDockContextMenuTests: XCTestCase {
         let state = makeState(stores: stores)
         let id = state.addDockBar()
         state.updateDockBarInMemory(
-            DockBar(id: id, name: "测试栏", apps: DockStripRules.normalizedApps(apps(count: 2)))
+            DockBar(id: id, name: "测试栏", apps: DockStripRules.barApps(apps(count: 2)))
         )
         let editLogsBefore = state.log.filter { $0.message.contains("已修改") }.count
 
@@ -138,7 +138,7 @@ final class SecondaryDockContextMenuTests: XCTestCase {
         state.updateSettings { $0.autoApplyOnEdit = false }
         let id = state.addDockBar()
         state.updateDockBarInMemory(
-            DockBar(id: id, name: "栏", position: .right, apps: DockStripRules.normalizedApps(apps(count: 2)))
+            DockBar(id: id, name: "栏", position: .right, apps: DockStripRules.barApps(apps(count: 2)))
         )
         state.bindDockBar(id, to: spaces[0].id)
 
@@ -201,7 +201,6 @@ final class SecondaryDockContextMenuTests: XCTestCase {
             baselineStore: stores.1,
             provider: provider ?? FakeSpaceProvider(isAvailable: false, reason: "测试替身"),
             fileLog: makeTestFileLog(),
-            recentAppsProvider: { limit in Array(injectedApps.prefix(limit)) },
             environmentReader: {
                 EnvironmentReading(stageManagerActive: false, dockSide: .bottom)
             }

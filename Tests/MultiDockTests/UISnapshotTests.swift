@@ -57,7 +57,7 @@ final class UISnapshotTests: XCTestCase {
         try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
         var config = DockConfig()
-        config.pinnedApps = DockStripRules.normalizedApps([
+        config.pinnedApps = DockStripRules.barApps([
             DockStripRules.tile(forAppAt: "/System/Applications/Calculator.app"),
             DockStripRules.tile(forAppAt: "/System/Applications/Notes.app"),
             DockStripRules.tile(forAppAt: "/Applications/Safari.app"),
@@ -172,9 +172,6 @@ final class UISnapshotTests: XCTestCase {
             ),
             provider: FakeSpaceProvider(desktops: spaces, activeSpaceID: 6),
             fileLog: makeTestFileLog(),
-            recentAppsProvider: { limit in
-                Array(Self.previewApps().prefix(limit))
-            },
             environmentReader: { EnvironmentReading(stageManagerActive: false, dockSide: .bottom) }
         )
         // 冻结是产品默认值；快照按「未冻结」的设置页文案出图，别让横幅文案跟着默认值漂移。
@@ -208,12 +205,9 @@ final class UISnapshotTests: XCTestCase {
         ].compactMap { $0 }
     }
 
-    /// 让两个 Tab 都有内容可看：默认 Dock 是注入的最近应用（有真实图标）、
-    /// 第一个桌面绑了一根 Dock 栏 + 自定义名，第二个桌面沿用默认；
-    /// 另加一根**未绑定**的空栏（除了展示删除按钮，也覆盖空栏状态）。
+    /// 让两个 Tab 都有内容可看：第一个桌面绑一根 Dock 栏（真实图标）+ 自定义名，
+    /// 第二个桌面不绑（应用栏页显示两种行态）；另加一根**未绑定**的空栏。
     private func seed(_ state: AppState) {
-        state.rebuildDefaultDock(reason: "快照预览")
-
         guard let first = state.desktops.first else { return }
         state.setCustomName("工作", for: first)
         state.updateSettings { $0.autoApplyOnEdit = false }
@@ -223,7 +217,7 @@ final class UISnapshotTests: XCTestCase {
             name: "工作栏",
             position: .bottom,
             spaceID: first.id,
-            apps: DockStripRules.normalizedApps(Self.previewApps())
+            apps: DockStripRules.barApps(Self.previewApps())
         ))
         state.addDockBar()
     }

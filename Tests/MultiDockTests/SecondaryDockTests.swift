@@ -152,7 +152,11 @@ final class SecondaryDockContentBuilderTests: XCTestCase {
         // 顺序与内容完全照栏里存的来。
         let safari = tile(path: "/Applications/Safari.app", label: "Safari", bundleID: "com.apple.Safari")
         var config = DockConfig()
-        config.pinnedApps = DockStripRules.barApps([safari, DockStripRules.makeLaunchpadTile()])
+        config.pinnedApps = DockStripRules.barApps([safari, DockTile.makeFileTile(
+            url: URL(fileURLWithPath: "/System/Applications/Launchpad.app", isDirectory: true),
+            label: "启动台",
+            bundleIdentifier: "com.apple.launchpad.launcher"
+        )])
 
         let snapshot = SecondaryDockContentBuilder.snapshot(
             from: config,
@@ -171,7 +175,11 @@ final class SecondaryDockContentBuilderTests: XCTestCase {
     func testLaunchpadOnlyBarShowsJustLaunchpad() {
         // 用户把其他图标都删了、只留启动台：条上就只有启动台，没有访达幻影。
         var config = DockConfig()
-        config.pinnedApps = DockStripRules.barApps([DockStripRules.makeLaunchpadTile()])
+        config.pinnedApps = DockStripRules.barApps([DockTile.makeFileTile(
+            url: URL(fileURLWithPath: "/System/Applications/Launchpad.app", isDirectory: true),
+            label: "启动台",
+            bundleIdentifier: "com.apple.launchpad.launcher"
+        )])
 
         let snapshot = SecondaryDockContentBuilder.snapshot(
             from: config,
@@ -185,7 +193,7 @@ final class SecondaryDockContentBuilderTests: XCTestCase {
 
     func testUninstalledAppIsFlaggedNotRunning() {
         var config = DockConfig()
-        config.pinnedApps = DockStripRules.normalizedApps([
+        config.pinnedApps = DockStripRules.barApps([
             tile(path: "/Applications/DoesNotExist-XYZ.app", label: "Ghost", bundleID: "com.ghost"),
         ])
         let snapshot = SecondaryDockContentBuilder.snapshot(
@@ -972,10 +980,8 @@ final class SecondaryDockFreezeTests: XCTestCase {
         preferences: FakePreferences,
         stores: (ConfigStore, BaselineStore),
         provider: FakeSpaceProvider? = nil,
-        recentApps: [DockTile]? = nil,
         environment: EnvironmentReading = EnvironmentReading(stageManagerActive: false, dockSide: .bottom)
     ) -> AppState {
-        let injectedApps = recentApps ?? apps(count: 1, prefix: "Default")
         let state = AppState(
             dockController: DockController(
                 preferences: preferences,
@@ -992,7 +998,6 @@ final class SecondaryDockFreezeTests: XCTestCase {
             baselineStore: stores.1,
             provider: provider ?? FakeSpaceProvider(isAvailable: false, reason: "测试替身"),
             fileLog: makeTestFileLog(),
-            recentAppsProvider: { limit in Array(injectedApps.prefix(limit)) },
             environmentReader: { environment }
         )
         // 冻结现在是产品默认值；这里的用例各自显式决定冻结状态，默认按「未冻结」测。
@@ -1013,8 +1018,12 @@ final class SecondaryDockFreezeTests: XCTestCase {
         state.start()
         defer { state.stop() }
 
-        // 默认 Dock（最近添加的应用）先应用一遍，让"已应用指纹"就位。
-        state.applyDefaultDock()
+        // 桌面 1 绑一根栏并先应用一遍，让"已应用指纹"就位。
+        let id = state.addDockBar()
+        state.updateDockBarInMemory(DockBar(id: id, name: "当前栏",
+            apps: DockStripRules.barApps(apps(count: 2, prefix: "Cur"))))
+        state.bindDockBar(id, to: spaces[0].id)
+        state.applyActiveDesktopDock()
         await state.dockController.waitForIdle()
         state.updateSettings { $0.freezeNativeDockSwitching = true }
         await state.dockController.waitForIdle()
@@ -1042,13 +1051,18 @@ final class SecondaryDockFreezeTests: XCTestCase {
         state.start()
         defer { state.stop() }
 
-        state.applyDefaultDock()
-        await state.dockController.waitForIdle()
-        // 桌面 2 绑一根内容不同的栏，且暂不应用（关掉 autoApplyOnEdit）——
-        // 否则目标内容与已应用内容一致，指纹短路根本不会写，测不出"照常应用"。
+        // 桌面 1 先绑栏并应用一遍（给"已应用指纹"一个基线）；桌面 2 绑内容不同的栏，
+        // 且暂不应用（关掉 autoApplyOnEdit）——否则目标与已应用内容一致，
+        // 指纹短路根本不会写，测不出"照常应用"。
         state.updateSettings { $0.autoApplyOnEdit = false }
+        let currentBar = state.addDockBar()
+        state.updateDockBarInMemory(DockBar(id: currentBar, name: "当前栏",
+            apps: DockStripRules.barApps(apps(count: 1, prefix: "Cur"))))
+        state.bindDockBar(currentBar, to: spaces[0].id)
+        state.applyActiveDesktopDock()
+        await state.dockController.waitForIdle()
         let barID = state.addDockBar()
-        state.updateDockBarInMemory(DockBar(id: barID, name: "桌面 2", apps: DockStripRules.normalizedApps(apps(count: 2))))
+        state.updateDockBarInMemory(DockBar(id: barID, name: "桌面 2", apps: DockStripRules.barApps(apps(count: 2))))
         state.bindDockBar(barID, to: spaces[1].id)
 
         let writesBefore = preferences.writeCount
@@ -1067,7 +1081,7 @@ final class SecondaryDockFreezeTests: XCTestCase {
         defer { state.stop() }
         state.updateSettings { $0.freezeNativeDockSwitching = true }
 
-        let edited = DockConfig(pinnedApps: DockStripRules.normalizedApps(apps(count: 3, prefix: "Manual")))
+        let edited = DockConfig(pinnedApps: DockStripRules.barApps(apps(count: 3, prefix: "Manual")))
         state.handleUserDockEdit(edited)
 
         XCTAssertTrue(state.dockBars.allSatisfy { $0.spaceID == nil }, "冻结后没有「当前桌面的绑定」可回存")
@@ -1079,7 +1093,6 @@ final class SecondaryDockFreezeTests: XCTestCase {
         let legacy = try JSONDecoder().decode(AppSettings.self, from: Data("{\"restoreOnQuit\": true}".utf8))
         XCTAssertTrue(legacy.showSecondaryDock, "次级条默认开")
         XCTAssertTrue(legacy.freezeNativeDockSwitching, "冻结默认开（2026-10-04：原生 Dock 不逐桌面重启）")
-        XCTAssertEqual(legacy.defaultDockAppCount, 10, "默认 Dock 显示 10 个最近添加的应用")
         XCTAssertTrue(legacy.dockBars.isEmpty, "栏列表为空 = 待迁移")
         XCTAssertEqual(legacy.desktopNamePlacement, .top, "名称展示默认顶部（同旧版「中上部」）")
         XCTAssertEqual(legacy.menuBarIcon, .treeDeciduous, "菜单栏图标默认落叶树（2026-10-06 用户规格）")
@@ -1088,7 +1101,6 @@ final class SecondaryDockFreezeTests: XCTestCase {
         var settings = AppSettings()
         settings.showSecondaryDock = false
         settings.freezeNativeDockSwitching = false
-        settings.defaultDockAppCount = 7
         settings.dockBars = [DockBar(name: "工作", position: .right)]
         settings.desktopNamePlacement = .bottom
         settings.menuBarIcon = .shell
@@ -1111,7 +1123,7 @@ final class SecondaryDockFreezeTests: XCTestCase {
         state.updateSettings { $0.autoApplyOnEdit = false }
         let barID = state.addDockBar()
         state.updateDockBarInMemory(
-            DockBar(id: barID, name: "独占", apps: DockStripRules.normalizedApps(apps(count: 1, prefix: "Bar")))
+            DockBar(id: barID, name: "独占", apps: DockStripRules.barApps(apps(count: 1, prefix: "Bar")))
         )
         state.bindDockBar(barID, to: spaces[0].id)
         state.applyConfigForDesktop(spaces[0], reason: "预置")
@@ -1125,11 +1137,13 @@ final class SecondaryDockFreezeTests: XCTestCase {
         state.setFreezeNativeDockSwitching(true)
         await state.dockController.waitForIdle()
 
+        // 2026-10-06 新语义：开冻结 = **本 App 不再改写原生 Dock**（没有默认 Dock 要对齐）。
+        // 已经写上去的内容原地保留，不把它改成别的。
         XCTAssertTrue(
-            preferences.readDomain()["persistent-apps"]?.fingerprintToken.contains("Default0") ?? false,
-            "开启冻结后原生 Dock 立刻对齐默认 Dock（最近添加的应用），不等下一次切换"
+            preferences.readDomain()["persistent-apps"]?.fingerprintToken.contains("Bar0") ?? false,
+            "开启冻结不改写已有内容（原生 Dock 归用户）"
         )
-        XCTAssertGreaterThan(preferences.writeCount, writesBefore, "对齐是一次真实写入（而不是只翻开关）")
+        XCTAssertEqual(preferences.writeCount, writesBefore, "翻开关本身不产生写入")
     }
 
     func testDisablingFreezeAppliesActiveDesktopConfig() async {
@@ -1144,36 +1158,39 @@ final class SecondaryDockFreezeTests: XCTestCase {
         state.updateSettings { $0.autoApplyOnEdit = false }
         let barID = state.addDockBar()
         state.updateDockBarInMemory(
-            DockBar(id: barID, name: "独占", apps: DockStripRules.normalizedApps(apps(count: 1, prefix: "Bar")))
+            DockBar(id: barID, name: "独占", apps: DockStripRules.barApps(apps(count: 1, prefix: "Bar")))
         )
         state.bindDockBar(barID, to: spaces[0].id)
         state.setFreezeNativeDockSwitching(true)
+        state.setFreezeNativeDockSwitching(false)
         await state.dockController.waitForIdle()
         XCTAssertTrue(
-            preferences.readDomain()["persistent-apps"]?.fingerprintToken.contains("Default0") ?? false,
-            "预置条件：冻结在默认 Dock（启动台 + 最近应用）上"
+            preferences.readDomain()["persistent-apps"]?.fingerprintToken.contains("Bar0") ?? false,
+            "解冻后活动桌面的绑定栏被应用"
         )
 
-        let writesBefore = preferences.writeCount
+        // 解冻方向每次都会走「应用当前桌面生效配置」；内容已经一致时**指纹短路**
+        // 是正确行为（不白重启一次 Dock），所以这里断言的是内容本身，不是写入次数。
+        state.setFreezeNativeDockSwitching(true)
+        await state.dockController.waitForIdle()
         state.setFreezeNativeDockSwitching(false)
         await state.dockController.waitForIdle()
 
-        XCTAssertGreaterThan(preferences.writeCount, writesBefore, "解冻后当前桌面的生效配置立刻应用，别等下一次切换")
         XCTAssertTrue(
             preferences.readDomain()["persistent-apps"]?.fingerprintToken.contains("Bar0") ?? false,
             "解冻后应用的是活动桌面绑定栏的内容"
         )
     }
 
-    func testLaunchInFreezeModeAlignsDefaultDockAfterSelfHeal() async throws {
+    func testLaunchInFreezeModeSelfHealsThenStopsTouchingTheDock() async throws {
+        // 2026-10-06：没有「启动对齐」了（不再有默认 Dock 要对齐）。
+        // 冻结模式下启动只做一件事：把上次的欠账（自愈）还原掉，之后**不再写任何东西**。
         let spaces = FakeSpaceProvider.desktops(count: 2)
         let provider = FakeSpaceProvider(desktops: spaces, activeSpaceID: spaces[0].id64)
         let preferences = FakePreferences(domain: baseDomain())
         let stores = makeStores("freeze-launch")
         let state = makeState(preferences: preferences, stores: stores, provider: provider)
 
-        // 造一笔「上次没还原完」的欠账：自愈先写回基准（空内容），冻结对齐再覆盖成默认 Dock。
-        // 最终落在默认 Dock 的内容上就证明对齐排在自愈之后 —— 反了的话最终会是基准的空内容。
         try stores.1.writeSessionMarker(
             BaselineStore.SessionMarker(
                 pid: 999_999,
@@ -1187,12 +1204,16 @@ final class SecondaryDockFreezeTests: XCTestCase {
         defer { state.stop() }
 
         await state.waitForSelfHeal()
-        await state.waitForFrozenDockAlignment()
+        await state.dockController.waitForIdle()
+        let writesAfterSelfHeal = preferences.writeCount
+
+        // 给观察器/环境轮询一点时间：冻结模式下不该再冒任何一笔写入。
+        try await Task.sleep(for: .milliseconds(120))
         await state.dockController.waitForIdle()
 
         XCTAssertEqual(
-            preferences.readDomain()["persistent-apps"]?.arrayValue?.count, 2,
-            "启动对齐在自愈之后执行，最终停在冻结配置（默认 Dock = 启动台 + 最近应用）上"
+            preferences.writeCount, writesAfterSelfHeal,
+            "冻结模式下自愈之后不再改写原生 Dock（没有默认 Dock 要对齐）"
         )
     }
 

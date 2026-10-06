@@ -163,57 +163,6 @@ final class DockBarModelTests: XCTestCase {
         XCTAssertNotNil(DockBarPosition.available(stageManagerActive: false))
     }
 
-    // MARK: - RecentAppsScanner（纯函数部分）
-
-    private func entry(
-        _ label: String,
-        age: TimeInterval,
-        date: Date = Date(timeIntervalSince1970: 1_800_000_000)
-    ) -> RecentAppsScanner.AppEntry {
-        RecentAppsScanner.AppEntry(
-            path: "/Applications/\(label).app",
-            modificationDate: date.addingTimeInterval(-age),
-            label: label,
-            bundleIdentifier: "com.example.\(label)"
-        )
-    }
-
-    func testTopAppsSortByModificationDateDescending() {
-        let entries = [entry("Old", age: 100), entry("Newest", age: 1), entry("Middle", age: 10)]
-
-        let tiles = RecentAppsScanner.topApps(from: entries, limit: 3)
-
-        XCTAssertEqual(tiles.map(\.label), ["Newest", "Middle", "Old"], "最新添加的排最前")
-        XCTAssertEqual(tiles.first?.tileType, "file-tile")
-        XCTAssertNil(tiles.first?.raw["GUID"], "扫描合成的新条目不给 GUID（Dock 自己分配）")
-    }
-
-    func testTopAppsClampsLimitToLegalRange() {
-        let entries = (0..<20).map { entry("App\($0)", age: TimeInterval($0)) }
-
-        XCTAssertEqual(RecentAppsScanner.topApps(from: entries, limit: 0).count, 1, "下限 1")
-        XCTAssertEqual(RecentAppsScanner.topApps(from: entries, limit: 99).count, DockBar.maxApps, "上限 15")
-        XCTAssertEqual(RecentAppsScanner.topApps(from: entries, limit: 5).count, 5)
-    }
-
-    func testTopAppsIsStableForTiedDates() {
-        // 同一修改时间并列时按名字排 —— 两次扫描结果必须一致，指纹短路依赖稳定性。
-        let entries = [entry("B", age: 5), entry("A", age: 5), entry("C", age: 5)]
-
-        let first = RecentAppsScanner.topApps(from: entries, limit: 3).map(\.label)
-        let second = RecentAppsScanner.topApps(from: entries.reversed(), limit: 3).map(\.label)
-
-        XCTAssertEqual(first, ["A", "B", "C"])
-        XCTAssertEqual(first, second)
-    }
-
-    func testScanReadsTheRealApplicationsDirectory() {
-        // 冒烟：真实目录能扫出东西（/Applications 一定存在且非空）。
-        let tiles = RecentAppsScanner.scan(limit: 5)
-        XCTAssertFalse(tiles.isEmpty, "连一个 .app 都扫不到 —— 扫描器坏了")
-        XCTAssertLessThanOrEqual(tiles.count, 5)
-    }
-
     // MARK: - 更新检查（关于 Tab 的纯函数部分）
 
     func testSemanticVersionComparison() {

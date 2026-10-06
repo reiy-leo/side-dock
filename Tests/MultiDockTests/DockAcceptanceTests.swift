@@ -136,9 +136,9 @@ final class DockAcceptanceTests: XCTestCase {
             "找不到 Notes.app"
         )
         var desktop1 = base
-        desktop1.pinnedApps = DockStripRules.normalizedApps(base.pinnedApps + [probe1])
+        desktop1.pinnedApps = DockStripRules.barApps(base.pinnedApps + [probe1])
         var desktop2 = base
-        desktop2.pinnedApps = DockStripRules.normalizedApps(base.pinnedApps + [probe2])
+        desktop2.pinnedApps = DockStripRules.barApps(base.pinnedApps + [probe2])
         XCTAssertNotEqual(desktop1.fingerprint, desktop2.fingerprint)
 
         let targets = [desktop1, desktop2]
@@ -271,7 +271,7 @@ final class DockAcceptanceTests: XCTestCase {
             "找不到 \(Self.calculatorPath)"
         )
         var dirty = DockConfig.read(from: before)
-        dirty.pinnedApps = DockStripRules.normalizedApps(dirty.pinnedApps + [probe])
+        dirty.pinnedApps = DockStripRules.barApps(dirty.pinnedApps + [probe])
         let dirtyOutcome = await DockController(backup: {})
             .apply(dirty, reason: "P4 验收：先把 Dock 弄脏", force: true)
         XCTAssertEqual(dirtyOutcome.result, .applied, "弄脏失败：\(dirtyOutcome.summary)")
@@ -672,7 +672,6 @@ final class DockAcceptanceTests: XCTestCase {
             ),
             provider: provider,
             fileLog: makeTestFileLog(),
-            recentAppsProvider: { _ in seedApps }
         )
         // 冻结是产品默认值；回存验收测的是「栏优先」的未冻结语义，必须显式关掉。
         state.updateSettings { $0.freezeNativeDockSwitching = false }
@@ -698,7 +697,7 @@ final class DockAcceptanceTests: XCTestCase {
             state.updateDockBarInMemory(DockBar(
                 id: id,
                 name: "回存验收",
-                apps: DockStripRules.normalizedApps(seed.pinnedApps + [seedProbe])
+                apps: DockStripRules.barApps(seed.pinnedApps + [seedProbe])
             ))
             state.bindDockBar(id, to: space.id)
             state.updateSettings { $0.autoApplyOnEdit = true }
@@ -715,7 +714,7 @@ final class DockAcceptanceTests: XCTestCase {
             "找不到 \(Self.calculatorPath)"
         )
         var modified = before
-        let externalApps = DockStripRules.normalizedApps(
+        let externalApps = DockStripRules.barApps(
             DockConfig.read(from: before).pinnedApps + [externalProbe]
         )
         modified["persistent-apps"] = .array(externalApps.map { .dictionary($0.raw) })
@@ -836,7 +835,7 @@ final class DockAcceptanceTests: XCTestCase {
             DockStripRules.tile(forAppAt: Self.calculatorPath),
             "找不到 \(Self.calculatorPath)"
         )
-        config.pinnedApps = DockStripRules.normalizedApps(config.pinnedApps + [probe])
+        config.pinnedApps = DockStripRules.barApps(config.pinnedApps + [probe])
         XCTAssertEqual(config.pinnedApps.count, DockConfig.read(from: before).pinnedApps.count + 1)
 
         let controller = DockController(backup: {})   // 验收不写 App 的备份目录

@@ -1,64 +1,19 @@
 import AppKit
 import Foundation
 
-/// 图标条的固定规则（`docs/PLAN.md` §3.6 / §3.7）。
+/// 图标条规则（`docs/PLAN.md` §3.6 / §3.7）。
 ///
-/// 两条 P0 实测结论决定了这里的形状：
-/// 1. **Finder 在 `com.apple.dock` 里没有任何表示** —— 全量域 34 个键里找不到它。
-///    所以"钉住 Finder"这件事**天然成立、无需代码**。2026-10-06 起次级条与设置页
-///    都不再画 Finder 幻影条目（用户规格：栏不固定任何 App）。
+/// **2026-10-06 起本 App 不再自动生成任何 Dock 内容**（用户指令：去掉「最近添加的应用」
+/// 整块逻辑）：原生 Dock 归用户自己 —— 冻结模式绝不改写，未冻结模式只写**绑定栏**的内容。
+/// 因此这里只剩：栏内容去重（`barApps`）、其他项去重、图标与从 `.app` 造条目、拒绝理由。
+///
+/// **两条 P0 实测结论仍然成立**（留着是为了别再把它们"修"回来）：
+/// 1. **Finder 在 `com.apple.dock` 里没有任何表示** —— 全量域 34 个键里找不到它，
+///    系统隐式渲染。所以"钉住 Finder"无需代码；本 App 从不合成 Finder 条目。
 /// 2. **启动台是普通条目**（`persistent-apps[0]`，`bundle-identifier = com.apple.launchpad.launcher`，
-///    `file-type = 169`，`dock-extra = false`）。它**只在默认 Dock（最近添加的应用）里**
-///    由 `normalizedApps` 保证在首位；**Dock 栏不用它**（2026-10-06 起栏内容 = 用户放什么就是什么，
-///    启动台没有特权、可删可排）。
+///    `file-type = 169`）。它没有特权：Dock 栏里用户放什么就是什么，可删可排；
+///    正常系统上它在持久域里本来就有，App **不需要**（也不应该）合成它。
 enum DockStripRules {
-
-    /// 启动台的真实路径与标识（本机实测值）。
-    static let launchpadPath = "/System/Applications/Launchpad.app"
-    static let launchpadBundleIdentifier = "com.apple.launchpad.launcher"
-    /// 真实域里启动台的 `file-type` 是 169，普通 App 是 41。
-    static let launchpadFileType = 169
-
-    static let finderPath = "/System/Library/CoreServices/Finder.app"
-
-    /// 该条目是不是启动台。
-    static func isLaunchpad(_ tile: DockTile) -> Bool {
-        if tile.bundleIdentifier == launchpadBundleIdentifier { return true }
-        guard let url = tile.fileURLString else { return false }
-        return url.hasPrefix("file://" + launchpadPath)
-    }
-
-    /// 合成启动台条目。
-    static func makeLaunchpadTile() -> DockTile {
-        DockTile.makeFileTile(
-            url: URL(fileURLWithPath: launchpadPath, isDirectory: true),
-            label: "启动台",
-            bundleIdentifier: launchpadBundleIdentifier,
-            fileType: launchpadFileType,
-            dockExtra: false
-        )
-    }
-
-    /// 把用户给的条目整理成"可写入"的顺序：
-    /// 去掉重复的启动台，然后**把启动台放到首位**。
-    ///
-    /// **只用于默认 Dock（最近添加的应用）**——它要保住历史配置里
-    /// `persistent-apps[0]` 的启动台。Dock 栏（2026-10-06 起）用 `barApps`，
-    /// 不插入任何固定条目。
-    ///
-    /// 幂等：已经是这个形状时返回等值数组。
-    ///
-    /// **已存在的启动台条目原样保留**（连 `GUID` / `book` / `file-mod-date` 一起）。
-    /// 早先版本无条件用 `makeLaunchpadTile()` 覆盖它，结果每次编辑图标条都会把真实域里
-    /// 启动台的那几个字段抹掉、逼 Dock 重新推导一遍 —— 功能上能跑，但没必要。
-    /// 只有"域里压根没有启动台"时才现造一个。
-    static func normalizedApps(_ apps: [DockTile]) -> [DockTile] {
-        var rest = apps.filter { !isLaunchpad($0) }
-        // 顺手去掉完全重复的条目（同一个 App 被拖进来两次）。按归一化键判重。
-        var seen = Set<String>()
-        rest = rest.filter { seen.insert($0.normalizedKey).inserted }
-        return [apps.first(where: isLaunchpad) ?? makeLaunchpadTile()] + rest
-    }
 
     /// Dock 栏的内容归一化（2026-10-06 用户规格：栏不固定任何 App）：
     /// **只按归一化键去重，保留顺序与原始字段**，不插入启动台、不保证任何条目在首。
@@ -72,9 +27,7 @@ enum DockStripRules {
     // MARK: - 其他项（persistent-others：文件夹 / 堆栈，计划 §3.2）
 
     /// 其他项的归一化：按归一化键去重，保留顺序与原始字段。
-    ///
-    /// 与 `normalizedApps` 的区别是**不插入任何固定项** —— `persistent-others` 里没有
-    /// 「必须存在」的条目（Finder 是系统隐式渲染的，启动台在 `persistent-apps` 里）。
+    /// 与 `barApps` 同口径：**不插入任何固定项**。
     ///
     /// ⚠️ 这里刻意**没有**合成新文件夹 tile 的能力。`docs/spikes.md` 实验 8 实测：
     /// 自己拼的 `directory-tile` **不会被 Dock 认领**（Dock 不补 `GUID` / `book`，8 秒后仍没有），
