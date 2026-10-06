@@ -98,34 +98,6 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - 窗口装配
-
-/// 设置窗口的完整装配（SwiftUI 内容）。AppDelegate 与 UI 快照测试**共用** ——
-/// 快照要复制一份装配逻辑，验出来的就不是真窗口。
-@MainActor
-enum SettingsWindowFactory {
-    static func makeWindow(state: AppState, tabModel: SettingsTabModel) -> NSWindow {
-        let window = NSWindow(contentViewController: NSHostingController(
-            rootView: SettingsView(state: state, tabModel: tabModel)
-        ))
-        // 系统设置风格（2026-10-06 用户要求）：去掉 titlebar，侧边栏贯通到窗口顶。
-        // 仍保留 .titled —— 红绿灯与顶部隐藏拖拽区靠它；fullSizeContentView 让内容
-        // 占满全高，侧边栏材质（NavigationSplitView 左列）因此延伸进原 titlebar 区。
-        // title 只给「窗口」菜单与辅助功能用，界面上不再显示。
-        window.title = L("MultiDock 设置", "MultiDock Settings")
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        // 关掉后仍保留实例，再次打开时复用，避免状态丢失。
-        window.isReleasedWhenClosed = false
-        // 与 `SettingsView` 根视图的 `.frame(width:height:)` 保持一致，
-        // 否则窗口先按这个尺寸画一帧再被 SwiftUI 撑开，会看到一次跳动。
-        window.setContentSize(NSSize(width: 880, height: 560))
-        window.center()
-        return window
-    }
-}
-
 // MARK: - 菜单栏图标选择
 
 /// 五选一的图标格子：图标 + 名称，选中描强调色（apple-design：选项并列、状态一眼可见）。

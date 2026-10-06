@@ -550,6 +550,27 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
    （aqua 黑 / darkAqua 白，已验证）；写死一个颜色会在另一种菜单栏里看不清。
    同理不要写死 `.font`——用 `button.font`，拿不到再回落系统字号。
 
+### 2026-10-06 红绿灯对齐的新坑（设置窗口）
+
+1. **改 `standardWindowButton` 的 frame 有效，但窗口缩放会打回系统基准**：直接改 frame
+   能正常渲染 / 命中 / hover（实测），但**任何 resize（含 `setFrame`）都会让 AppKit 把
+   三个按钮摆回 (7,6)/(27,6)/(47,6)**。所以 `SettingsWindow` 每次 `layoutIfNeeded()` 后
+   重贴一次（幂等换算，不是"设一次就完"，否则用户一拖窗口就回退——回归守卫：
+   `SettingsChromeLayoutTests.testTrafficLightsRenderAlignedAndStayPutAcrossResize`）。
+2. **对齐和"左=上边距"是耦合的，改一个必破另一个**：侧边栏图标列中心 x = 26（系统
+   List 行内边距固定），圆点半径 6 → 左距 = 20；用户又要求上距 = 左距 → 上距 = 20。
+   `TrafficLightLayout.edgeMargin` 必须恒等于 `iconColumnCenterX − dotRadius`，
+   别"顺手"把任一个调好看——守卫测试钉住这个等式。
+3. **圆点下缘在顶下 32 pt，比系统标题栏（28 pt）深**：不加长的话圆点下半截的点击
+   会穿透到侧边栏（hit-test 实测）。修法 = 标题栏视图与其容器各向下加长 12 pt
+   （`titlebarGrowth`）；加长段透明、SwiftUI 安全区实测不变，副作用只有顶部 40 pt
+   都能拖窗。**别只加长 titlebar 不加深容器**（容器不加长时点击也丢，实测）。
+4. **全屏期间跳过重贴**：全屏时 titlebar 藏了，改造无意义；`styleMask.contains(.fullScreen)`
+   时直接 return，退出全屏的布局拍子会补回。
+5. **测量方法**：`SettingsChromeLayoutTests`（纯几何 4 例默认跑；真实窗口墨迹扫描 1 例
+   在 `MULTIDOCK_UI_SNAPSHOT=1` 下跑——`cacheDisplay` 离屏，零权限，扫圆点对比度 ink bbox
+   与侧边栏图标列，别只信 frame）。
+
 ---
 
 # 已解决问题台账（D1–D26，留档别重复查；编号接 AGENTS.md §6.3）
