@@ -15,8 +15,10 @@ import AppKit
 /// （跨空间、不抢焦点、不挡点击、statusBar 层）。
 ///
 /// **第 3 版（2026-10-06 用户规格「默认、流动霓虹、赛博紫韵」）**：
-/// 新增 `desktopNameEffect` 三档效果 —— 默认档仍是磨砂面板 + `labelColor` 大字；
-/// 两个霓虹档把文字交给 `DesktopNameEffectCanvas` 自绘（字形路径 + 辉光 + 流动渐变），
+/// 新增 `desktopNameEffect` 三档**背景**效果（同日用户澄清：效果修饰的是展示背景，
+/// **不是字体**）—— 默认档仍是磨砂面板 + `labelColor` 大字；两个霓虹档把
+/// **面板背景**交给 `DesktopNameEffectCanvas` 自绘（暗底 + 流动光带 + 霓虹描边），
+/// **文字始终是同一个 label**，只是效果档把字色切成白色（暗底上保证可读）。
 /// 动画只在展示的那 1 秒里跑（`show()` 启动、`hide()` 停止）。效果是**实时读取**的
 /// （同位置的 provider 模式），改设置下一次展示就生效，不必重建窗口。
 @MainActor
@@ -50,15 +52,16 @@ final class DesktopNameOverlayWindow: ToastPresenting {
     private let panel: NSVisualEffectView
     private let edge: GlassEdgeView
     private let label: NSTextField
-    /// 霓虹档的自绘画布（默认档隐藏，文字仍走 `label`）。
+    /// 霓虹档的**背景**画布（默认档隐藏；位于 label 之下，文字不受它影响）。
     private let canvas: DesktopNameEffectCanvas
     private let placementProvider: () -> DesktopNamePlacement
     private let styleProvider: () -> DesktopNameEffect
 
     /// 最近一次展示用的效果（单测断言「效果从 provider 流到了窗口」用）。
     private(set) var activeEffect: DesktopNameEffect = .standard
-    /// 单测读视图状态用：默认档 label 可见、效果档画布可见。
+    /// 单测读视图状态用：文字恒可见（效果只换背景，不碰字体），画布仅效果档可见。
     var labelIsVisibleForTesting: Bool { !label.isHidden }
+    var labelColorForTesting: NSColor { label.textColor ?? .clear }
     var canvasIsVisibleForTesting: Bool { !canvas.isHidden }
     /// 画布是否正在播动画（展示期间应为 true，收起后 false）。
     var canvasIsAnimatingForTesting: Bool { canvas.isAnimating }
@@ -117,10 +120,11 @@ final class DesktopNameOverlayWindow: ToastPresenting {
         label.isSelectable = false
         panel.addSubview(label)
 
+        // 画布是**背景层**：插在 label 之下（效果修饰背景，文字永远在最上层）。
         canvas = DesktopNameEffectCanvas(frame: .zero)
         canvas.autoresizingMask = [.width, .height]
         canvas.isHidden = true
-        panel.addSubview(canvas)
+        panel.addSubview(canvas, positioned: .below, relativeTo: label)
 
         window.contentView = panel
     }
@@ -160,21 +164,24 @@ final class DesktopNameOverlayWindow: ToastPresenting {
     }
 
     /// 把一次展示应用到窗口与子视图上（**不 order front** —— 单测调它验接线，不会弹窗）。
+    ///
+    /// 文字**永远**交给同一个 label（效果只换背景，不碰字体——2026-10-06 用户澄清）。
+    /// 效果档：画布显示、字色切纯白（压在暗底上，与壁纸无关地可读）；
+    /// 默认档：画布隐藏、字色回 `labelColor`（跟随磨砂材质与亮/暗外观）。
     func apply(_ presentation: DesktopNamePresentation) {
         activeEffect = presentation.effect
         let isEffect = presentation.effect.spec != nil
 
         label.stringValue = presentation.text
-        label.isHidden = isEffect
+        label.textColor = isEffect ? .white : .labelColor
         canvas.isHidden = !isEffect
 
         panel.frame = NSRect(origin: .zero, size: presentation.layout.panelSize)
         panel.maskImage = Self.panelMask(size: presentation.layout.panelSize)
         label.frame = presentation.layout.labelFrame
-        // 画布先立好尺寸，再喂文字/效果（两者变化都会按当前 bounds 重建字形路径）。
+        // 画布先立好尺寸与圆角，再喂效果（尺寸/效果变化都会按当前 bounds 重绘）。
         canvas.frame = panel.bounds
         canvas.cornerRadius = Self.cornerRadius
-        canvas.text = presentation.text
         canvas.effect = presentation.effect
         edge.frame = panel.bounds
 

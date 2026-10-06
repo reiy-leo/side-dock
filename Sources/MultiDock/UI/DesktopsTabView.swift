@@ -5,10 +5,10 @@ import SwiftUI
 ///
 /// - 「桌面名称」：每个桌面一行（当前桌面带活动标记 + 壁纸缩略图 + 输入框），
 ///   最长 10 个字符（字素簇），仅存本地——macOS 没有系统接口。
-/// - 「名称展示」：开关 + 位置（顶部/中部/底部）+ 效果（默认 / 流动霓虹 / 赛博紫韵）。
-///   默认档 = 磨砂面板 + 跟随外观的大字；霓虹两档由 `DesktopNameEffectCanvas` 自绘
-///   （流动渐变 + 辉光，只在展示的那 1 秒里播动画）。切换桌面后展示 1 秒，
-///   实现在 `DesktopNameOverlayWindow`。
+/// - 「名称展示」：开关 + 位置（顶部/中部/底部）+ 背景效果（默认 / 流动霓虹 / 赛博紫韵）。
+///   默认档 = 磨砂玻璃面板；霓虹两档由 `DesktopNameEffectCanvas` 自绘**背景**
+///   （暗底 + 流动光带 + 霓虹描边，只在展示的那 1 秒里播动画）——文字始终是同一个 label。
+///   切换桌面后展示 1 秒，实现在 `DesktopNameOverlayWindow`。
 struct DesktopsTab: View {
     @Bindable var state: AppState
 
@@ -49,8 +49,8 @@ struct DesktopsTab: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                Text(L("「默认」是磨砂面板 + 跟随外观的文字；「流动霓虹」有青紫流光，「赛博紫韵」是紫色慢流带呼吸光晕 —— 两个效果档只在展示的那 1 秒里播动画。1 秒后自动消失，不抢焦点、不挡点击；「顶部」即锁屏时钟的位置。",
-                       "“Default” is a frosted panel with appearance-aware text; “Flowing Neon” has a cyan-purple flow, “Cyber Purple” a slow purple flow with a breathing glow — both animate only during the one-second display. It disappears after a second, never steals focus or blocks clicks; “Top” matches the lock-screen clock position."))
+                Text(L("效果修饰的是面板背景（文字不变）：「默认」为磨砂玻璃；「流动霓虹」在深色底上扫过青/品红双色光带、带霓虹描边；「赛博紫韵」在深紫底上慢扫紫色光带、光晕呼吸。两个效果档只在展示的那 1 秒里播动画。1 秒后自动消失，不抢焦点、不挡点击；「顶部」即锁屏时钟的位置。",
+                       "The effect styles the panel background (the text is unchanged): “Default” is frosted glass; “Flowing Neon” sweeps cyan/magenta bands over a dark base with a neon border; “Cyber Purple” drifts purple bands over a deep-purple base with a breathing glow. Both animate only during the one-second display. It disappears after a second, never steals focus or blocks clicks; “Top” matches the lock-screen clock position."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

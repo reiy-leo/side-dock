@@ -831,20 +831,24 @@ struct AppSettings: Codable {
 > 其外观规格（下面两节）原样保留、继续有效。调度侧 `ToastPresenter` 双通路，
 > 超时/收起只作用当前通路，接替时旧窗立即收。名称/告知的原「开关」语义不变。
 
-> **2026-10-06 第 3 版（用户规格「默认、流动霓虹、赛博紫韵」）：展示效果三档**
-> 新增 `desktopNameEffect`（默认 `.standard`）。**默认档不变**（磨砂面板 + `labelColor`
-> 大字）；两个霓虹档把文字交给 `DesktopNameEffectCanvas` **自绘**：
-> CoreText 取**字形路径** → 辉光（同路径带 shadow 填两遍：大半径光晕 + 小半径灯管芯）→
-> **流动渐变**裁进字形（`.neonFlow` 青→紫→品红 1.4 s / `.cyberPurple` 紫色系 2.6 s +
-> 光晕呼吸）。**为什么自绘而不是 CoreAnimation 图层**：① 项目快照验收走视图绘制路径
-> （`cacheDisplay`），CA 图层内容抓不全 —— 自绘让快照与真机同一份代码；② 项目既有教训
-> 「别依赖隐式动画通道」（animator alpha 随机静默失效）。动画 = `Timer`（30 fps，
-> RunLoop `.common` 模式）驱动 `needsDisplay`，**只在展示的那 1 秒里跑**
-> （`show()` 起表、`hide()` 停表）。流动几何是纯函数
-> `flowSegmentStarts(phase:)`（两段首尾相接、并集恒盖住整行）。窗口侧新增
-> `presentation(...)`/`apply(...)`（纯值 + 应用），效果与位置同为**实时 provider**，
-> 改设置下一次展示即生效。三档选择器在「桌面 → 名称展示」。
-> 配色/速度配方在 `DesktopNameEffectSpec`（`DesktopNameEffect.spec`，可单测）。
+> **2026-10-06 第 3 版（用户规格「默认、流动霓虹、赛博紫韵」，同日用户澄清：
+> 效果修饰展示背景、不是字体）：面板背景三档**
+> 新增 `desktopNameEffect`（默认 `.standard`）。**默认档不变**（磨砂玻璃面板 +
+> `labelColor` 大字）；两个霓虹档把**面板背景**交给 `DesktopNameEffectCanvas` **自绘**：
+> 不透明暗底竖向渐变（保证白字可读性与壁纸无关）→ **流动光带**（两条"透明→彩色→透明"
+> 的横向渐变柱，`.plusLighter` 叠加、带轻微斜切；`.neonFlow` 青+品红相向扫 2.2 s /
+> `.cyberPurple` 双紫同向慢扫 2.8 s + 光带与描边呼吸）→ **霓虹描边**（1.5 pt 内描 +
+> 同色小半径辉光），整体圆角裁剪。**文字始终是同一个 `NSTextField`**（效果档只把字色
+> 切纯白、默认档回 `labelColor`）——字体的 64 pt / 字重 800 / 量宽防截断全部不变。
+> **为什么自绘而不是 CoreAnimation 图层**：① 项目快照验收走视图绘制路径（`cacheDisplay`），
+> CA 图层内容抓不全 —— 自绘让快照与真机同一份代码；② 项目既有教训「别依赖隐式动画通道」
+> （animator alpha 随机静默失效）。动画 = `Timer`（30 fps，RunLoop `.common` 模式）驱动
+> `needsDisplay`，**只在展示的那 1 秒里跑**（`show()` 起表、`hide()` 停表）。
+> 光带扫动几何是纯函数 `bandCenterX(phase:bandIndex:panelWidth:bandWidth:)`
+> （带 0 左→右、带 1 反向，端点扫出面板外侧）。窗口侧新增 `presentation(...)`/`apply(...)`
+> （纯值 + 应用），效果与位置同为**实时 provider**，改设置下一次展示即生效。
+> 三档选择器在「桌面 → 名称展示」；配色/速度配方在 `DesktopNameEffectSpec`（可单测）。
+> **光带峰值不透明度刻意 ≤0.65**：光带扫过文字下方时也不能冲淡白字（测试钉住这条）。
 
 **触发点只有一个：`SpaceObserver.onActiveSpaceChanged`。** 它是单一事实源——轮询每 300 ms 读活动空间，与切换来源无关，所以**用户自己用触控板/快捷键/Mission Control 切桌面也会弹 toast**，不只是 App 发起的切换。App 自己发起的切换在切换后立刻 `observer.refreshNow()`（必要时 50 ms 再补一次）把延迟压到最低，轮询兜底最坏 300 ms。
 

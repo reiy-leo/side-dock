@@ -586,25 +586,27 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 3. **`Menu` + `Toggle` 做下拉的勾选态**：`Picker` 的关闭态与菜单行共用视图且没有勾选态；
    单选语义用 `Binding<Bool>`（get 比较、set 仅在 `isOn` 时落）——与桌面下拉同一套。
 
-### 2026-10-06 名称展示效果（霓虹自绘）的新坑
+### 2026-10-06 名称展示背景效果（霓虹自绘）的新坑
 
-1. **CoreText 取字形路径必须用「run 自己的字体」**：中文走 CoreText 的回退字体
-   （PingFang 等），`CTRun` 里的 `CGGlyph` ID **只在那个字体里有意义**。拿最初的
-   系统字体（SF）去 `CTFontCreatePathForGlyph` 会**画出一串不相干的拉丁字形**
-   ——实测「工作环境」被画成 `i ∇ Y (`。正确姿势：从
-   `CTRunGetAttributes(run)[kCTFontAttributeName]` 取该 run 的实际 `CTFont` 再逐字形取路径。
-   **快照验收逮住的**（单元测试断言"路径非空、宽度合理"过不了这一关——错字形一样非空）。
-2. **`NSView` 的 `deinit` 是 nonisolated，碰不到 `@MainActor` 的 `Timer` 属性**（Swift 6
+**用户澄清（重要）**：效果修饰的是**展示背景**，不是字体 —— 第一版做成了"渐变裁进字形"
+（文字本身发光），被用户纠正。现在文字恒为同一个 label，效果只画背景。
+
+1. **`NSView` 的 `deinit` 是 nonisolated，碰不到 `@MainActor` 的 `Timer` 属性**（Swift 6
    直接编译失败）。定时器生命周期挂在**窗口**上（`show()` 起表、`hide()` 停表），
    别指望 `deinit` 清理；展示窗口与 App 同生命周期，不存在孤儿定时器场景。
-3. **`cacheDisplay` 只走视图的 `draw()` 路径，CoreAnimation 图层内容抓不全**（尤其带 mask 的）——
-   霓虹效果用自绘（CoreGraphics 每帧重画）而不是 CA 图层动画，快照与真机才是同一份渲染代码。
-4. **相位必须能在快照里钉住**：动画在跑时相位每帧都不同，抓图 = 不确定的帧。快照用例
+2. **`cacheDisplay` 只走视图的 `draw()` 路径，CoreAnimation 图层内容抓不全**（尤其带 mask 的）——
+   背景效果用自绘（CoreGraphics 每帧重画）而不是 CA 图层动画，快照与真机才是同一份渲染代码。
+3. **背景层要显式插到文字之下**：`addSubview(_:positioned:.below, relativeTo: label)`。
+   `NSVisualEffectView` 是容器（不是普通 NSView），子视图顺序错误会把文字盖住 ——
+   快照里"文字不见了"多半是这个，不是绘制问题。
+4. **光带峰值不透明度必须压住**：白字压在上面，光带太亮会冲淡文字。配方里 `bandAlpha ≤ 0.65`，
+   测试钉死这条（顺带钉底线：底色 sRGB 亮度 < 0.25 —— 白字可读性的前提）。
+5. **相位必须能在快照里钉住**：动画在跑时相位每帧都不同，抓图 = 不确定的帧。快照用例
    显式设一个固定相位（0.45）+ 停表再抓（`snapshotCanvas`）；动画本身另用"跑 0.2 s RunLoop
    看相位推进"的测试守（rules 里那条「DispatchSourceTimer 在本项目一次都不 fire」的教训，
    定时器一律 `Timer` + `.common`）。
-5. **`private(set)` 的相位不能给快照赋固定值**：`phase` 开成普通 `var`（正常由计时器推进，
-   测试显式设值是合法用法），别为了封装把快照逼回不确定。
+6. **相位 1.0 回绕等于 0**（`1 mod 1 = 0`）：写扫动几何的测试时别拿 `phase: 1` 当终点
+   （会得到起点值，测试假失败）。用 0.99 逼近终点，或直接断言"已扫出面板外侧"。
 
 ### 2026-10-06 「启动台」页的新坑（读 SQLite + 搬运）
 

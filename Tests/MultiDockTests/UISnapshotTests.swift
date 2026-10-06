@@ -167,11 +167,12 @@ final class UISnapshotTests: XCTestCase {
         print("名称面板快照 → \(outDir.path)")
     }
 
-    /// **三种展示效果**（2026-10-06 用户规格：默认 / 流动霓虹 / 赛博紫韵）。
+    /// **三种展示背景效果**（2026-10-06 用户规格：默认 / 流动霓虹 / 赛博紫韵；
+    /// 同日用户澄清：效果修饰**背景**，文字始终是同一个 label）。
     /// 每个效果 × 亮/暗外观各一张；霓虹档用 `apply`（不 order front）抓同一渲染路径。
     ///
     /// 相位刻意固定在中段（0.45）——`show()` 的动画会实时推进相位，抓图时点不同画面就不同，
-    /// 快照不再确定；这里要验的是效果的外观配方与裁切/辉光是否正常，不是动画帧。
+    /// 快照不再确定；这里要验的是背景配方与文字可读性，不是动画帧。
     func testSnapshotDesktopNameEffects() throws {
         guard ProcessInfo.processInfo.environment["MULTIDOCK_UI_SNAPSHOT"] == "1" else {
             throw XCTSkip("需要 MULTIDOCK_UI_SNAPSHOT=1（生成 /tmp/multidock-ui-snapshot/*.png）")
