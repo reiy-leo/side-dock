@@ -90,6 +90,7 @@
 | ✅ **macOS 应用图标网格：美术体 824/1024 居中 + σ10/29%/下移10 投影**（2026-10-06 实测） | `NSWorkspace.icon(forFile:)` 渲染 Notes / Music / Weather 的 1024 图逐点一致：**美术体（alpha>127）824×824、四周留 100**；投影 = 剪影高斯模糊 **σ≈10px、透明度 29%、下移 10px**（底缘正外 64、侧缘外 37，向外 ~12px 降到 <8）。**整幅铺满比系统图标大一圈**——做图标必须按此网格（`scripts/make-app-icon.swift`）。另：CGContext 混合只在源绘制区生效、`CIColorMatrix` 向量是线性组合（黑图收 alpha 会全透明）——两坑细节见 `docs/rules.md`「应用图标生成的新坑」 |
 
 | ✅ **原生 `NSImage` 直接解码 SVG（CoreSVG），无需第三方库**（2026-10-06，macOS 15.8.1） | `NSImage(data: svgData)` 返回 `_NSSVGImageRep`，按 `image.size` 光栅化笔画正确；`isTemplate = true` 后由系统按菜单栏亮/暗着色。规格：SVG 必须带 `xmlns` 与 `viewBox`（Lucide 的线宽 2 / 圆头圆角原样即可）。菜单栏图标（Lucide 五选一）走这条路——零依赖、零权限、无网络（`UI/MenuBarIcon.swift`，`MenuBarIconTests` 钉住五个都非空、互不相同、缓存生效）。18 pt 呈现时实际笔画 ≈15 pt（Lucide 24 视框自带内边距），与旧符号 `dock.rectangle`（18×14）观感一致 |
+| ⚠️ **`NSTextField` 单行文本需要 ≥8 pt 宽度余量，否则退化成省略号**（2026-10-06，实测） | 64 pt 字重 800 的十个汉字：`NSString.size(withAttributes:)` 量宽 **603.9 pt**、`intrinsicContentSize` 同值（**测量本身是准的**），但把 label 宽设成 604/608 时**仍被截成省略号**——`NSTextFieldCell` 每侧约 2 pt 内边距 + CJK 推进宽取整把末字挤出框；**宽 612 起完整显示**。→ 布局按量宽 + `widthSlack`（现取 12）留余量，别按"量宽 + 4"写（踩过，桌面名显示不全就是这么来的） |
 | ⚠️ **Swift raw string `#"..."#` 装不下 SVG**（2026-10-06，踩坑） | `stroke="#000000"` 里的 `"#` 序列会**提前终止 raw string** 定界符（报 "consecutive statements on a line must be separated by ';'"）。内嵌 SVG 一律用三引号多行字符串（`MenuBarIcon.svgDocument`）；预览脚本同样要避开 |
 
 **复现私有 API 探测的方法**：见 `scripts/spike-probe.swift`（Swift 版，比 ctypes 干净）。

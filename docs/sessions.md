@@ -3,6 +3,41 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 54 次）— 桌面名称显示不全修复：磨砂玻璃 + 字重 800 + 宽度按内容
+
+**用户说**：「现在桌面名称显示不全，一部分显示成ellipsis了。桌面名称显示根据内容设置宽度，
+背景是磨砂玻璃效果，字体更粗一点800」。
+
+**做了什么**：
+
+1. **先定位再改**（没有猜）：写探针脚本实测——`NSString.size(withAttributes:)` 量宽
+   603.9 pt 是**准的**，但把 label 宽设成 604/608 时 `NSTextFieldCell` **仍被截成省略号**，
+   宽度 **612 起才完整**。根因 = cell 每侧约 2 pt 内边距 + CJK 推进宽取整，把末字挤出框；
+   原实现的 4 pt 余量不够。→ `widthSlack` 定为 **12**，并把「余量 ≥ 8」钉进测试
+   （`testLabelWidthHasEnoughSlackToAvoidTruncation`，注明实测阈值）。
+2. **磨砂玻璃**（用户要求）：`NSVisualEffectView`（`.popover` + `.behindWindow` + `.active`
+   + 1 px 内描边，与胶囊 HUD 同一套配方）+ 按尺寸现画的圆角遮罩；文字改 `labelColor`
+   跟随材质（不再是"白字 + 投影"）。`ToastEdgeView` 提为共享 `GlassEdgeView`。
+3. **字重 800**：`.systemFont(ofSize: 64, weight: .heavy)`（常量头部，测试钉住）。
+4. **宽度按内容**：`panelLayout(text:available:placement:)` 纯函数——量宽 + 余量 + 两侧
+   36 pt 内边距，单字下限 180；**不再依赖 `intrinsicContentSize` 摆位**。
+5. **快照**：新增 `testSnapshotDesktopNamePanel`（最长 10 字 + 短名 × 亮暗四张）——
+   **改前先出图复现了省略号**（8 个汉字 + …，字形逐列量出 61pt/字），改后同一张图
+   十个字完整居中。次级条/HUD 的 `GlassEdgeView` 改名不影响行为。
+6. **测试**：+5（防截断余量、十字完整放下、面板宽度随内容、字号字重规格、三档位置沿用）
+   —— **435 全绿**；重打包 `build/MultiDock.app`。
+7. **文档**：facts.md（截断阈值实测：量宽准、604/608 仍截、612 起完整）、PLAN §3.10 +
+   计划首段、AGENTS（现行行为/A13 提示/测试数 435）、本记录。
+
+**影响 / 未解决**：
+
+- 玻璃面板的**真实质感**（模糊身后的壁纸）离屏快照验不了（`.behindWindow` 没有"身后"），
+  快照只验文字与几何——真机观感归 A13。
+- `widthSlack` 是实测值，**别往小调**；若将来改字号，需重新按探针测阈值
+  （facts.md 那条给了方法：量宽 vs 逐档 label 宽的截断点）。
+
+---
+
 ### 2026-10-06（第 53 次）— 菜单栏图标五选一（Lucide）
 
 **用户说**：「通用中可以设置菜单栏中显示的图标，从lucide icons的中tree-deciduous、parasol、

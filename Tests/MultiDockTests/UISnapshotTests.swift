@@ -97,6 +97,41 @@ final class UISnapshotTests: XCTestCase {
         }
         print("次级 Dock 快照 → \(outDir.path)")
     }
+
+    /// 桌面名称面板（锁屏式大字 + 磨砂玻璃，2026-10-06 第 2 版）：
+    /// 取最长名字（10 字素簇）——**重点验不出现省略号**，以及字重 800 的观感。
+    ///
+    /// ⚠️ 面板用 `.behindWindow` 混合（真机模糊屏幕内容），离屏抓图没有"身后"可模糊 ——
+    /// 抓出来的底是透明的，文字与描边正常。因此它验的是**文字与面板几何**，不是玻璃质感
+    /// （质感只能在真机看）。
+    func testSnapshotDesktopNamePanel() throws {
+        guard ProcessInfo.processInfo.environment["MULTIDOCK_UI_SNAPSHOT"] == "1" else {
+            throw XCTSkip("需要 MULTIDOCK_UI_SNAPSHOT=1（生成 /tmp/multidock-ui-snapshot/*.png）")
+        }
+
+        let outDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("multidock-ui-snapshot", isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        // 最长（10 字素簇）+ 短名各出一张：前者是"会不会被截"的关键用例。
+        let cases: [(text: String, name: String)] = [
+            ("一二三四五六七八九十", "desktop-name-long"),
+            ("工作", "desktop-name-short"),
+        ]
+        let presenter = DesktopNameOverlayWindow(placementProvider: { .top })
+        let window = presenter.snapshotWindow
+
+        for appearance in [NSAppearance.Name.aqua, NSAppearance.Name.darkAqua] {
+            let suffix = appearance == .darkAqua ? "dark" : "light"
+            window.appearance = NSAppearance(named: appearance)
+            for entry in cases {
+                presenter.show(text: entry.text, displayUUID: nil)
+                try capture(window, to: outDir.appendingPathComponent("\(entry.name)-\(suffix).png"))
+            }
+        }
+        presenter.hide()
+        print("名称面板快照 → \(outDir.path)")
+    }
     // MARK: - 夹具
 
     /// 与 `AppStateDockTests` 同一套注入姿势：临时目录的存储 + 假 Provider + 测试专用日志。

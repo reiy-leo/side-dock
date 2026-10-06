@@ -21,7 +21,7 @@ final class HudToastWindow: ToastPresenting {
     private let window: ToastWindow
     private let label: NSTextField
     private let container: NSVisualEffectView
-    private let edge: ToastEdgeView
+    private let edge: GlassEdgeView
 
     /// 距显示器**可见区**顶部的距离。用 `visibleFrame` 而非 `frame`，天然避开菜单栏。
     private static let topInset: CGFloat = 80
@@ -61,7 +61,7 @@ final class HudToastWindow: ToastPresenting {
         // 遮罩按当前尺寸现画，不做拉伸——拉伸会把两端的小圆角扯成椭圆。
         container.maskImage = Self.pillMask(width: Self.minPillWidth)
 
-        edge = ToastEdgeView(cornerRadius: Self.cornerRadius)
+        edge = GlassEdgeView(cornerRadius: Self.cornerRadius)
         edge.autoresizingMask = [.width, .height]
         container.addSubview(edge)
 
@@ -161,12 +161,12 @@ enum ScreenMatching {
     }
 }
 
-/// 胶囊的 1 px 内描边。
+/// 磨砂玻璃面板的 1 px 内描边（胶囊 HUD 与桌面名称面板共用）。
 ///
 /// 亮色下 `.popover` 材质接近纯白，压在浅色壁纸上会和背景糊在一起；这条边是唯一把它撑出来的
 /// 东西。深色下反过来需要一条更淡的高光边。两种外观分别给值，见 `edgeColor`。
 @MainActor
-private final class ToastEdgeView: NSView {
+final class GlassEdgeView: NSView {
     private let cornerRadius: CGFloat
 
     init(cornerRadius: CGFloat) {

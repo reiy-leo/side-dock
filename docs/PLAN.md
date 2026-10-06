@@ -13,7 +13,7 @@
 - **设置 → 通用**：编辑「默认 Dock」——拖入/拖出应用、拖拽排序，Finder 与 Launchpad 固定不可移除；
   默认 Dock 的大小与位置；次级条 / 冻结开关；应用与还原。
 - **设置 → 桌面**：列出所有桌面，每个桌面单独设置 Dock 位置/大小与 Dock 中的应用（同样可拖入拖出），或选择沿用默认 Dock；**每个桌面还可以起一个名字，最长 10 个字符**（仅存本地，见 §3.10）。
-- **切换桌面提示（toast）**：切换到另一个桌面时展示该桌面的名字，**1 秒后自动消失**——2026-10-06 起为 **iPhone 锁屏式大字**（不可关？可关，见 §3.10 开关），位置可设顶部/中部/底部（默认顶部）。不抢焦点、不挡点击、不需要任何权限（见 §3.10）。
+- **切换桌面提示（toast）**：切换到另一个桌面时展示该桌面的名字，**1 秒后自动消失**——2026-10-06 起为 **磨砂玻璃面板上的 64 pt 粗体大字**（字重 800），面板**按名字长度自适应宽度**；位置可设顶部/中部/底部（默认顶部）。不抢焦点、不挡点击、不需要任何权限（见 §3.10）。
 
 **无痕原则（硬约束）**：App 绝不永久改变用户的 Dock。首次运行会把你当前的 Dock 完整存为**基准快照**，App 退出时自动还原到该基准；即使被强杀或崩溃，下次启动也会检测并还原。安装后什么都不做时，Dock 与装之前完全一致。
 
@@ -484,13 +484,14 @@ struct AppSettings: Codable {
 >     命名行用分组 Form 的 `LabeledContent` 形状（行标签 = 圆标 + 缩略图 + 「桌面 N」）；
 >     ⚠️ `TextField` 的标题在分组 Form 里会被提升成行首加粗标签，**标题必须走 `prompt:`**。
 >   - 原通用页的「桌面切换」toast 开关一并移入「桌面」页（通用页只留次级条/冻结那节）。
-> - **名称展示 = iPhone 锁屏式**（`UI/DesktopNameOverlay.swift`，`DesktopNameOverlayWindow`）：
->   64 pt **极细白字**（`.systemFont(ofSize: 64, weight: .thin)`，白色）直接压在壁纸上，
->   **无底无框**；文字**图层投影**（`layer.shadow*`，从字形 alpha 生成随字形走；
->   不用 `NSShadow`——画进 cell 方向语义反直觉）。窗口层配方与旧胶囊逐条相同
->   （borderless、`canBecomeKey/Main = false`、`ignoresMouseEvents`、`level = .statusBar`、
->   `.canJoinAllSpaces + .fullScreenAuxiliary + .stationary + .ignoresCycle`、`orderFrontRegardless`、
->   `animationBehavior = .none`）；文字超宽按固定字号截尾（最长 10 字素簇，常见屏放得下）。
+> - **名称展示 = 磨砂玻璃面板 + 粗体大字**（`UI/DesktopNameOverlay.swift`，`DesktopNameOverlayWindow`）：
+>   第 1 版是无底无框白字压壁纸（"锁屏时钟"路线），**第 2 版（用户反馈）改为磨砂玻璃**：
+>   `NSVisualEffectView`（`.popover` + `.behindWindow` + `.active` + 1 px 内描边，与胶囊 HUD
+>   同一套配方）、文字 `labelColor` 跟随材质（不再需要投影）；字号 64 pt、**字重 800 `.heavy`**；
+>   面板**按内容量宽**（`NSString.size(withAttributes:)` + `widthSlack` 余量），单字不缩成圆。
+>   窗口层配方与旧胶囊逐条相同（borderless、`canBecomeKey/Main = false`、`ignoresMouseEvents`、
+>   `level = .statusBar`、`.canJoinAllSpaces + .fullScreenAuxiliary + .stationary + .ignoresCycle`、
+>   `orderFrontRegardless`、`animationBehavior = .none`）。
 > - **展示位置三档**（`desktopNamePlacement`，默认 `.top`）：顶部（`visibleFrame.maxY − 80`，
 >   与旧版同款、天然避开菜单栏、即锁屏时钟位）/ 中部（垂直居中）/ 底部
 >   （`visibleFrame.minY + 64`，避开次级条薄边）。水平恒居中。
@@ -690,9 +691,10 @@ struct AppSettings: Codable {
 
 #### toast
 
-> **2026-10-06 修订（用户指令）：名称展示 = iPhone 锁屏式，双通路**
-> 桌面名称不再走胶囊 HUD，改为**锁屏式大字**（`DesktopNameOverlayWindow`）：
-> 64 pt 极细白字 + 图层投影、无底无框，压在壁纸上；**位置三档**（顶部/中部/底部，
+> **2026-10-06 修订（用户指令）：名称展示独立成窗，双通路；同日第 2 版改磨砂玻璃**
+> 桌面名称不再走胶囊 HUD，改为**独立名称面板**（`DesktopNameOverlayWindow`）：
+> **磨砂玻璃底**（`NSVisualEffectView` `.popover`/`.behindWindow`）+ 64 pt **字重 800** 大字，
+> 面板宽度按名字内容自适应；**位置三档**（顶部/中部/底部，
 > `desktopNamePlacement` 默认顶部）。胶囊 HUD（原 `DesktopNameToastWindow` 更名
 > `HudToastWindow`）收缩为**系统级告知**专用（自愈还原等"必须压在任何壁纸上可读"的消息），
 > 其外观规格（下面两节）原样保留、继续有效。调度侧 `ToastPresenter` 双通路，
