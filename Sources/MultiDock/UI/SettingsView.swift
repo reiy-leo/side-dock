@@ -9,9 +9,11 @@ final class SettingsTabModel {
     var tab: SettingsTab = .general
 }
 
-/// 设置窗口的五个页（2026-10-06 起侧边栏呈现，系统设置风格；同日「桌面」拆出「应用栏」）。
+/// 设置窗口的六个页（2026-10-06 起侧边栏呈现，系统设置风格；同日「桌面」拆出「应用栏」，
+/// 2026-10-06 第 9 轮「菜单栏」从通用页拆出独立成页）。
 enum SettingsTab: Hashable {
     case general
+    case menuBar
     case appBars
     case desktop
     case data
@@ -40,6 +42,7 @@ struct SettingsView: View {
                 WarningBanner(state: state)
                 switch tabModel.tab {
                 case .general: GeneralTab(state: state)
+                case .menuBar: MenuBarTab(state: state)
                 case .appBars: DockBarsTab(state: state)
                 case .desktop: DesktopsTab(state: state)
                 case .data: DataView(state: state)
@@ -53,7 +56,7 @@ struct SettingsView: View {
 
     // MARK: 侧边栏
 
-    /// 侧边栏布局（2026-10-06 用户要求）：主 tabs（通用/桌面/数据）在顶部、
+    /// 侧边栏布局（2026-10-06 用户要求）：主 tabs（通用/菜单栏/应用栏/桌面/数据）在顶部、
     /// 与窗口顶再让出一截；「关于」钉在列底。
     ///
     /// **为什么「关于」不走 List 行**：`List` 没有"行钉底"机制——中间塞 spacer 行
@@ -64,6 +67,7 @@ struct SettingsView: View {
         List(selection: tabSelection) {
             Section {
                 Label("通用", systemImage: "gearshape").tag(SettingsTab.general)
+                Label("菜单栏", systemImage: "menubar.rectangle").tag(SettingsTab.menuBar)
                 Label("应用栏", systemImage: "dock.rectangle").tag(SettingsTab.appBars)
                 Label("桌面", systemImage: "rectangle.3.group").tag(SettingsTab.desktop)
                 Label("数据", systemImage: "externaldrive").tag(SettingsTab.data)
@@ -84,7 +88,7 @@ struct SettingsView: View {
         }
     }
 
-    /// 上、下两个 List 共用同一份选中绑定：点「关于」时上方三行自动全不选，
+    /// 上、下两个 List 共用同一份选中绑定：点「关于」时上方五行自动全不选，
     /// 点主 tabs 时底部「关于」自动取消高亮。
     private var tabSelection: Binding<SettingsTab> {
         Binding(
@@ -220,6 +224,65 @@ private struct WarningBanner: View {
     }
 }
 
+// MARK: - 菜单栏
+
+/// 「菜单栏」选项卡（2026-10-06 第 9 轮用户指令：从通用页拆出独立成页）。
+///
+/// 内容为原通用页「菜单栏」节整块迁入，按话题分成两组：**点击行为**
+/// （左键动作 + 右键/⌥/⇧ 说明）与**图标**（Lucide 五选一）。
+/// 行为、文案、绑定全部原样——只是换了承载页面。
+private struct MenuBarTab: View {
+    @Bindable var state: AppState
+
+    var body: some View {
+        Form {
+            Section("点击行为") {
+                Picker("左键单击", selection: clickActionBinding) {
+                    ForEach(ClickAction.allCases, id: \.self) { action in
+                        Text(action.displayName).tag(action)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                // 切桌面的系统滑动过渡**不做开关**（2026-10-06 实验 28：合成事件在本机被
+                // 系统拦在投递层，阳性对照 Cmd+Tab 也不生效——开关能开也无效就是假开关）。
+                // 研究留档：docs/spikes.md 实验 28；config 里有 `animatedDesktopSwitch` 供
+                // 换机器/系统放开后手工开启。
+                Text("右键或 ⌥+左键始终打开菜单。⇧+左键切上一个桌面；左键若设为「打开菜单」，⇧+左键也一并打开菜单。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section("图标") {
+                HStack(spacing: 8) {
+                    ForEach(MenuBarIcon.allCases, id: \.self) { icon in
+                        MenuBarIconChoice(icon: icon, selection: menuBarIconBinding)
+                    }
+                }
+                Text("换图标立即生效；图标旁的数字是当前桌面序号。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var clickActionBinding: Binding<ClickAction> {
+        Binding(
+            get: { state.settings.clickAction },
+            set: { value in state.updateSettings { $0.clickAction = value } }
+        )
+    }
+
+    private var menuBarIconBinding: Binding<MenuBarIcon> {
+        Binding(
+            get: { state.settings.menuBarIcon },
+            set: { value in state.updateSettings { $0.menuBarIcon = value } }
+        )
+    }
+}
+
 // MARK: - 通用
 
 private struct GeneralTab: View {
@@ -270,31 +333,6 @@ private struct GeneralTab: View {
                 }
             }
 
-            Section("菜单栏") {
-                Picker("左键单击", selection: clickActionBinding) {
-                    ForEach(ClickAction.allCases, id: \.self) { action in
-                        Text(action.displayName).tag(action)
-                    }
-                }
-                .pickerStyle(.radioGroup)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("图标")
-                    HStack(spacing: 8) {
-                        ForEach(MenuBarIcon.allCases, id: \.self) { icon in
-                            MenuBarIconChoice(icon: icon, selection: menuBarIconBinding)
-                        }
-                    }
-                }
-                // 切桌面的系统滑动过渡**不做开关**（2026-10-06 实验 28：合成事件在本机被
-                // 系统拦在投递层，阳性对照 Cmd+Tab 也不生效——开关能开也无效就是假开关）。
-                // 研究留档：docs/spikes.md 实验 28；config 里有 `animatedDesktopSwitch` 供
-                // 换机器/系统放开后手工开启。
-                Text("右键或 ⌥+左键始终打开菜单。⇧+左键切上一个桌面；左键若设为「打开菜单」，⇧+左键也一并打开菜单。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
             Section("启动、退出与自愈") {
                 Toggle("退出 App 时还原为原始 Dock", isOn: restoreOnQuitBinding)
                 Text("无痕原则：首次运行会把当时的 Dock 完整存为基准快照，退出时自动还原；被强杀或崩溃时，下次启动也会自动还原，并在屏幕上给出提示。")
@@ -338,20 +376,6 @@ private struct GeneralTab: View {
         Button("撤销自动回存") { state.undoLastAutoCapture() }
             .disabled(!state.canUndoAutoCapture())
             .help("撤销上一次「识别到你在真实 Dock 上的改动并回存」的覆盖（回存只落在活动桌面绑定的栏上）。")
-    }
-
-    private var clickActionBinding: Binding<ClickAction> {
-        Binding(
-            get: { state.settings.clickAction },
-            set: { value in state.updateSettings { $0.clickAction = value } }
-        )
-    }
-
-    private var menuBarIconBinding: Binding<MenuBarIcon> {
-        Binding(
-            get: { state.settings.menuBarIcon },
-            set: { value in state.updateSettings { $0.menuBarIcon = value } }
-        )
     }
 
     private var restoreOnQuitBinding: Binding<Bool> {

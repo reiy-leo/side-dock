@@ -24,8 +24,8 @@ struct DockBarsTab: View {
             Divider()
             editor
         }
-        // 与其它四页的 Form 分组保持同一版心：两侧各让 60 pt
-        // （实测 Form 分组框距面板边缘 ≈61 pt；统一后五个页签内容列对齐）。
+        // 与其它页的 Form 分组保持同一版心：两侧各让 60 pt
+        // （实测 Form 分组框距面板边缘 ≈61 pt；统一后各页签内容列对齐）。
         .padding(.horizontal, 60)
         .onAppear {
             // 打开就选中第一根栏：编辑器不用等一次点击才出现，中部也不留大片空白。

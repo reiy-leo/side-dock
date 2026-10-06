@@ -35,9 +35,9 @@ final class UISnapshotTests: XCTestCase {
             let suffix = appearance == .darkAqua ? "dark" : "light"
             window.appearance = NSAppearance(named: appearance)
 
-            for (tab, name) in [(SettingsTab.general, "general"), (SettingsTab.appBars, "app-bars"),
-                                (SettingsTab.desktop, "desktop"), (SettingsTab.data, "data"),
-                                (SettingsTab.about, "about")] {
+            for (tab, name) in [(SettingsTab.general, "general"), (SettingsTab.menuBar, "menu-bar"),
+                                (SettingsTab.appBars, "app-bars"), (SettingsTab.desktop, "desktop"),
+                                (SettingsTab.data, "data"), (SettingsTab.about, "about")] {
                 tabModel.tab = tab
                 try capture(window, to: outDir.appendingPathComponent("settings-\(name)-\(suffix).png"))
             }
