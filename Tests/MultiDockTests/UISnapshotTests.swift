@@ -244,7 +244,9 @@ final class UISnapshotTests: XCTestCase {
         let id = state.addDockBar()
         state.updateDockBarInMemory(DockBar(
             id: id,
-            name: "工作栏",
+            // 名字取满 10 字素簇：每次快照都在最坏长度下核对栏名输入框不出现省略号
+            // （2026-10-06 用户规格：输入框宽 = 10 个中文字宽；守卫 `NameFieldTests`）。
+            name: "工作空间备份归档整理",
             position: .bottom,
             spaceID: first.id,
             apps: DockStripRules.barApps(Self.previewApps())

@@ -26,6 +26,25 @@ final class DockBarModelTests: XCTestCase {
         XCTAssertTrue(DockBarPosition.right.isBarVertical)
     }
 
+    /// 位置选择项（设置页下拉与条上右键菜单共用）：**不能用的灰掉、不消失**
+    /// （2026-10-06 用户规格）—— 与 `available` 的"过滤掉"是两回事，别把前者实现成后者。
+    func testChoicesListAllPositionsWithDisabledFlag() {
+        let all = DockBarPosition.choices(
+            current: .bottom,
+            available: DockBarPosition.available(stageManagerActive: false)
+        )
+        XCTAssertEqual(all.map(\.position), [.bottom, .left, .right])
+        XCTAssertTrue(all.allSatisfy(\.isEnabled))
+        XCTAssertEqual(all.filter(\.isCurrent).map(\.position), [.bottom])
+
+        let withStageManager = DockBarPosition.choices(
+            current: .bottom,
+            available: DockBarPosition.available(stageManagerActive: true)
+        )
+        XCTAssertEqual(withStageManager.map(\.position), [.bottom, .left, .right], "三条边都要列出来")
+        XCTAssertEqual(withStageManager.map(\.isEnabled), [true, false, true], "不能用的置灰")
+    }
+
     // MARK: - DockBar 解码兼容
 
     func testDockBarDecodingToleratesMissingFields() throws {

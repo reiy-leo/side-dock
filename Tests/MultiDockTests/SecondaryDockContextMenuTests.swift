@@ -3,39 +3,45 @@ import XCTest
 
 /// 次级条右键菜单（2026-10-06）：屏幕位置快捷切换。
 ///
-/// 三层都验：菜单条目纯逻辑（builder，与设置页 `positionOptions(for:)` 同口径）→
-/// NSMenu 装配与 target 分发（真窗口见证位，rules.md「见证位」教训）→
-/// `AppState.setDockBarPosition` 落点（与设置页同一 `dockBarEdited` 通路）。
+/// 三层都验：菜单条目纯逻辑（`DockBarPosition.choices`，与设置页位置下拉**共用同一口径**——
+/// 三条边都列出、不能用的灰掉）→ NSMenu 装配与 target 分发（真窗口见证位，rules.md
+/// 「见证位」教训）→ `AppState.setDockBarPosition` 落点（与设置页同一 `dockBarEdited` 通路）。
 @MainActor
 final class SecondaryDockContextMenuTests: XCTestCase {
 
     // MARK: - 菜单条目（纯逻辑）
 
-    func testItemsOfferAllPositionsAndCheckmarkCurrent() {
-        let items = SecondaryDockContextMenuBuilder.items(
+    func testChoicesOfferAllPositionsAndCheckmarkCurrent() {
+        let choices = DockBarPosition.choices(
             current: .bottom,
             available: DockBarPosition.available(stageManagerActive: false)
         )
-        XCTAssertEqual(items.map(\.position), [.bottom, .left, .right])
-        XCTAssertEqual(items.map(\.isCurrent), [true, false, false], "勾标只在当前位置上")
+        XCTAssertEqual(choices.map(\.position), [.bottom, .left, .right])
+        XCTAssertEqual(choices.map(\.isCurrent), [true, false, false], "勾标只在当前位置上")
+        XCTAssertEqual(choices.map(\.isEnabled), [true, true, true], "三条边都可用")
     }
 
-    func testItemsExcludeLeftWhileStageManagerActive() {
-        let items = SecondaryDockContextMenuBuilder.items(
+    func testChoicesGrayOutLeftWhileStageManagerActive() {
+        let choices = DockBarPosition.choices(
             current: .bottom,
             available: DockBarPosition.available(stageManagerActive: true)
         )
-        XCTAssertEqual(items.map(\.position), [.bottom, .right], "台前调度开着时菜单里不出现左侧")
+        XCTAssertEqual(choices.map(\.position), [.bottom, .left, .right],
+                       "不能用的选项**灰掉、不消失**（2026-10-06 用户规格）")
+        XCTAssertEqual(choices.map(\.isEnabled), [true, false, true], "台前调度占左缘：左侧置灰")
     }
 
-    func testItemsKeepCurrentVisibleWhenItIsNotAvailable() {
-        // 台前调度开着，但这根栏本来就存着 .left：现状要如实展示（勾在左侧上），用户至少能改走。
-        let items = SecondaryDockContextMenuBuilder.items(
+    func testChoicesKeepCurrentCheckedEvenWhenItIsNotAvailable() {
+        // 台前调度开着，但这根栏本来就存着 .left：现状要如实展示（勾在左侧上、但灰掉），
+        // 用户至少能改走。
+        let choices = DockBarPosition.choices(
             current: .left,
             available: DockBarPosition.available(stageManagerActive: true)
         )
-        XCTAssertEqual(items.map(\.position), [.left, .bottom, .right])
-        XCTAssertEqual(items.first?.isCurrent, true)
+        XCTAssertEqual(choices.map(\.position), [.bottom, .left, .right])
+        let left = choices.first { $0.position == .left }
+        XCTAssertEqual(left?.isCurrent, true)
+        XCTAssertEqual(left?.isEnabled, false)
     }
 
     // MARK: - 窗口装配（见证位：菜单真的接到 onPositionSelected）
@@ -60,6 +66,7 @@ final class SecondaryDockContextMenuTests: XCTestCase {
         let menu = window.makeContextMenu()
         XCTAssertEqual(menu.items.map(\.title), ["底部", "左侧", "右侧"])
         XCTAssertEqual(menu.items.map(\.state), [.off, .off, .on], "勾标跟快照带的当前位置走")
+        XCTAssertEqual(menu.items.map(\.isEnabled), [true, true, true])
 
         // 走真实的 target/action 分发链（不走便利闭包），防「菜单装好了但动作没接上」的静默断线。
         _ = menu.items[0].target?.perform(menu.items[0].action!, with: menu.items[0])
@@ -67,7 +74,7 @@ final class SecondaryDockContextMenuTests: XCTestCase {
         XCTAssertEqual(receivedID, barID, "选择要带着快照里的栏 ID 落到 AppState")
     }
 
-    func testWindowMenuIsBuiltFreshEachRightClick() {
+    func testWindowMenuGrayOutsLeftWhileStageManagerIsActive() {
         let window = SecondaryDockWindow()
         var stageManagerActive = false
         window.availablePositionsProvider = {
@@ -78,11 +85,11 @@ final class SecondaryDockContextMenuTests: XCTestCase {
             isVertical: false
         )
 
-        XCTAssertEqual(window.makeContextMenu().items.count, 3)
+        XCTAssertEqual(window.makeContextMenu().items.map(\.isEnabled), [true, true, true])
         stageManagerActive = true
         XCTAssertEqual(
-            window.makeContextMenu().items.count, 2,
-            "菜单每次右键现建 —— 台前调度开/关即时反映到可选位置"
+            window.makeContextMenu().items.map(\.isEnabled), [true, false, true],
+            "菜单每次右键现建 —— 台前调度开/关即时反映到可选位置（灰掉左侧、不消失）"
         )
     }
 

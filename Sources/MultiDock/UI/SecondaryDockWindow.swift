@@ -23,26 +23,6 @@ protocol SecondaryDockPresenting: AnyObject {
     var currentAlpha: CGFloat { get }
 }
 
-/// 右键菜单的条目集合（2026-10-06）：屏幕位置快捷切换。**纯函数**。
-///
-/// 与设置页 `DockBarsTab.positionOptions(for:)` 同一口径：可选位置
-/// （台前调度开着避开左）之外，栏当前存着的位置即使不在可选清单里也要插回去 ——
-/// 勾标如实展示现状，用户至少能从「左侧（台前调度占用的那边）」改走。
-enum SecondaryDockContextMenuBuilder {
-    struct Item: Equatable {
-        let position: DockBarPosition
-        let isCurrent: Bool
-    }
-
-    static func items(current: DockBarPosition, available: [DockBarPosition]) -> [Item] {
-        var options = available
-        if !options.contains(current) {
-            options.insert(current, at: 0)
-        }
-        return options.map { Item(position: $0, isCurrent: $0 == current) }
-    }
-}
-
 /// 贴在原生 Dock 内侧的次级条窗口。
 ///
 /// 窗口层配方沿用 `HudToastWindow`（那条配方每一条都是踩过坑的）：
@@ -239,18 +219,21 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
         menu.title = L("屏幕位置", "Screen Position")
-        for item in SecondaryDockContextMenuBuilder.items(
+        for choice in DockBarPosition.choices(
             current: currentPosition,
             available: availablePositionsProvider()
         ) {
             let menuItem = NSMenuItem(
-                title: item.position.displayName,
+                title: choice.position.displayName,
                 action: #selector(SecondaryDockMenuTarget.positionChosen(_:)),
                 keyEquivalent: ""
             )
             menuItem.target = menuTarget
-            menuItem.representedObject = item.position.rawValue
-            menuItem.state = item.isCurrent ? .on : .off
+            menuItem.representedObject = choice.position.rawValue
+            menuItem.state = choice.isCurrent ? .on : .off
+            // 不可用项**灰掉、不消失**（2026-10-06 用户规格：不能用的选项灰掉）——
+            // 与设置页位置下拉同一口径。
+            menuItem.isEnabled = choice.isEnabled
             menu.addItem(menuItem)
         }
         return menu

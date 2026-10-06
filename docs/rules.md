@@ -571,6 +571,21 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
    在 `MULTIDOCK_UI_SNAPSHOT=1` 下跑——`cacheDisplay` 离屏，零权限，扫圆点对比度 ink bbox
    与侧边栏图标列，别只信 frame）。
 
+### 2026-10-06 输入框宽度与位置下拉的新坑（应用栏）
+
+1. **`NSTextFieldCell` 自带左右各 2pt 的行内边距，算框宽必须计入**：`NameField` 的
+   「10 个中文字宽」先按「文本实测宽 129 + 容器内边距 14」给 146pt，**渲染仍差 1pt 截成
+   省略号**（`ten-cjk` 探针实测）；`cell.cellSize(forBounds:)` 对 10 字要 133pt，比文本宽
+   多 4pt。最终 148pt。守卫 `NameFieldTests` 直接用运行时 `cellSize` 核对算式 ——
+   **别再手调这个数字**，字体度量变了要让它红在测试上。
+2. **位置选项的"灰掉"不是"过滤掉"**：`DockBarPosition.available(...)` 是过滤集合
+   （运行时逻辑用），UI 呈现要的是 `DockBarPosition.choices(current:available:)`
+   （三条边都列 + `isEnabled`）—— 2026-10-06 用户规格明确「不能用的 option 灰掉」。
+   设置页下拉与条上右键菜单**必须共用 choices**（历史教训：两处口径分叉后，
+   右键菜单还在过滤、设置页已灰掉）。当前值即使不可用也勾上（改走可以，改回来不行）。
+3. **`Menu` + `Toggle` 做下拉的勾选态**：`Picker` 的关闭态与菜单行共用视图且没有勾选态；
+   单选语义用 `Binding<Bool>`（get 比较、set 仅在 `isOn` 时落）——与桌面下拉同一套。
+
 ---
 
 # 已解决问题台账（D1–D26，留档别重复查；编号接 AGENTS.md §6.3）

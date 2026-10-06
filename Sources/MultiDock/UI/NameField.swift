@@ -19,6 +19,18 @@ struct NameField: NSViewRepresentable {
     let placeholder: String
     var maxLength: Int = DesktopNaming.maxLength
     var width: CGFloat = 160
+
+    /// 「10 个中文字符」宽的框宽（2026-10-06 用户规格：应用栏里的 Dock 栏名输入框
+    /// 要更宽一点、默认为 10 个中文字宽 —— 名字上限正好 10 字素簇，10 个字不该出省略号）。
+    ///
+    /// 实测（系统字体 13pt，全是真实渲染量出来的，不是估的）：
+    /// - 一个全角字素簇步进 ≈ 12.9pt → 10 字 ≈ 129pt；
+    /// - `NSTextFieldCell` 自带左右各 2pt 的行内边距（`cellSize` 比文本宽 +4pt ——
+    ///   只按文本宽给框会差 1pt 截成省略号，踩过）；
+    /// - 容器左右内边距 7×2 = 14pt；
+    /// - 再留 ~3pt 给编辑态光标 / 抗锯齿 → **148pt**。
+    /// 守卫：`NameFieldTests` 用运行时字体测量核对这条算式（字体换了会红，而不是悄悄截断）。
+    static let tenCharacterWidth: CGFloat = 148
     /// 提交（回车 / 失焦）回调。**返回模型最终接受的名字**——模型可能归一化或拒绝
     /// （空名保持原值 / 清空桌面名回落「桌面 N」），输入框用它对齐回真实值。
     let onCommit: (String) -> String
@@ -106,7 +118,10 @@ final class NameFieldContainer: NSView {
 
     private static let height: CGFloat = 26
     private static let cornerRadius: CGFloat = 7
-    private static let horizontalPadding: CGFloat = 7
+    /// 文本距框边（左右各一份）；`NameField.tenCharacterWidth` 的算式与守卫测试都引用它。
+    static let horizontalPadding: CGFloat = 7
+    /// 与 `field.font` 同款字号 —— 守卫测试要按同一字号做文本测量。
+    static let fontSize: CGFloat = 13
 
     init() {
         super.init(frame: .zero)
@@ -114,7 +129,7 @@ final class NameFieldContainer: NSView {
         field.isBezeled = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: 13)
+        field.font = .systemFont(ofSize: Self.fontSize)
         field.usesSingleLineMode = true
         field.lineBreakMode = .byTruncatingTail
         addSubview(field)

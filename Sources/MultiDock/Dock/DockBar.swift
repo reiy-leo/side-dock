@@ -26,6 +26,21 @@ enum DockBarPosition: String, Codable, Sendable, CaseIterable {
     static func available(stageManagerActive: Bool) -> [DockBarPosition] {
         allCases.filter { !(stageManagerActive && $0 == .left) }
     }
+
+    /// 位置选择项的呈现模型（设置页下拉与条上右键菜单**共用同一口径**，2026-10-06 用户规格：
+    /// 不能用的选项**灰掉、不消失**）。
+    struct Choice: Equatable {
+        let position: DockBarPosition
+        let isCurrent: Bool
+        let isEnabled: Bool
+    }
+
+    /// 三条屏幕边**都列出**：`isEnabled = available.contains(position)`（台前调度占左缘时
+    /// 「左侧」灰掉，而不是从列表里消失 —— 用户能看到它、也能看懂为什么不能选）；
+    /// 勾标在当前位置上 —— 即使它已不可用也如实展示（改走可以，改回来不行）。
+    static func choices(current: DockBarPosition, available: [DockBarPosition]) -> [Choice] {
+        allCases.map { Choice(position: $0, isCurrent: $0 == current, isEnabled: available.contains($0)) }
+    }
 }
 
 /// 一根 Dock 栏（桌面 Tab 编辑的实体）：名字 + 屏幕位置 + 绑定的桌面 + 图标。

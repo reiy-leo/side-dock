@@ -100,7 +100,8 @@ struct DockBarsTab: View {
             NameField(
                 value: bar.name,
                 placeholder: L("名称", "Name"),
-                width: 100,
+                // 10 个中文字宽（2026-10-06 用户规格）——名字上限就是 10 字素簇。
+                width: NameField.tenCharacterWidth,
                 onCommit: { raw in
                     state.renameDockBar(bar.id, to: raw)
                     return state.dockBar(id: bar.id)?.name ?? bar.name
@@ -215,27 +216,25 @@ struct DockBarsTab: View {
         )
     }
 
-    /// 位置分段按钮。台前调度开着时左不在选项里（其窗口条占屏幕左缘）；
-    /// 已经存成左的栏仍会把当前值显示出来（可以改走，改回来不行）。
+    /// 位置下拉（2026-10-06 用户规格：分段控件改下拉列表；**不能用的选项灰掉、不消失**）。
+    /// 与条上右键菜单**同一口径**（共用 `DockBarPosition.choices`）：三条边都列出，
+    /// 台前调度占左缘时「左侧」置灰；勾标在当前位置上 —— 即使它已不可用也如实展示
+    /// （改走可以，改回来不行）。
     private func positionPicker(_ bar: DockBar) -> some View {
-        Picker("", selection: positionBinding(for: bar)) {
-            ForEach(positionOptions(for: bar), id: \.self) { position in
-                Text(position.displayName).tag(position)
+        let choices = DockBarPosition.choices(current: bar.position, available: state.availableBarPositions)
+        return Menu {
+            ForEach(choices, id: \.position) { choice in
+                Toggle(choice.position.displayName, isOn: positionBinding(for: bar, at: choice.position))
+                    .disabled(!choice.isEnabled)
             }
+        } label: {
+            Text(bar.position.displayName)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .labelsHidden()
-        .pickerStyle(.segmented)
-        .frame(width: 132)
-        .help(L("栏贴在哪条屏幕边。台前调度开启时自动避开左侧。",
-                "Which screen edge the bar sticks to. The left edge is avoided while Stage Manager is on."))
-    }
-
-    private func positionOptions(for bar: DockBar) -> [DockBarPosition] {
-        var options = state.availableBarPositions
-        if !options.contains(bar.position) {
-            options.insert(bar.position, at: 0)
-        }
-        return options
+        .frame(width: 96)
+        .help(L("栏贴在哪条屏幕边。台前调度开启时「左侧」选项置灰。",
+                "Which screen edge the bar sticks to. “Left” is greyed out while Stage Manager is on."))
     }
 
     // MARK: - 选中栏的编辑器
@@ -332,14 +331,20 @@ struct DockBarsTab: View {
         )
     }
 
-    private func positionBinding(for bar: DockBar) -> Binding<DockBarPosition> {
+    /// 下拉里单项的开关绑定：勾选它 = 把栏移到该位置。只允许移到**可用**的位置
+    /// （不可用项在菜单里已置灰，这里是第二道闸）；点当前项不重复落盘。
+    private func positionBinding(for bar: DockBar, at position: DockBarPosition) -> Binding<Bool> {
         Binding(
-            get: { bar.position },
-            set: { newValue in
-                guard newValue != bar.position, let current = state.dockBar(id: bar.id) else { return }
+            get: { bar.position == position },
+            set: { isOn in
+                guard isOn,
+                      bar.position != position,
+                      state.availableBarPositions.contains(position),
+                      let current = state.dockBar(id: bar.id)
+                else { return }
                 var updated = current
-                updated.position = newValue
-                state.dockBarEdited(updated, reason: L("位置改为\(newValue.displayName)", "Position changed to \(newValue.displayName)"))
+                updated.position = position
+                state.dockBarEdited(updated, reason: L("位置改为\(position.displayName)", "Position changed to \(position.displayName)"))
             }
         )
     }
