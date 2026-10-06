@@ -119,7 +119,11 @@ struct DockBarEditor: View {
                     target: tile,
                     currentDragging: { dragging },
                     apps: $bar.apps,
-                    onFinish: { onCommit(bar, L("调整「\(bar.name)」的图标顺序", "Reordered icons in “\(bar.name)”")) }
+                    // 落下即清 `dragging`：它同时驱动悬停高亮，留着会让被拖的图标一直淡着色。
+                    onFinish: {
+                        dragging = nil
+                        onCommit(bar, L("调整「\(bar.name)」的图标顺序", "Reordered icons in “\(bar.name)”"))
+                    }
                 )
             )
             .contextMenu {
@@ -160,7 +164,10 @@ struct DockBarEditor: View {
             delegate: BarAppendDropDelegate(
                 currentDragging: { dragging },
                 apps: $bar.apps,
-                onFinish: { onCommit(bar, L("把 App 移到「\(bar.name)」末尾", "Moved an app to the end of “\(bar.name)”")) }
+                onFinish: {
+                    dragging = nil
+                    onCommit(bar, L("把 App 移到「\(bar.name)」末尾", "Moved an app to the end of “\(bar.name)”"))
+                }
             )
         )
     }
