@@ -9,13 +9,14 @@ final class SettingsTabModel {
     var tab: SettingsTab = .general
 }
 
-/// 设置窗口的六个页（2026-10-06 起侧边栏呈现，系统设置风格；同日「桌面」拆出「应用栏」，
-/// 2026-10-06 第 9 轮「菜单栏」从通用页拆出独立成页）。
+/// 设置窗口的七个页（2026-10-06 起侧边栏呈现，系统设置风格；同日「桌面」拆出「应用栏」，
+/// 2026-10-06 第 9 轮「菜单栏」从通用页拆出独立成页；同日再新增「启动台」页）。
 enum SettingsTab: Hashable {
     case general
     case menuBar
     case appBars
     case desktop
+    case launchpad
     case data
     case about
 }
@@ -45,6 +46,7 @@ struct SettingsView: View {
                 case .menuBar: MenuBarTab(state: state)
                 case .appBars: DockBarsTab(state: state)
                 case .desktop: DesktopsTab(state: state)
+                case .launchpad: LaunchpadTab(state: state)
                 case .data: DataView(state: state)
                 case .about: AboutTab(state: state)
                 }
@@ -70,6 +72,7 @@ struct SettingsView: View {
                 Label(L("菜单栏", "Menu Bar"), systemImage: "menubar.rectangle").tag(SettingsTab.menuBar)
                 Label(L("应用栏", "Dock Bars"), systemImage: "dock.rectangle").tag(SettingsTab.appBars)
                 Label(L("桌面", "Desktops"), systemImage: "rectangle.3.group").tag(SettingsTab.desktop)
+                Label(L("启动台", "Launchpad"), systemImage: "square.grid.2x2").tag(SettingsTab.launchpad)
                 Label(L("数据", "Data"), systemImage: "externaldrive").tag(SettingsTab.data)
             }
         }

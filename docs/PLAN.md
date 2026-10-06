@@ -1000,6 +1000,66 @@ struct AppSettings: Codable {
 核验 `layer=19` 半露 frame 逐像素吻合（实验 21）、启动对齐日志、切桌面零重启日志（v3.6.1/2）；
 hover/点击/右键菜单/方案 ② 与手势预隐藏切桌面手感归入用户手测（A11/A12）。
 
+### 3.13 「启动台」页（2026-10-06 新增，用户规格）
+
+**用户原话**：「如果 macOS 26 以下系统，那么从 Launchpad 中获取所有的文件夹（名称、包含的
+apps），单独一个"启动台"tab｜每个文件夹都可以：添加到某个 Dock、替换某个 Dock」。
+
+**闸门**：**macOS 26 起系统用「应用程序」取代了启动台**，那份按文件夹编排的数据不复存在 ——
+本页只在 26 以下可用（`LaunchpadSupport.hasLaunchpad(majorVersion:)`，版本号来自
+`ProcessInfo.operatingSystemVersion`）。26+ 时页面显示一段说明，不读数据库、不给操作。
+
+**数据源（只读，零权限）**：启动台自己的 SQLite 库
+`$DARWIN_USER_DIR/com.apple.dock.launchpad/db/db`（15.8.1 实测，WAL 模式，
+`rw-r--r--` 用户可读）。表结构：
+
+- `items(rowid, type, parent_id, ordering)` —— `type 1` 根 / `2` 文件夹 / `3` 页 / `4` App，
+  `parent_id` + `ordering` 构成目录树与**屏幕顺序**；
+- `apps(item_id, title, bundleid, storeid, bookmark)` —— 名称、bundle id 与 CFURL bookmark；
+- `groups(item_id, title)` —— 文件夹（与文件夹内页）的名字。
+
+**读取**：一条递归 CTE 物化「根 → … → 节点」的路径（每层 `printf('%09d.', ordering)`），
+文件夹按路径排序；App 递归时继承「最近一个 `type = 2` 祖先的 rowid」归到所属文件夹，
+按路径排序 —— 得到与启动台屏幕一致的文件夹顺序与文件夹内顺序（含多页文件夹）。
+只读打开（`SQLITE_OPEN_READONLY`）+ `busy_timeout 1s`，**不写一个字节**（验收里有字节比对）。
+
+**定位**（`LaunchpadResolver`）：记录 → 可写进 Dock 栏的条目：
+
+1. bookmark 优先：`URL(resolvingBookmarkData:)` 直接解真实路径（15.8.1 真机 **160/160**，
+   含 `/System/Volumes/Preboot/…` 的 cryptex 路径）；
+2. bundle id 索引兜底（仅当有记录走兜底时才扫盘）：`/Applications`、`/System/Applications`、
+   `/System/Applications/Utilities`、`~/Applications`，`skipsPackageDescendants` 不钻 App 包；
+3. 解析出的路径 → `DockStripRules.tile(forAppAt:)` 造条目（**与访达拖入同一口径**，
+   所以原生 Dock 排除规则、栏上限、写入流水线全都原样适用）。
+   同一路径在文件夹内出现两行时去重（真机有 iWork 双版本同名残留）；定位不到的条目
+   **照数保留**并计入「N 个定位不到」，不静默丢。
+
+**两个动作**（`LaunchpadImport` 纯函数 + `AppState` 接线，都走既有的 `dockBarEdited` 落盘通路）：
+
+| 动作 | 语义 | 账 |
+| --- | --- | --- |
+| **添加到某个 Dock** | 文件夹里的 App **并入**目标栏末尾，原有顺序与内容不动 | added / 栏里已有 / 原生已固定 / 定位不到 / 超上限 |
+| **替换某个 Dock** | 清空目标栏，换成文件夹的内容 | 前后数量 + 同样的跳过账 |
+
+三道闸（两个动作共用）：定位不到的跳过；**已固定在原生 Dock 的跳过**（2026-10-06 既有规则，
+排除集**只在冻结模式生效** —— 未冻结时原生 Dock 就是我们写的内容，拿它排除会把栏清空）；
+每栏 `DockBar.maxApps`(15) 截断。**一个都加不进去 / 没有可用内容 = 如实报失败**，
+替换失败时**目标栏一个图标都不动**（不做破坏性清空）。跳过项写进结果行（"跳过：N 个栏里已有、
+M 个已固定在原生 Dock…"）。
+
+**UI（`LaunchpadTab`，侧边栏第七页）**：整页滚动，每行 = 一个文件夹（名称 + 「N 个 App
+（M 个定位不到）」+ 前 10 个图标预览，定位不到的画虚线占位；悬停行底）+ 右侧两个菜单
+「添加到…」「替换…」（菜单项 = `栏名（N 个图标 · 桌面名/未绑定）`）。行下方显示该次操作的
+结果（成功/失败同栏，可关掉）。打开页面即读（`onAppear`），另有「刷新」按钮；
+**同一结果只记一次日志**（切回本页会重读，不灌日志）。文案全部 `L()` 双语。
+
+**可注入**（`LaunchpadLoader`）：`isSystemSupported` / `loadRecords` / `resolve` 三个闭包 ——
+测试不碰真实数据库也不扫真实安装目录；**UI 快照用固定夹具**（不随用户自己的启动台变）。
+
+**验收**：单测 34 例（DB 夹具读顺序/多页/空字段/只读字节/错误分类；解析器 bookmark/兜底/
+去重/未定位；搬运规则 9 例；`AppState` 状态与两动作 13 例）；真机只读验收
+`MULTIDOCK_LAUNCHPAD_ACCEPTANCE=1`（27 文件夹、160 App、定位 160/160、读后字节不变）。
+
 ---
 
 ## 4. 实施阶段与验收（全部完成）

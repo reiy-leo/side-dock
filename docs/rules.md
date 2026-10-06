@@ -586,6 +586,34 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 3. **`Menu` + `Toggle` 做下拉的勾选态**：`Picker` 的关闭态与菜单行共用视图且没有勾选态；
    单选语义用 `Binding<Bool>`（get 比较、set 仅在 `isOn` 时落）——与桌面下拉同一套。
 
+### 2026-10-06 「启动台」页的新坑（读 SQLite + 搬运）
+
+1. **测试夹具里 `sqlite3_bind_text` 必须用 `SQLITE_TRANSIENT`**：Swift 的 `String` 传给
+   C API 是**临时**C 串，析构符给 `nil`（`SQLITE_STATIC`）会在 `step` 前失效 ——
+   实测表现是**所有文本静默变空串**（文件夹名、App 名全是 `""`），夹具坏得很隐蔽。
+   正确写法：`unsafeBitCast(-1, to: sqlite3_destructor_type.self)`；blob 用
+   `sqlite3_bind_blob(statement, n, [UInt8](data), Int32(data.count), transient)`。
+2. **启动台顺序绝不能靠 rowid 或表扫描顺序**：`items` 的 rowid 与屏幕顺序无关，
+   层级里还插着 `type 3` 的页（一个文件夹可多页）。必须递归物化
+   `printf('%09d.', ordering)` 路径再排序；夹具刻意**倒序插入**文件夹，让这一条测得出。
+3. **`confstr(_CS_DARWIN_USER_DIR)` 拿到的路径可以用，但 `String(cString:)` 在这个 SDK
+   上已弃用**（项目要求零警告）：`buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }`
+   再 `String(decoding:as: UTF8.self)`。另外 `NSTemporaryDirectory()` 是 `/var/folders/…`，
+   而 `FileManager.enumerator` 给出的是解析过符号链接的 `/private/var/…` —— 断言路径
+   要 `resolvingSymlinksInPath()` 归一后再比（否则假失败）。
+4. **启动台的 bookmark 是标准 CFURL bookmark**（`book` 魔数），
+   `URL(resolvingBookmarkData:options:[.withoutUI,.withoutMounting])` 直接可解，真机 160/160；
+   `.withoutMounting` 必须有（不能被挂载卷的 bookmark 拖住）。解析出的路径照常可能**过时**
+   （App 被删），所以仍要 `fileExists` 校验 + bundle id 索引兜底。
+5. **扫 bundle id 索引必须 `skipsPackageDescendants`**：不钻 App 包内部，否则 Xcode 等
+   巨型 App 内嵌的一堆 helper .app 会污染索引（同一个 bundle id 命中到内嵌副本）。
+6. **替换语义的失败分支不许清空目标栏**：启动台文件夹里没有可搬内容时返回失败并
+   **原样保留**目标栏（`guard !apps.isEmpty` 在写回**之前**）；只有成功路径才写。
+   这是"不做破坏性动作"的项目规矩在搬运路径的体现。
+7. **UI 快照的启动台数据必须走注入夹具**：`LaunchpadLoader` 三个闭包全可注入
+   （`isSystemSupported` / `loadRecords` / `resolve`）；不注入的话快照会读**用户自己的
+   启动台**，快照不再确定、还会随用户改动而变。
+
 ---
 
 # 已解决问题台账（D1–D26，留档别重复查；编号接 AGENTS.md §6.3）

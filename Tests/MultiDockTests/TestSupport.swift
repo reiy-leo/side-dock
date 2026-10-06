@@ -332,6 +332,47 @@ final class FakeAutoHide: DockAutoHideControlling, @unchecked Sendable {
     }
 }
 
+/// 「启动台」页的替身数据源：测试不碰真实数据库、也不扫真实安装目录。
+///
+/// 三种结果（成功 / 读取失败 / 系统不支持）都能构造；`isSystemSupported` 默认 true ——
+/// 这些用例测的是启动台**在**的时候的行为，系统闸门单独立例。
+func makeFakeLaunchpadLoader(
+    folders: [LaunchpadFolder] = [],
+    error: LaunchpadDatabaseError? = nil,
+    isSystemSupported: Bool = true,
+    resolve: (@Sendable ([LaunchpadFolderRecord]) -> [LaunchpadFolder])? = nil,
+    records: [LaunchpadFolderRecord] = []
+) -> LaunchpadLoader {
+    LaunchpadLoader(
+        isSystemSupported: { isSystemSupported },
+        loadRecords: {
+            if let error { throw error }
+            return records
+        },
+        resolve: { resolve?($0) ?? folders }
+    )
+}
+
+/// 造一个可搬的启动台文件夹（条目直接给 `DockTile`，不碰磁盘）。
+func makeLaunchpadFolder(
+    itemID: Int = 1,
+    name: String,
+    apps: [(title: String, tile: DockTile?)]
+) -> LaunchpadFolder {
+    LaunchpadFolder(
+        itemID: itemID,
+        name: name,
+        apps: apps.map { entry in
+            LaunchpadApp(
+                title: entry.title,
+                bundleIdentifier: entry.tile?.bundleIdentifier ?? "",
+                path: entry.tile.flatMap(DockStripRules.filePath(of:)),
+                tile: entry.tile
+            )
+        }
+    )
+}
+
 /// 给 `FakeDockProcess` 套一层事件记录，让「发信号」进入与 `FakeAutoHide` 共用的时序流。
 final class EventRecordingProcess: DockProcessControlling, @unchecked Sendable {
     let base: FakeDockProcess

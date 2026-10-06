@@ -2071,3 +2071,31 @@ swift scripts/spike-hide-during-anim.swift       # 切换时 orderOut、150 ms �
 **如果将来要再试**（给下一个 session）：判据是**阳性对照 Cmd+Tab** ——
 先跑 `scripts/spike-animated-switch.swift`，若 Cmd+Tab 生效了，说明投递闸门放开、
 这条通道重新可用；若连 Cmd+Tab 都不动，别在参数上浪费时间（实验 7.6 的教训）。
+
+---
+
+## 实验 29：Launchpad 数据库读取 —— 文件夹与顺序全可还原（2026-10-06，**已实现**）
+
+**问题**（用户规格）：macOS 26 以下从 Launchpad 拿到「所有文件夹（名称 + 内含 apps）」。
+
+**结论**：Launchpad 的数据在**普通 SQLite 库**里，`SQLITE_OPEN_READONLY` 直接读得到，
+零权限、零写入 —— 不需要任何私有 API。
+
+| 观测项 | 结果（本机 macOS 15.8.1 / build 24H32） |
+| --- | --- |
+| 库位置 | `$DARWIN_USER_DIR/com.apple.dock.launchpad/db/db`（`confstr(_CS_DARWIN_USER_DIR)`；`~/Library/Application Support/Dock/` 已不存在）。WAL 模式（`db` + `-shm` + `-wal`，`rw-r--r--`） |
+| 表结构 | `items(rowid, uuid, flags, type, parent_id, ordering)`；`apps(item_id, title, bundleid, storeid, category_id, moddate, bookmark)`；`groups(item_id, category_id, title)`；还有 `categories` / `app_sources` / `image_cache` / `downloading_apps` 与 6 个触发器（我们都不碰） |
+| type 语义 | `1` 根（`parent_id = 0`）/ `2` 文件夹 / `3` 页 / `4` App；**App 不直接挂文件夹下**，中间隔一层或多层 `type 3` 页（文件夹可多页） |
+| 数据量 | **27 个文件夹、160 个 App**（列表里是用户/系统建的真实文件夹，「最近添加」「建议」这类系统分区不作为文件夹出现） |
+| 顺序 | 每层自己的 `ordering`；rowid 与屏幕顺序**无关**。递归 CTE 物化路径后顺序与启动台所见一致 |
+| bookmark | blob 以 `book` 魔数开头（标准 CFURL bookmark）；`URL(resolvingBookmarkData:options:[.withoutUI, .withoutMounting], relativeTo: nil)` **解析 160/160 成功**，路径文件全部存在（含 `/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app` 这类 cryptex 路径） |
+| 只读性 | 读前后文件字节**逐字节相同**（`LaunchpadAcceptanceTests` 里有断言）；真机验收 `MULTIDOCK_LAUNCHPAD_ACCEPTANCE=1` |
+
+**实现**：`Launchpad/` 模块（`LaunchpadDatabase` / `LaunchpadResolver` / `LaunchpadImport`）。
+文件夹查询与 App 归属各一条递归 CTE；解析 = bookmark 优先 + bundle id 索引兜底
+（懒建、`skipsPackageDescendants`）。搬运两道动作（并入 / 替换）全走既有 `dockBarEdited` 通路。
+
+**如果将来要再确认**（给下一个 session / 换机器）：只需重跑
+`MULTIDOCK_LAUNCHPAD_ACCEPTANCE=1 swift test --disable-sandbox --filter LaunchpadAcceptanceTests` ——
+它会打印文件夹清单、定位成功率并校验只读。macOS 26+ 上启动台已被「应用程序」取代，
+本页由 `LaunchpadSupport` 闸门显示说明、不读库（无法在 15 的机器上验证 26 的行为）。

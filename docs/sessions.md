@@ -3,6 +3,62 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 66 次）— 新增「启动台」页：读 Launchpad 文件夹，添加到 / 替换任意 Dock 栏
+
+**用户说**：「如果 macOS 26 以下系统，那么从 Launchpad 中获取所有的文件夹（名称、包含的
+apps），单独一个"启动台"tab｜每个文件夹都可以：添加到某个 Dock、替换某个 Dock」。
+
+**侦察（先验证可行性再动工）**：本机 15.8.1，Launchpad 数据库在
+`$DARWIN_USER_DIR/com.apple.dock.launchpad/db/db`（`confstr(_CS_DARWIN_USER_DIR)` 拿 Darwin
+用户目录；`~/Library/Application Support/Dock/` 已经不存在了）。SQLite 直接可开：
+`items(type: 1 根/2 文件夹/3 页/4 App, parent_id, ordering)` + `apps(title, bundleid, bookmark)`
++ `groups(title)`；原型脚本读完 **27 文件夹 / 160 App，`URL(resolvingBookmarkData:)` 解析
+160/160**（含 cryptex 路径）。可行性确认后才开始写代码。
+
+**做了什么**：
+
+1. **`Sources/MultiDock/Launchpad/` 新模块**（4 文件）：
+   - `LaunchpadModels.swift`：`LaunchpadSupport`（**macOS 26 闸门**：`majorVersion < 26`）、
+     记录/展示模型、`LaunchpadLoader`（三个闭包全可注入）、`LaunchpadOperationOutcome`；
+   - `LaunchpadDatabase.swift`：**只读**读库。文件夹顺序与 App 归属用**递归 CTE 物化路径**
+     （每层 `printf('%09d.', ordering)`，App 继承「最近一个 type=2 祖先」）——真实顺序含
+     多页文件夹；`SQLITE_OPEN_READONLY` + `busy_timeout 1s`；错误分
+     missing/openFailed/queryFailed 三类，各带用户能看懂的原因；
+   - `LaunchpadResolver.swift`：**bookmark 优先**解真实路径 → `DockStripRules.tile(forAppAt:)`
+     造条目（与访达拖入同口径）；**bundle id 索引兜底**（懒建，只在有记录走兜底时扫
+     `/Applications` + `/System/Applications(+/Utilities)` + `~/Applications`，
+     `skipsPackageDescendants`）；同路径去重（真机有 iWork 双版本残留）、定位不到的照数保留；
+   - `LaunchpadImport.swift`：搬运纯规则 —— `appended`（并入末尾）/ `replaced`（清空后换），
+     共用三道闸（未定位 / 原生已固定 / 超 15 上限），`Report` 逐项记账。
+2. **`AppState`**：注入 `launchpadLoader`；`refreshLaunchpadFolders()`（系统闸门 → 读 → 解析，
+   **同一结果只记一次日志**，切回本页不灌日志）；`addLaunchpadFolder(_:to:)` 与
+   `replaceDockBar(_:withLaunchpadFolder:)` —— 两个都走既有 `dockBarEdited`
+   （落盘 + 冻结语义 + 次级条刷新都在里面）；**替换失败不清空目标栏**（guard 在写回之前）；
+   跳过项写进结果行（"跳过：N 个栏里已有、M 个已固定在原生 Dock…"）。排除集只在冻结模式生效
+   （与 `nativeDockPinnedKeys` 同口径）。
+3. **`LaunchpadTab`（`UI/LaunchpadTabView.swift`）+ 侧边栏第七页**：每行 = 文件夹
+   （名称 + 「N 个 App（M 个定位不到）」+ 前 10 图标预览、定位不到的虚线占位）+ 两个菜单
+   「添加到…」「替换…」（菜单项带栏名/图标数/绑定桌面）；行下方显示操作结果（可关）；
+   打开即读 + 「刷新」按钮；26+ 显示「这台 Mac 没有启动台」说明。全部 `L()` 双语。
+4. **测试 +34（461 → 495 全绿）**：`LaunchpadTests`（夹具建真 SQLite 库：顺序/多页/空字段/
+   只读字节/错误分类/解析器/搬运规则）；`LaunchpadStateTests`（状态 + 两动作 + 冻结/未冻结
+   排除集 + 失败分支）；真机只读验收 `LaunchpadAcceptanceTests`（`MULTIDOCK_LAUNCHPAD_ACCEPTANCE=1`，
+   实测 **27 文件夹 / 160 App / 定位 160/160 / 读后字节不变**）。UI 快照加 launchpad 页
+   （中/英/亮/暗），数据走**注入夹具**（不随用户启动台变）。
+5. **踩坑记录**（全部写进 rules.md）：夹具 `sqlite3_bind_text` 必须 `SQLITE_TRANSIENT`
+   （否则文本静默全空）；`String(cString:)` 弃用 → `String(decoding:as:)`；
+   `/var` vs `/private/var` 符号链接假失败；快照必须注入夹具。
+6. **文档**：PLAN §3.13（设计）、facts 2 条（数据库位置与结构 / macOS 26 无启动台）、
+   rules.md「启动台新坑」7 条、AGENTS §1 §3 §4 模块地图/测试数/A14、本记录。
+
+**影响 / 未解决**：
+
+- 真机手感归 **A14 手测**（添加到/替换真点一次、刷新、跳过账、26+ 行为没法在本机验）。
+- 已知边界：启动台里「最近添加 / 建议」这类系统分区不是文件夹，不在列表里（规格就是"文件夹"）；
+  文件夹里 App 超过 15 个时超出部分计入「超上限」跳过账。
+
+---
+
 ### 2026-10-06（第 65 次）— 应用栏：栏名输入框宽 = 10 个中文字；位置改下拉（不可用置灰）
 
 **用户说**：「Dock名称input要更宽一点，默认10个中文字符宽度；位置换成下拉列表

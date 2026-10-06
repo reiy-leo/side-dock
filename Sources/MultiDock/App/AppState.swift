@@ -138,6 +138,17 @@ final class AppState {
     private var environmentTask: Task<Void, Never>?
     private var hasReadEnvironment = false
 
+    // MARK: - 启动台（macOS 26 以下）
+
+    /// 启动台数据入口（全部可注入：测试不碰真实数据库、也不扫真实安装目录）。
+    private let launchpadLoader: LaunchpadLoader
+    /// 最近一次读取到的启动台文件夹（屏幕顺序）。
+    private(set) var launchpadFolders: [LaunchpadFolder] = []
+    /// 「启动台」页的数据状态（驱动 UI：系统不支持 / 读不到 / 已加载）。
+    private(set) var launchpadStatus: LaunchpadStatus = .notLoaded
+    /// 上次记过的读取日志键：同一结果只记一次（每次切回本页都会重读，重复灌日志没有信息量）。
+    private var lastLaunchpadLogKey: String?
+
     // MARK: - 数据（导出 / 导入）与更新检查
 
     /// 最近一次数据操作（导出 / 导入）的一句话结果，数据页直接显示。
@@ -179,6 +190,7 @@ final class AppState {
         synthesizer: (any SpaceStepSynthesizing)? = nil,
         presenceMonitor: DockPresenceMonitor? = nil,
         fileLog: FileLogSink = FileLogSink(),
+        launchpadLoader: LaunchpadLoader = .live,
         environmentReader: @escaping () -> EnvironmentReading = {
             EnvironmentReading(
                 stageManagerActive: StageManagerStatus.isActive(),
@@ -206,6 +218,7 @@ final class AppState {
         self.baselineStore = baselineStore
         self.injectedPresenceMonitor = presenceMonitor
         self.fileLog = fileLog
+        self.launchpadLoader = launchpadLoader
         self.environmentReader = environmentReader
         observer.onActiveSpaceChanged = { [weak self] space in
             guard let self else { return }
@@ -1284,6 +1297,156 @@ final class AppState {
         snapshot.position = bar.position
         snapshot.barID = bar.id
         return snapshot
+    }
+
+    // MARK: - 启动台（macOS 26 以下；「启动台」Tab）
+
+    /// 重读启动台数据库并解析（打开「启动台」页时调用，「刷新」按钮也走它）。
+    ///
+    /// 系统闸门在最前：macOS 26 起没有启动台，状态直接给 `.unsupportedSystem`，
+    /// 连数据库路径都不碰。读 + 解析都在主线程（一次全量读实测毫秒级；兜底的
+    /// bundle id 索引只在有记录定位不到时才扫盘）。
+    func refreshLaunchpadFolders() {
+        guard launchpadLoader.isSystemSupported() else {
+            launchpadFolders = []
+            launchpadStatus = .unsupportedSystem
+            logLaunchpadOnce(
+                key: "unsupported",
+                level: .info,
+                message: L("本机系统没有启动台（macOS 26 起由「应用程序」取代），「启动台」页不可用",
+                           "This macOS has no Launchpad (replaced by Applications in macOS 26); the Launchpad tab is unavailable")
+            )
+            return
+        }
+        do {
+            let records = try launchpadLoader.loadRecords()
+            launchpadFolders = launchpadLoader.resolve(records)
+            launchpadStatus = .loaded
+            let appCount = launchpadFolders.reduce(0) { $0 + $1.apps.count }
+            logLaunchpadOnce(
+                key: "ok-\(launchpadFolders.count)-\(appCount)",
+                level: .info,
+                message: L("启动台：读到 \(launchpadFolders.count) 个文件夹、共 \(appCount) 个 App",
+                           "Launchpad: \(launchpadFolders.count) folder(s), \(appCount) app(s)")
+            )
+        } catch let error as LaunchpadDatabaseError {
+            launchpadFolders = []
+            launchpadStatus = .unavailable(error.userMessage)
+            logLaunchpadOnce(key: "err-\(error.userMessage)", level: .warning, message: error.userMessage)
+        } catch {
+            launchpadFolders = []
+            launchpadStatus = .unavailable(error.localizedDescription)
+            logLaunchpadOnce(
+                key: "err-\(error.localizedDescription)",
+                level: .warning,
+                message: L("启动台读取失败：\(error.localizedDescription)", "Launchpad read failed: \(error.localizedDescription)")
+            )
+        }
+    }
+
+    /// 同一结果只记一次日志（每次切回本页都会重读；重复灌日志没有信息量）。
+    private func logLaunchpadOnce(key: String, level: LogEntry.Level, message: String) {
+        guard lastLaunchpadLogKey != key else { return }
+        lastLaunchpadLogKey = key
+        append(level, message)
+    }
+
+    /// 「添加到某个 Dock」：把启动台文件夹里的 App **并入**目标栏末尾。
+    func addLaunchpadFolder(_ folder: LaunchpadFolder, to barID: UUID) -> LaunchpadOperationOutcome {
+        guard let bar = dockBar(id: barID) else {
+            return launchpadFailure(L("目标 Dock 栏已不存在（可能在别处删掉了）", "The target Dock bar no longer exists (it may have been deleted elsewhere)"))
+        }
+        let (apps, report) = LaunchpadImport.appended(
+            existing: bar.apps,
+            folder: folder,
+            pinnedIn: launchpadPinnedKeysForImport()
+        )
+        guard report.addedCount > 0 else {
+            let reason: String
+            if folder.apps.isEmpty {
+                reason = L("这个文件夹是空的", "the folder is empty")
+            } else if folder.resolvedApps.isEmpty {
+                reason = L("文件夹里的 App 在这台机器上都定位不到", "none of the folder's apps could be located on this Mac")
+            } else {
+                reason = L("没有可添加的 App", "nothing could be added")
+            }
+            return launchpadFailure(
+                L("启动台「\(folder.displayName)」→「\(bar.name)」：\(reason)", "Launchpad “\(folder.displayName)” → “\(bar.name)”: \(reason)")
+                    + launchpadSkipSuffix(report)
+            )
+        }
+        var updated = bar
+        updated.apps = apps
+        dockBarEdited(updated, reason: L("从启动台「\(folder.displayName)」添加 \(report.addedCount) 个 App",
+                                         "added \(report.addedCount) app(s) from Launchpad “\(folder.displayName)”"))
+        let message = L("已把启动台「\(folder.displayName)」的 \(report.addedCount) 个 App 添加到「\(bar.name)」",
+                        "Added \(report.addedCount) app(s) from Launchpad “\(folder.displayName)” to “\(bar.name)”")
+            + launchpadSkipSuffix(report)
+        append(.info, message)
+        return LaunchpadOperationOutcome(message: message, failed: false)
+    }
+
+    /// 「替换某个 Dock」：清空目标栏，换成启动台文件夹的内容。
+    func replaceDockBar(_ barID: UUID, withLaunchpadFolder folder: LaunchpadFolder) -> LaunchpadOperationOutcome {
+        guard let bar = dockBar(id: barID) else {
+            return launchpadFailure(L("目标 Dock 栏已不存在（可能在别处删掉了）", "The target Dock bar no longer exists (it may have been deleted elsewhere)"))
+        }
+        let (apps, report) = LaunchpadImport.replaced(
+            folder: folder,
+            pinnedIn: launchpadPinnedKeysForImport()
+        )
+        guard !apps.isEmpty else {
+            return launchpadFailure(
+                L("没有替换：「\(folder.displayName)」里没有可用的 App", "Nothing replaced: “\(folder.displayName)” has no usable apps")
+                    + launchpadSkipSuffix(report)
+            )
+        }
+        let before = DockStripRules.barApps(bar.apps)
+        guard apps != before else {
+            return LaunchpadOperationOutcome(
+                message: L("「\(bar.name)」已经就是这个文件夹的内容，未做改动", "“\(bar.name)” already matches this folder; nothing changed"),
+                failed: false
+            )
+        }
+        var updated = bar
+        updated.apps = apps
+        dockBarEdited(updated, reason: L("用启动台「\(folder.displayName)」替换（\(before.count) → \(apps.count) 个图标）",
+                                         "replaced with Launchpad “\(folder.displayName)” (\(before.count) → \(apps.count) icons)"))
+        let message = L("已用启动台「\(folder.displayName)」替换「\(bar.name)」：\(before.count) 个图标 → \(apps.count) 个",
+                        "Replaced “\(bar.name)” with Launchpad “\(folder.displayName)”: \(before.count) → \(apps.count) icons")
+            + launchpadSkipSuffix(report)
+        append(.info, message)
+        return LaunchpadOperationOutcome(message: message, failed: false)
+    }
+
+    /// 搬运的排除集：**冻结模式才有意义** —— 未冻结时原生 Dock 的内容就是我们写下去的
+    /// 栏内容，拿它当排除集会把栏自己清空（与 `nativeDockPinnedKeys` 同一口径）。
+    private func launchpadPinnedKeysForImport() -> Set<String> {
+        settings.freezeNativeDockSwitching ? nativeDockPinnedKeys : []
+    }
+
+    private func launchpadFailure(_ message: String) -> LaunchpadOperationOutcome {
+        append(.warning, message)
+        return LaunchpadOperationOutcome(message: message, failed: true)
+    }
+
+    /// 跳过项的说明后缀（重复 / 原生已固定 / 定位不到 / 超上限），没有跳过项时为空串。
+    private func launchpadSkipSuffix(_ report: LaunchpadImport.Report) -> String {
+        var parts: [String] = []
+        if report.duplicateCount > 0 {
+            parts.append(L("\(report.duplicateCount) 个栏里已有", "\(report.duplicateCount) already in the bar"))
+        }
+        if !report.pinnedSkipped.isEmpty {
+            parts.append(L("\(report.pinnedSkipped.count) 个已固定在原生 Dock", "\(report.pinnedSkipped.count) pinned in the native Dock"))
+        }
+        if !report.unresolvedTitles.isEmpty {
+            parts.append(L("\(report.unresolvedTitles.count) 个定位不到", "\(report.unresolvedTitles.count) not found on disk"))
+        }
+        if report.overLimitCount > 0 {
+            parts.append(L("\(report.overLimitCount) 个超出 \(DockBar.maxApps) 个上限", "\(report.overLimitCount) over the \(DockBar.maxApps)-icon limit"))
+        }
+        guard !parts.isEmpty else { return "" }
+        return L("（跳过：\(parts.joined(separator: "、"))）", " (skipped: \(parts.joined(separator: ", ")))")
     }
 
     // MARK: - 数据（导出 / 导入，数据 Tab）

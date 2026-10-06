@@ -37,6 +37,7 @@ final class UISnapshotTests: XCTestCase {
 
             for (tab, name) in [(SettingsTab.general, "general"), (SettingsTab.menuBar, "menu-bar"),
                                 (SettingsTab.appBars, "app-bars"), (SettingsTab.desktop, "desktop"),
+                                (SettingsTab.launchpad, "launchpad"),
                                 (SettingsTab.data, "data"), (SettingsTab.about, "about")] {
                 tabModel.tab = tab
                 try capture(window, to: outDir.appendingPathComponent("settings-\(name)-\(suffix).png"))
@@ -70,6 +71,7 @@ final class UISnapshotTests: XCTestCase {
 
         for (tab, name) in [(SettingsTab.general, "general"), (SettingsTab.menuBar, "menu-bar"),
                             (SettingsTab.appBars, "app-bars"), (SettingsTab.desktop, "desktop"),
+                            (SettingsTab.launchpad, "launchpad"),
                             (SettingsTab.data, "data"), (SettingsTab.about, "about")] {
             tabModel.tab = tab
             try capture(window, to: outDir.appendingPathComponent("settings-en-\(name).png"))
@@ -204,9 +206,32 @@ final class UISnapshotTests: XCTestCase {
             ),
             provider: FakeSpaceProvider(desktops: spaces, activeSpaceID: 6),
             fileLog: makeTestFileLog(),
+            // 启动台读的是**固定夹具**而不是真机数据库：快照要确定、可复现，
+            // 也不该因为用户改了自己的启动台而变。
+            launchpadLoader: makeFakeLaunchpadLoader(folders: Self.launchpadFixtures()),
             environmentReader: { EnvironmentReading(stageManagerActive: false, dockSide: .bottom) }
         )
         return state
+    }
+
+    /// 启动台页的快照夹具：两三个文件夹、真实系统 App 的图标（含一个定位不到的占位）。
+    private static func launchpadFixtures() -> [LaunchpadFolder] {
+        let calculator = DockStripRules.tile(forAppAt: "/System/Applications/Calculator.app")
+        let notes = DockStripRules.tile(forAppAt: "/System/Applications/Notes.app")
+        let safari = DockStripRules.tile(forAppAt: "/Applications/Safari.app")
+        let weather = DockStripRules.tile(forAppAt: "/System/Applications/Weather.app")
+        let music = DockStripRules.tile(forAppAt: "/System/Applications/Music.app")
+        return [
+            makeLaunchpadFolder(itemID: 1, name: "实用工具", apps: [
+                ("计算器", calculator), ("备忘录", notes), ("天气", weather),
+            ]),
+            makeLaunchpadFolder(itemID: 2, name: "网络", apps: [
+                ("Safari浏览器", safari), ("音乐", music),
+            ]),
+            makeLaunchpadFolder(itemID: 3, name: "", apps: [
+                ("定位不到的例子", nil),
+            ]),
+        ]
     }
 
     private func baseDomain() -> [String: PlistValue] {
