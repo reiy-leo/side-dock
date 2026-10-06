@@ -227,7 +227,9 @@ private struct GeneralTab: View {
 
     var body: some View {
         Form {
-            Section("应用") {
+            // 「应用」+「Dock 应用」+「桌面行为」合并为一节（2026-10-06 用户指令）：
+            // 三块都是「本 App 如何写/管理原生 Dock」的话题（mru-spaces 也是 Dock 域键）。
+            Section("Dock") {
                 // 按钮多、文案长：用自适应换行布局，避免窄窗口下被截断（craft：不许出现省略号）。
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) { applyButtons }
@@ -243,6 +245,29 @@ private struct GeneralTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Toggle("编辑后立即应用", isOn: autoApplyBinding)
+                Toggle("识别真实 Dock 上的手动改动并回存", isOn: autoCaptureBinding)
+                Picker("重载方式", selection: reloadStrategyBinding) {
+                    ForEach(ReloadStrategy.allCases, id: \.self) { strategy in
+                        Text(strategy.displayName).tag(strategy)
+                    }
+                }
+                Text("实测：写偏好后 Dock 不会自己重读，改配置要重启 Dock 进程 —— SIGHUP 约 0.1 秒不可用，SIGTERM 约 0.4 秒。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Toggle("根据最近使用自动重排空间（mru-spaces）", isOn: mruSpacesBinding)
+                    .disabled(state.mruSpaces == nil)
+                Text("本机默认是开的。开着时系统会按最近使用重排桌面顺序，菜单栏的「切到下一个桌面」会变得不符合直觉，建议关掉。这个键不在常规写入范围内 —— 只有你在这里点开关才会改，改完会自动重启一次 Dock 生效。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if state.mruSpaces == nil {
+                    Text("当前 macOS 的 com.apple.dock 里没有这个键，因此不提供开关。")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Section("菜单栏") {
@@ -270,36 +295,12 @@ private struct GeneralTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Section("次级 Dock 条") {
-                Toggle("显示次级 Dock 条", isOn: secondaryDockBinding)
-                Text("每个桌面可以绑定一根 Dock 栏（在「应用栏」页配置）：默认只露一半，鼠标移上去滑出全条，点击图标启动。位置可以贴屏幕底边或侧边（台前调度占用的一侧会自动避开）。没绑栏的桌面只有原生 Dock。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Toggle("冻结原生 Dock 的逐桌面切换", isOn: freezeNativeDockBinding)
-                    .disabled(!state.settings.showSecondaryDock)
-                if state.settings.freezeNativeDockSwitching {
-                    Text("已冻结：本 App 不再改写原生 Dock（切桌面零写入），原生 Dock 保持你自己的样子；每个桌面的差异由绑定到该桌面的 Dock 栏呈现。")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else if !state.settings.showSecondaryDock {
-                    Text("需要先开启「显示次级 Dock 条」——冻结后桌面的差异只能靠次级条看到。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Section("退出行为") {
+            Section("启动、退出与自愈") {
                 Toggle("退出 App 时还原为原始 Dock", isOn: restoreOnQuitBinding)
-                Text("无痕原则：首次运行会把当时的 Dock 完整存为基准快照，退出时自动还原；即使被强杀或崩溃，下次启动也会检测并还原。")
+                Text("无痕原则：首次运行会把当时的 Dock 完整存为基准快照，退出时自动还原；被强杀或崩溃时，下次启动也会自动还原，并在屏幕上给出提示。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Section("启动与自愈") {
                 Toggle("登录时自动启动", isOn: loginItemBinding)
                     .disabled(!LoginItem.isAvailable)
                 Text(state.loginItemStatus)
@@ -311,11 +312,6 @@ private struct GeneralTab: View {
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-
-                Text("强杀自愈：被强杀或崩溃时，下次启动会自动把 Dock 还原为原始状态，并在屏幕上给出提示。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
                 if let summary = state.selfHealSummary {
                     Label(summary, systemImage: "arrow.uturn.backward")
                         .font(.caption)
@@ -326,35 +322,6 @@ private struct GeneralTab: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                 }
-            }
-
-            Section("桌面行为") {
-                Toggle("根据最近使用自动重排空间（mru-spaces）", isOn: mruSpacesBinding)
-                    .disabled(state.mruSpaces == nil)
-                Text("本机默认是开的。开着时系统会按最近使用重排桌面顺序，菜单栏的「切到下一个桌面」会变得不符合直觉，建议关掉。这个键不在常规写入范围内 —— 只有你在这里点开关才会改，改完会自动重启一次 Dock 生效。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if state.mruSpaces == nil {
-                    Text("当前 macOS 的 com.apple.dock 里没有这个键，因此不提供开关。")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Section("Dock 应用") {
-                Toggle("编辑后立即应用", isOn: autoApplyBinding)
-                Toggle("识别真实 Dock 上的手动改动并回存", isOn: autoCaptureBinding)
-                Picker("重载方式", selection: reloadStrategyBinding) {
-                    ForEach(ReloadStrategy.allCases, id: \.self) { strategy in
-                        Text(strategy.displayName).tag(strategy)
-                    }
-                }
-                Text("实测：写偏好后 Dock 不会自己重读，改配置要重启 Dock 进程 —— SIGHUP 约 0.1 秒不可用，SIGTERM 约 0.4 秒。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .formStyle(.grouped)
@@ -428,32 +395,6 @@ private struct GeneralTab: View {
         Binding(
             get: { state.settings.reloadStrategy },
             set: { value in state.updateSettings { $0.reloadStrategy = value } }
-        )
-    }
-
-    private var secondaryDockBinding: Binding<Bool> {
-        Binding(
-            get: { state.settings.showSecondaryDock },
-            set: { value in
-                state.updateSettings { $0.showSecondaryDock = value }
-                // 关掉时立即收窗口；打开时由观察回调刷新。冻结开关跟着失能/恢复
-                // （走同一个入口，解冻的「恢复逐桌面应用」也一并发生）。
-                if !value {
-                    state.setFreezeNativeDockSwitching(false)
-                }
-                state.secondaryDock?.refresh()
-            }
-        )
-    }
-
-    private var freezeNativeDockBinding: Binding<Bool> {
-        Binding(
-            get: { state.settings.freezeNativeDockSwitching },
-            set: { value in
-                // 关向要立刻恢复逐桌面写；开向 = 本 App 停止改写原生 Dock（无需动作）。
-                // 语义在 `AppState.setFreezeNativeDockSwitching` 里，别在这里另写一份。
-                state.setFreezeNativeDockSwitching(value)
-            }
         )
     }
 }
