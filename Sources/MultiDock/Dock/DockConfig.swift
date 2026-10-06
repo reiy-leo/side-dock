@@ -131,6 +131,29 @@ struct DockTile: Codable, Hashable, Sendable {
         return "\(tileType)|\(url)|\(urlType)|\(label)|\(bundle)"
     }
 
+    /// 判断「两个条目是不是同一个 App」用的身份键（2026-10-06 用户规格：原生 Dock 里
+    /// 已固定的 App 不在自定义 Dock 栏里重复出现）。
+    ///
+    /// 与 `normalizedKey` 分开：那个是**指纹**口径（含 label，用于短路"这份配置已生效"），
+    /// 这个只管**身份**。两个信号都算，任一命中即视为同一个 App：
+    /// - `bundle:` 前缀 = bundle id（同一个 App 换路径也算同一个）；
+    /// - `path:` 前缀 = `.app` 路径（去尾斜杠 + 小写 —— macOS 文件系统大小写不敏感）。
+    ///
+    /// 原生条目由 Dock 自己写（带我们不复制的 `GUID` / `book`），所以只能比这几个稳字段；
+    /// label 刻意不参与（同一个 App 在两边可能一个叫「Safari」一个叫「浏览器」）。
+    var appIdentityKeys: Set<String> {
+        var keys: Set<String> = []
+        if let bundle = bundleIdentifier, !bundle.isEmpty {
+            keys.insert("bundle:\(bundle)")
+        }
+        if let url = fileURL, url.isFileURL {
+            var path = url.path
+            while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+            if !path.isEmpty { keys.insert("path:\(path.lowercased())") }
+        }
+        return keys
+    }
+
     /// 按 Dock 的格式合成新条目。**不给 `GUID`**，让 Dock 自己分配（计划 §3.6）。
     ///
     /// - Parameter dockExtra: 真实域里**用户自己拖进来的** App 是 `true`，

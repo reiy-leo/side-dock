@@ -228,6 +228,62 @@ final class AppState {
 
     var dockBars: [DockBar] { settings.dockBars }
 
+    /// 原生 Dock 里当前固定的 App 身份键（`DockTile.appIdentityKeys`）。
+    ///
+    /// 用户规格（2026-10-06）：**原生 Dock 里已固定的 App 不在自定义 Dock 栏里重复显示** ——
+    /// 原生那份每个桌面都能看到，栏只该放"这个桌面额外多出来的"。
+    /// 添加时拦下并给警告（`DockStripRules.addRejectionMessage`），已存在的**自动剔除**。
+    ///
+    /// **只在冻结模式有意义**：未冻结时原生 Dock 的内容就是我们写下去的栏内容，
+    /// 拿它当排除集会把栏自己清空（自噬），所以那时这个集合恒空。
+    private(set) var nativeDockPinnedKeys: Set<String> = []
+
+    /// 这个条目是否已固定在原生 Dock 中（编辑器"添加"路径用它拦下并给警告）。
+    func isPinnedInNativeDock(_ tile: DockTile) -> Bool {
+        !tile.appIdentityKeys.isDisjoint(with: nativeDockPinnedKeys)
+    }
+
+    /// 重读原生 Dock 的固定内容，按新集合清洗所有栏（有变化才落盘）。
+    /// 返回本次自动剔除的条目数。触发点：启动载入、打开设置窗口、原生 Dock 手动改动、冻结开关。
+    @discardableResult
+    func refreshNativeDockPinnedApps(reason: String) -> Int {
+        guard settings.freezeNativeDockSwitching else {
+            // 未冻结：排除集不适用（见属性注释）。清掉，免得解冻那一刻误剔。
+            nativeDockPinnedKeys = []
+            return 0
+        }
+        // 读不到偏好域就什么都不动 —— 拿不到事实时不做破坏性决定。
+        guard let live = dockController.captureLiveConfig() else { return 0 }
+        let keys = DockStripRules.identityKeys(of: live.pinnedApps)
+        guard keys != nativeDockPinnedKeys else { return 0 }
+        nativeDockPinnedKeys = keys
+        return pruneAppsPinnedInNativeDock(reason: reason)
+    }
+
+    /// 清掉所有栏里「已固定在原生 Dock」的 App（落盘一次、逐栏记日志）。返回剔除条数。
+    @discardableResult
+    private func pruneAppsPinnedInNativeDock(reason: String) -> Int {
+        guard !nativeDockPinnedKeys.isEmpty else { return 0 }
+        var bars = settings.dockBars
+        var pruned = 0
+        for index in bars.indices {
+            let (kept, removed) = DockStripRules.removingAppsPinnedInNativeDock(
+                bars[index].apps,
+                nativePinnedKeys: nativeDockPinnedKeys
+            )
+            guard !removed.isEmpty else { continue }
+            bars[index].apps = kept
+            pruned += removed.count
+            append(.info, L("「\(bars[index].name)」里 \(removed.count) 个 App 已固定在原生 Dock 中，已自动剔除：\(removed.map(\.label).joined(separator: "、"))",
+                            "\(removed.count) app(s) in “\(bars[index].name)” are already pinned in the native Dock and were removed: \(removed.map(\.label).joined(separator: ", "))"))
+        }
+        guard pruned > 0 else { return 0 }
+        append(.info, L("按「原生 Dock 已固定的 App 不进自定义栏」规则剔除（\(reason)）", "Removed per the “apps pinned in the native Dock stay out of custom bars” rule (\(reason))"))
+        updateSettings { $0.dockBars = bars }
+        secondaryDock?.refresh()
+        return pruned
+    }
+
     /// 绑定到某个桌面的栏（一个桌面同时只认第一根，`bindDockBar` 保证不重）。
     func dockBar(for space: DesktopSpace) -> DockBar? {
         settings.dockBars.first { $0.spaceID == space.id }
@@ -329,6 +385,18 @@ final class AppState {
 
     /// 一次编辑结束：落盘一次；绑定的桌面是活动桌面时按开关应用 + 刷新条。
     func dockBarEdited(_ bar: DockBar, reason: String) {
+        var bar = bar
+        // 落盘前最后一道闸：任何入口都不许把「已固定在原生 Dock」的 App 留在栏里
+        // （编辑器已经会拦下并给警告，这里是兜底 —— 用户规格 2026-10-06）。
+        let (kept, removed) = DockStripRules.removingAppsPinnedInNativeDock(
+            bar.apps,
+            nativePinnedKeys: settings.freezeNativeDockSwitching ? nativeDockPinnedKeys : []
+        )
+        if !removed.isEmpty {
+            bar.apps = kept
+            append(.warning, L("「\(bar.name)」里 \(removed.count) 个 App 已固定在原生 Dock 中，未加入：\(removed.map(\.label).joined(separator: "、"))",
+                               "\(removed.count) app(s) for “\(bar.name)” are already pinned in the native Dock and were not added: \(removed.map(\.label).joined(separator: ", "))"))
+        }
         updateDockBarInMemory(bar)
         persistConfiguration()
         append(.info, L("Dock 栏「\(bar.name)」已修改：\(reason)", "Dock bar “\(bar.name)” edited: \(reason)"))
@@ -410,9 +478,11 @@ final class AppState {
     }
 
     /// 打开设置窗口时即刷环境（不等 2 s 轮询拍）：台前调度开关与原生 Dock 方位
-    /// 决定位置选项与提示。
+    /// 决定位置选项与提示。顺带重读原生 Dock 的固定内容 —— 用户可能刚在别处
+    /// （原生 Dock 上拖入/拖出）改过，编辑器要靠它拦下重复添加（2026-10-06 用户规格）。
     func prepareSettingsPresentation() {
         refreshEnvironment()
+        refreshNativeDockPinnedApps(reason: L("打开设置窗口", "opening Settings"))
     }
 
     private func startEnvironmentPoll() {
@@ -499,6 +569,9 @@ final class AppState {
         guard settings.freezeNativeDockSwitching != enabled else { return }
         updateSettings { $0.freezeNativeDockSwitching = enabled }
         secondaryDock?.refresh()
+        // 冻结打开 = 原生 Dock 从此归用户，排除集开始生效（并就地剔除栏里的重复项）；
+        // 关闭 = 原生 Dock 由我们写，排除集清空（否则会把自己的内容当成"原生固定"剔掉）。
+        refreshNativeDockPinnedApps(reason: enabled ? L("开启冻结", "freeze enabled") : L("关闭冻结", "freeze disabled"))
         if !enabled, let space = activeSpace {
             applyForDesktopSwitch(space, reason: L("解冻：恢复逐桌面切换", "unfreeze: restore per-desktop switching"))
         }
@@ -524,6 +597,9 @@ final class AppState {
 
         if settings.freezeNativeDockSwitching {
             append(.info, L("冻结模式：本 App 不改写原生 Dock，手动改动不回存", "Frozen mode: the app doesn't rewrite the native Dock; manual edits aren't saved back"))
+            // 改动可能正是"往原生 Dock 里钉了一个 App" —— 重算固定集，栏里若因此出现
+            // 重复项就地剔除（用户规格 2026-10-06）。不写偏好，只动配置。
+            refreshNativeDockPinnedApps(reason: L("原生 Dock 手动改动", "manual change in the native Dock"))
             return
         }
 
@@ -744,6 +820,8 @@ final class AppState {
             persistConfiguration()
         }
         append(.info, L("配置已载入：\(settings.dockBars.count) 根 Dock 栏、\(normalizedBindings.count) 条桌面命名", "Config loaded: \(settings.dockBars.count) Dock bar(s), \(normalizedBindings.count) desktop name(s)"))
+        // 老配置里可能带着"原生 Dock 也有"的 App（本规则上线前加的）——载入时就地剔除。
+        refreshNativeDockPinnedApps(reason: L("载入配置", "loading config"))
     }
 
     func persistConfiguration() {
@@ -1181,7 +1259,16 @@ final class AppState {
     /// 图标尺寸**跟随系统**（2026-10-05 用户规格）：读 `com.apple.dock` 的实时 `tilesize`
     /// （只读不写），钳制到 28–48 防止极端值把条撑破。
     func secondaryDockContent(for space: DesktopSpace?) -> SecondaryDockContentSnapshot? {
-        guard let space, let bar = dockBar(for: space), !bar.apps.isEmpty else { return nil }
+        guard let space, var bar = dockBar(for: space), !bar.apps.isEmpty else { return nil }
+        // 展示路径也过一道「原生 Dock 已固定的不进自定义栏」——配置在运行期被外部改过
+        // （导入、手编 config.json）时，条上不该先冒出来再等剔除（用户规格 2026-10-06）。
+        if settings.freezeNativeDockSwitching, !nativeDockPinnedKeys.isEmpty {
+            bar.apps = DockStripRules.removingAppsPinnedInNativeDock(
+                bar.apps,
+                nativePinnedKeys: nativeDockPinnedKeys
+            ).kept
+            guard !bar.apps.isEmpty else { return nil }
+        }
         let running = Set(
             NSWorkspace.shared.runningApplications
                 .filter { $0.activationPolicy == .regular }
@@ -1248,6 +1335,8 @@ final class AppState {
         persistConfiguration()
 
         refreshDockCapabilities()
+        // 导入的栏里可能带着"原生 Dock 也有"的 App —— 按同一套规则清洗（用户规格 2026-10-06）。
+        refreshNativeDockPinnedApps(reason: L("导入配置", "importing config"))
         secondaryDock?.refresh()
         // 解冻方向要恢复逐桌面写（开向 = 不再写，无需动作）。
         if settings.freezeNativeDockSwitching != previousFreeze,

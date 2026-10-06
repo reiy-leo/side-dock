@@ -231,13 +231,25 @@ struct DockBarsTab: View {
                 }
                 DockBarEditor(
                     bar: barBinding(for: bar),
-                    onCommit: { state.dockBarEdited($0, reason: $1) }
+                    onCommit: { state.dockBarEdited($0, reason: $1) },
+                    // 原生 Dock 已固定的 App 不许加进来（2026-10-06 用户规格）——
+                    // 排除集由 `AppState` 维护（冻结模式有效），这里只透传判断。
+                    isPinnedInNativeDock: { state.isPinnedInNativeDock($0) }
                 )
                 Text(L("从访达拖 .app 进来，或点「＋」添加；拖动排序，拖到垃圾桶移除。栏可以清空，最多 \(DockBar.maxApps) 个，超出 \(DockBar.visibleSlots) 个横向滚动。",
                        "Drag .app bundles in from Finder, or click “+”; drag to reorder, drop on the trash to remove. Bars can be empty; up to \(DockBar.maxApps) icons, scrolling past \(DockBar.visibleSlots)."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                // 冻结模式（原生 Dock 归用户自己）下才提这条规则：未冻结时原生 Dock 的内容
+                // 就是本栏内容，说"原生已固定的不进栏"只会让人困惑。
+                if state.settings.freezeNativeDockSwitching {
+                    Text(L("已固定在原生 Dock 里的 App 不会在这里重复显示（每个桌面本来就能看到它们）——添加时会提示。",
+                           "Apps pinned in the native Dock aren't duplicated here (they're visible on every desktop already) — you'll be told when adding one."))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)

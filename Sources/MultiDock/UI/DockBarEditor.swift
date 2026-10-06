@@ -12,10 +12,15 @@ import UniformTypeIdentifiers
 /// 编辑只改内存（`bar` 绑定）；落盘/应用由 `onCommit` 一次性交给 `AppState`。
 /// ⚠️ 其他项（文件夹/堆栈）不能在这里新建（实验 8：自拼目录条目 Dock 不认领、坏形状崩 Dock）；
 /// 迁移带进来的其他项不在本编辑器显示（原生 Dock 写入时随栏一并写回）。
+///
+/// **原生 Dock 已固定的 App 不进本栏**（2026-10-06 用户规格）：添加时拦下并给警告；
+/// 判断走注入的 `isPinnedInNativeDock`（`AppState` 提供，冻结模式才有排除集）。
 struct DockBarEditor: View {
     @Binding var bar: DockBar
     /// 一次编辑完成（排序落定 / 移除 / 添加）后回调，参数是给日志看的说明。
     var onCommit: (DockBar, String) -> Void
+    /// 该条目是否已固定在原生 Dock 中（true = 不许加进来）。默认 false —— 未冻结/测试构造时无排除集。
+    var isPinnedInNativeDock: (DockTile) -> Bool = { _ in false }
 
     @State private var dragging: String?
     @State private var hovered: String?
@@ -240,6 +245,14 @@ struct DockBarEditor: View {
             }
             guard let tile = DockStripRules.tile(forAppAt: url.path) else {
                 rejection = rejection ?? DockItemRejection.notAnApp.message
+                continue
+            }
+            // 原生 Dock 里已固定的 App：拦下 + 说清为什么（用户规格 2026-10-06）。
+            // 检查放在去重之前 —— 重复项本来就静默跳过，但"原生也有"必须让用户看见。
+            if isPinnedInNativeDock(tile) {
+                let name = tile.label.isEmpty ? (tile.bundleIdentifier ?? L("这个 App", "this app")) : tile.label
+                rejection = rejection ?? L("「\(name)」已固定在原生 Dock 中，不在这里重复显示 —— 先把它从原生 Dock 移除，再加进来。",
+                                           "“\(name)” is already pinned in the native Dock and won't be duplicated here — remove it from the native Dock first.")
                 continue
             }
             guard !apps.contains(where: { $0.normalizedKey == tile.normalizedKey }) else { continue }

@@ -24,6 +24,46 @@ enum DockStripRules {
         return apps.filter { seen.insert($0.normalizedKey).inserted }
     }
 
+    // MARK: - 原生 Dock 已固定的 App（2026-10-06 用户规格）
+
+    /// 一批条目的身份键集合（原生 Dock 侧与栏侧共用同一口径，见 `DockTile.appIdentityKeys`）。
+    static func identityKeys(of apps: [DockTile]) -> Set<String> {
+        apps.reduce(into: Set<String>()) { $0.formUnion($1.appIdentityKeys) }
+    }
+
+    /// 从一栏内容里剔除**已固定在原生 Dock 中**的 App：保留其余条目的顺序与字段。
+    ///
+    /// 用户规格（2026-10-06）：原生 Dock 里固定的 App 不该在自定义 Dock 栏里重复出现 ——
+    /// 原生那一份每个桌面都能看到，栏只负责"这个桌面额外多出来的"。
+    /// 返回拆开的两组，调用方才能如实告知剔除了什么（不留静默改动）。
+    static func removingAppsPinnedInNativeDock(
+        _ apps: [DockTile],
+        nativePinnedKeys: Set<String>
+    ) -> (kept: [DockTile], removed: [DockTile]) {
+        guard !nativePinnedKeys.isEmpty else { return (apps, []) }
+        var kept: [DockTile] = []
+        var removed: [DockTile] = []
+        for tile in apps {
+            if tile.appIdentityKeys.isDisjoint(with: nativePinnedKeys) {
+                kept.append(tile)
+            } else {
+                removed.append(tile)
+            }
+        }
+        return (kept, removed)
+    }
+
+    /// 这个条目能不能加进自定义栏：`nil` = 可以，非 nil = 给用户看的拒绝原因。
+    ///
+    /// 「添加时就要警告」（用户规格）：拦下并说清为什么，以及怎么办 ——
+    /// 静默不入列会让人以为拖拽/选择没生效。
+    static func addRejectionMessage(for tile: DockTile, nativePinnedKeys: Set<String>) -> String? {
+        guard !tile.appIdentityKeys.isDisjoint(with: nativePinnedKeys) else { return nil }
+        let name = tile.label.isEmpty ? (tile.bundleIdentifier ?? L("这个 App", "this app")) : tile.label
+        return L("「\(name)」已固定在原生 Dock 中，自定义 Dock 栏不再重复显示它 —— 先把它从原生 Dock 移除，再添加到这里。",
+                 "“\(name)” is already pinned in the native Dock; custom Dock bars don't duplicate it — remove it from the native Dock first.")
+    }
+
     // MARK: - 其他项（persistent-others：文件夹 / 堆栈，计划 §3.2）
 
     /// 其他项的归一化：按归一化键去重，保留顺序与原始字段。

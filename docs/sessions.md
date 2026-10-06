@@ -3,6 +3,54 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 61 次）— 原生 Dock 里固定的 App 不进自定义栏
+
+**用户说**：「原生dock中固定的app，不要在custom dock中显示，添加时就要警告，并自动剔除这些app」。
+
+**做了什么**：
+
+1. **身份判定**（`DockTile.appIdentityKeys`，`Dock/DockConfig.swift`）：**bundle id 或 `.app` 路径**
+   任一命中即视为同一个 App。路径小写化 + 去尾斜杠（macOS 卷大小写不敏感；原生域名与
+   `makeFileTile` 都带尾斜杠）；**label 不参与** —— 同一个 App 在两边可能名字不同（用户改名 /
+   系统语言不同）。刻意与 `normalizedKey` 分开：那个是**指纹**口径（含 label，用于短路
+   "这份配置已生效"），这个是**身份**口径。
+2. **规则层**（`DockStripRules`）：`identityKeys(of:)`、`removingAppsPinnedInNativeDock(_:nativePinnedKeys:)`
+   （返回 kept/removed 两组，调用方才能如实告知剔除了什么）、`addRejectionMessage(for:nativePinnedKeys:)`
+   （添加时给用户看的警告，点名 App + 说清为什么 + 怎么办）。
+3. **`AppState`**：新增 `nativeDockPinnedKeys` 缓存与 `isPinnedInNativeDock(_:)`；
+   `refreshNativeDockPinnedApps(reason:)` 重读原生 Dock 并就地清洗全部栏（有变化才落盘）。
+   **只在冻结模式生效** —— 未冻结时原生 Dock 的内容就是我们写下去的栏内容，拿它当排除集
+   会把栏自己清空（自噬），集合恒空（这一条写进 rules 与新测试）。
+   **触发点五处**：启动载入配置、打开设置窗口（`prepareSettingsPresentation`）、
+   原生 Dock 手动改动（`handleUserDockEdit` 冻结分支）、冻结开关两个方向、导入配置。
+   **兜底两处**：`dockBarEdited`（落盘唯一入口，任何入口塞进来的重复项都会被拦下 + warning）
+   与 `secondaryDockContent`（展示路径，外部改过的配置不会先在条上冒出来）。
+   读不到偏好域时直接早退 —— 拿不到事实时不做破坏性决定。
+4. **编辑器**（`DockBarEditor`）：新增注入的 `isPinnedInNativeDock` 判断，拖入/选择添加时
+   逐个检查并弹橙色警告（**检查放在去重之前** —— 重复项本来就静默跳过，但"原生也有"必须让用户看见）。
+   `DockBarsTab` 透传该判断，并在页脚加一句规则说明（**仅冻结模式显示**：未冻结时说这条只会让人困惑）。
+5. **测试**：+14 例 —— `DockStripRulesTests` 加 8 例（身份键 / 换路径同 App / 缺 bundle 走路径 /
+   大小写 / 保序剔除 / 空集 no-op / 警告文案 / 未固定不警告）；新增 `NativeDockExclusionTests`
+   6 例（载入即剔除并落盘 / 手动改动原生 Dock / 未冻结不生效 / 冻结开关两个方向 /
+   `dockBarEdited` 闸门 / 展示路径过滤）。`FakePreferences` 加 `replaceDomain` 模拟"用户自己改的"。
+   → **452 测试全绿**（438 + 14）。
+6. **真机验证**：加载后日志逐栏剔除 —— 用户三根有内容的栏被剔 3 / 15 / 15 / 2 个重复项
+   （Chrome、ChatGPT、Cursor、微信等原生已有的），剩 FlClash / Apple Configurator / Kindle / AlDente；
+   **原生 Dock 的 15 个 persistent-apps 原样未动**（本 App 从不改写它）。config.json 已落盘。
+7. **文档**：AGENTS（§3 现行行为新条目 + 决策演变 + A13 ⑩ + 测试数）、PLAN §3.7 第 11 轮、
+   rules「原生固定 App 排除的新坑」4 条、本记录。
+
+**影响 / 未解决**：
+
+- **用户的既有配置被就地清洗**（这正是要求："自动剔除这些 app"）：四根栏的内容被剔掉重叠项，
+  LLM / 计划 任务 两根栏因此变空 → 次级条不显示（空栏隐藏）。这是规则的正确结果，
+  不是缺陷 —— 想保留区别得先在原生 Dock 里移除那个 App。
+- 规则**只在冻结模式**（产品默认）生效；未冻结时原生 Dock 的内容由我们写，
+  排除集不适用（且在开关切到未冻结时清空，解冻后不会误剔）。
+- A13 手测追加一项：拖一个原生也有的 App 进栏 → 应看到橙色警告且没加进去。
+
+---
+
 ### 2026-10-06（第 60 次）— 双语界面：支持中文、英文
 
 **用户说**：「支持中文、英文」。

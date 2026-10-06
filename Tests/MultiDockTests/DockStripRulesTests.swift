@@ -160,6 +160,130 @@ final class DockStripRulesTests: XCTestCase {
     }
 }
 
+/// 「原生 Dock 里已固定的 App 不进自定义栏」（2026-10-06 用户规格）——
+/// 纯规则层：身份键口径 + 剔除 + 添加拦截。
+final class NativeDockPinnedExclusionTests: XCTestCase {
+
+    private func tile(_ path: String, label: String, bundle: String? = nil) -> DockTile {
+        DockTile.makeFileTile(
+            url: URL(fileURLWithPath: path, isDirectory: true),
+            label: label,
+            bundleIdentifier: bundle ?? "com.example.\(label.lowercased())"
+        )
+    }
+
+    // MARK: - 身份键
+
+    func testIdentityKeysUseBundleAndPath() {
+        let safari = tile("/Applications/Safari.app", label: "Safari", bundle: "com.apple.Safari")
+
+        XCTAssertEqual(
+            safari.appIdentityKeys,
+            ["bundle:com.apple.Safari", "path:/applications/safari.app"],
+            "bundle 与去尾斜杠、小写化的路径都要有 —— 任一命中即视为同一个 App"
+        )
+    }
+
+    /// 同一个 App 换了个路径（比如从 /Applications 移到 ~/Applications），bundle 相同也要认出。
+    func testIdentityMatchesAcrossDifferentPathsViaBundle() {
+        let native = tile("/Applications/Safari.app", label: "Safari", bundle: "com.apple.Safari")
+        let barSide = tile("/Users/apple/Applications/Safari.app", label: "浏览器", bundle: "com.apple.Safari")
+
+        let (kept, removed) = DockStripRules.removingAppsPinnedInNativeDock(
+            [barSide],
+            nativePinnedKeys: DockStripRules.identityKeys(of: [native])
+        )
+
+        XCTAssertTrue(kept.isEmpty)
+        XCTAssertEqual(removed.map(\.label), ["浏览器"], "label 不同不影响判定（同一个 App 可能两边名字不一样）")
+    }
+
+    /// bundle id 缺失（真实域里少见但不是没有）时，按路径匹配。
+    func testIdentityMatchesByPathWhenBundleIsMissing() {
+        let native = tile("/Applications/Widget.app", label: "Widget", bundle: "com.example.widget")
+        var raw = native.raw
+        var tileData = raw["tile-data"]!.dictionaryValue!
+        tileData.removeValue(forKey: "bundle-identifier")
+        raw["tile-data"] = .dictionary(tileData)
+        let noBundle = DockTile(raw: raw)
+        XCTAssertTrue(noBundle.appIdentityKeys.allSatisfy { $0.hasPrefix("path:") })
+
+        let (_, removed) = DockStripRules.removingAppsPinnedInNativeDock(
+            [tile("/Applications/Widget.app", label: "Widget")],
+            nativePinnedKeys: DockStripRules.identityKeys(of: [noBundle])
+        )
+
+        XCTAssertEqual(removed.count, 1, "路径相同就该命中")
+    }
+
+    /// 大小写不敏感（macOS 卷默认如此）+ 尾斜杠归一。
+    func testIdentityIsCaseAndTrailingSlashInsensitive() {
+        let native = tile("/Applications/Safari.app", label: "Safari", bundle: "com.apple.Safari")
+        let same = tile("/applications/safari.app", label: "Safari", bundle: "com.apple.Safari")
+
+        XCTAssertFalse(
+            native.appIdentityKeys.isDisjoint(with: same.appIdentityKeys),
+            "\(native.appIdentityKeys) vs \(same.appIdentityKeys)"
+        )
+    }
+
+    // MARK: - 剔除
+
+    func testRemovingKeepsOrderAndReportsWhatWasRemoved() {
+        let native = tile("/Applications/Safari.app", label: "Safari", bundle: "com.apple.Safari")
+        let bar = [
+            tile("/Applications/Xcode.app", label: "Xcode"),
+            tile("/Applications/Safari.app", label: "Safari", bundle: "com.apple.Safari"),
+            tile("/Applications/Notes.app", label: "Notes"),
+        ]
+
+        let (kept, removed) = DockStripRules.removingAppsPinnedInNativeDock(
+            bar,
+            nativePinnedKeys: DockStripRules.identityKeys(of: [native])
+        )
+
+        XCTAssertEqual(kept.map(\.label), ["Xcode", "Notes"], "顺序原样保留")
+        XCTAssertEqual(removed.map(\.label), ["Safari"], "剔除了什么要如实报出来")
+    }
+
+    func testEmptyNativeSetIsANoOp() {
+        let bar = [tile("/Applications/Xcode.app", label: "Xcode")]
+
+        let (kept, removed) = DockStripRules.removingAppsPinnedInNativeDock(bar, nativePinnedKeys: [])
+
+        XCTAssertEqual(kept.map(\.label), ["Xcode"])
+        XCTAssertTrue(removed.isEmpty, "没有排除集时一个字都不动")
+    }
+
+    // MARK: - 添加拦截
+
+    func testAddRejectionMessageNamesTheAppAndTheWayOut() {
+        let native = tile("/Applications/Safari.app", label: "Safari", bundle: "com.apple.Safari")
+        let message = DockStripRules.addRejectionMessage(
+            for: tile("/Applications/Safari.app", label: "Safari", bundle: "com.apple.Safari"),
+            nativePinnedKeys: DockStripRules.identityKeys(of: [native])
+        )
+
+        guard let message else {
+            XCTFail("已固定在原生 Dock 的 App 必须有拒绝理由（不留静默失败）")
+            return
+        }
+        XCTAssertTrue(message.contains("Safari"), "要点名是哪个 App：\(message)")
+        XCTAssertTrue(message.contains("原生 Dock"), "要说清为什么、怎么办：\(message)")
+    }
+
+    func testAddRejectionMessageIsNilForAnUnpinnedApp() {
+        XCTAssertNil(
+            DockStripRules.addRejectionMessage(
+                for: tile("/Applications/Xcode.app", label: "Xcode"),
+                nativePinnedKeys: DockStripRules.identityKeys(of: [
+                    tile("/Applications/Safari.app", label: "Safari", bundle: "com.apple.Safari")
+                ])
+            )
+        )
+    }
+}
+
 /// `AppSettings` 的解码必须向前兼容：老配置文件里没有新字段时，
 /// 不能整份回落到默认值 —— 那会把用户已有的设置静默清空。
 final class AppSettingsCodingTests: XCTestCase {

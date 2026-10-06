@@ -503,6 +503,21 @@ Dock 杀了就回来，所以红横幅在本机复现不出来。逻辑由单测
 4. **源图边缘可能有低 alpha 噪声**（本次 1–3/255 散在画布边缘）：生成前把 alpha<8
    的像素清零，否则 bbox 会量到画布边缘。
 
+### 2026-10-06 原生固定 App 排除的新坑（自定义栏不重复显示）
+
+1. **排除集只在冻结模式有效**。未冻结时原生 Dock 的内容就是**我们写下去的栏内容** ——
+   拿它当"原生固定的 App"排除集会把栏自己清空（自噬）。`refreshNativeDockPinnedApps`
+   在未冻结时把集合清空并早退；`setFreezeNativeDockSwitching` 两个方向都要重算。
+2. **身份判定用 bundle id 或路径，别用 `normalizedKey`**。`normalizedKey` 含 `file-label`
+   与 URL 类型 —— 同一个 App 在原生条目与栏条目里 label 可能不同（用户改过名、或系统语言不同）。
+   身份键见 `DockTile.appIdentityKeys`（`bundle:` / `path:` 两个前缀；路径小写化 + 去尾斜杠，
+   因为 macOS 卷大小写不敏感、原生域名带尾斜杠而 `makeFileTile` 也带）。两个信号任一命中即算同一个。
+3. **剔除必须落盘，且不止一个入口**。`dockBarEdited`（落盘闸门）、载入配置、导入配置、
+   手动改动回调、展示路径（`secondaryDockContent`）五处都要过 —— 少了展示路径，
+   外部改过的配置会在条上先冒出来再等剔除。测试见 `NativeDockExclusionTests`。
+4. **读不到偏好域时不要剔除**。`captureLiveConfig()` 返回 nil（域读不出来）时直接早退：
+   拿不到事实时不做破坏性决定（与"不会误判"的既有规矩一致）。
+
 ### 2026-10-06 双语支持的新坑（中 / 英）
 
 1. **`Bundle.main.preferredLocalizations` 只在 Info.plist 声明了 `CFBundleLocalizations`

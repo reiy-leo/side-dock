@@ -62,6 +62,12 @@ final class FakePreferences: DockPreferenceAccessing, @unchecked Sendable {
     var mruWrites: Int { lock.withLock { mruWriteCount } }
     /// 当前域的快照，用来断言"到底写进去了什么"。
     var snapshot: [String: PlistValue] { lock.withLock { domain } }
+
+    /// 整域替换 —— 模拟**用户在真实 Dock 上自己改动**（不经我们的写入通道）。
+    /// 测「原生 Dock 手动改动 → 重算排除集」这类路径要用它，别拿 `writeWhitelisted` 代替。
+    func replaceDomain(_ newDomain: [String: PlistValue]) {
+        lock.withLock { domain = newDomain }
+    }
 }
 
 /// 模拟 Dock 进程。
