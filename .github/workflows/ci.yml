@@ -1,0 +1,122 @@
+# 构建与发布流程（2026-10-06 第 69 次用户规格：打包 macOS x86_64 和 arm64 两个平台）。
+#
+# 架构矩阵用**两个原生 runner**（不是交叉编译/通用二进制）：
+# - `macos-15`       → arm64（Apple Silicon，GitHub 标准镜像）
+# - `macos-15-intel` → x86_64（Intel，GitHub 标准镜像）
+# 公开仓库两者都免费。⚠️ 别换回 `macos-13`：它虽是 Intel，但自带 Xcode 只到 15.x，
+# 带不动 `swift-tools-version: 6.0`（Swift 6 工具链）。
+#
+# 触发：
+# - push 到 main / PR      → 跑测试 + 双架构构建（产物作为 artifacts，不发版）
+# - push `v*` 标签          → 在上一行基础上，把两个 zip 附到该标签的 GitHub Release
+# - workflow_dispatch       → 手动跑一次（同上，不发版）
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# 默认只读；需要写权限的 job 单独声明。
+permissions:
+  contents: read
+
+jobs:
+  # 测试只在 arm64 上跑一份：Intel 由构建 job 的那次编译覆盖（跑两遍测试没有额外信息量）。
+  test:
+    name: Test (arm64)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+      # ⚠️ `--disable-sandbox` 与本地命令保持一致（本地是 SwiftPM 沙箱环境问题；
+      # CI 上加不加都行，但保持一条命令口径，免得"本地能过 CI 不过"时多一个变量）。
+      - name: Run tests
+        run: swift test --disable-sandbox
+
+  # 双架构构建：每个 runner 原生编译自己的架构。产物名带架构后缀，
+  # 与已有发布资产命名一致（MultiDock-v<版本>-<架构>.zip）。
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+      - name: Build MultiDock.app
+        run: ./scripts/build-app.sh
+      # 守着"构建出来的真是目标架构"：runner 装错镜像 / 脚本被改成通用二进制时，
+      # 这里会红，而不是悄悄发出一个同名不同架构的包。
+      - name: Verify bundle
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict build/MultiDock.app
+          ARCHS="$(lipo -archs build/MultiDock.app/Contents/MacOS/MultiDock)"
+          echo "bundle archs: $ARCHS"
+          [ "$ARCHS" = "${{ matrix.arch }}" ]
+      - name: Package zip
+        id: package
+        run: |
+          set -euo pipefail
+          VERSION="$(plutil -extract CFBundleShortVersionString raw Support/Info.plist)"
+          NAME="MultiDock-v${VERSION}-${{ matrix.arch }}.zip"
+          # ditto 而不是 zip：保留符号链接与权限位（.app 包的标准打包方式）。
+          ditto -c -k --keepParent build/MultiDock.app "$NAME"
+          shasum -a 256 "$NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MultiDock-${{ matrix.arch }}
+          path: ${{ steps.package.outputs.name }}
+          if-no-files-found: error
+
+  # 打 v* 标签时把两个架构的 zip 附到 Release。已存在的资产跳过（不覆盖），
+  # 所以这个 job 也可以安全地重跑（例如给旧版本补一个架构的包）。
+  release:
+    name: Attach artifacts to release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ls -lh
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            EXISTING="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+            for file in MultiDock-*.zip; do
+              if grep -qxF "$file" <<< "$EXISTING"; then
+                echo "已存在，跳过：$file"
+              else
+                gh release upload "$TAG" "$file" --repo "$GITHUB_REPOSITORY"
+              fi
+            done
+          else
+            gh release create "$TAG" MultiDock-*.zip \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "MultiDock $TAG" \
+              --generate-notes
+          fi
