@@ -118,11 +118,15 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 跟随系统语言 / 系统设置里的按 App 语言，改语言要重启 App；新增文案必须过 `L("中文", "English")`）。**508 个测试全绿**（v4 重构 + 侧边栏/数据/关于 +26、手势预隐藏 +11、右键位置菜单 +8、拆五页+名称展示 +9、应用栏交互修订 +3、菜单栏图标 +4、名称面板布局/防截断 +5、合成切换路由/兜底 +10、菜单栏标题对齐 +3、拆菜单栏页 +0、双语 +10、原生固定 App 排除 +14、红绿灯对齐 +5、栏名输入框宽/位置下拉 +4、启动台 +34、名称展示背景效果 +12）；
 真机 Dock 验收 9/9 绿（2026-10-04 基线；v4 的内容键口径待下次真机验收复核）。
 
-**发布（2026-10-06 第 68 次）**：首个 GitHub Release **v0.1.0**（仓库 `reiy-leo/side-dock`，
-tag 为 1Password 签名的 SSH 签名 tag；资产 `MultiDock-v0.1.0-x86_64.zip` = ad-hoc 签名的
-`MultiDock.app`，x86_64）。「关于」页的更新检查走 `releases/latest`，实测已读到该版本
-（本机 0.1.0 = 最新）。发版流程：跑全量测试 → `./scripts/build-app.sh` → `ditto` 打 zip →
-`git tag -s` → `gh release create`（**发版记得改 `Support/Info.plist` 版本号**）。
+**发布（2026-10-06 第 68 次；第 69 次起改为 CI 双架构）**：首个 GitHub Release **v0.1.0**
+（仓库 `reiy-leo/side-dock`），含 **两个原生架构**的资产：`MultiDock-v0.1.0-arm64.zip`
+与 `MultiDock-v0.1.0-x86_64.zip`（都是 ad-hoc 签名的 `MultiDock.app`；x86_64 本机构建，
+arm64 由 CI 构建）。「关于」页的更新检查走 `releases/latest`，实测已读到该版本。
+**发版流程（CI，`.github/workflows/ci.yml`）**：改 `Support/Info.plist` 版本号并提交 →
+`git tag -s vX.Y.Z` → `git push origin main vX.Y.Z`。CI 会在两个原生 runner
+（`macos-15` = arm64 / `macos-15-intel` = x86_64）上跑测试与构建，构建后**用 `lipo` 断言
+产物正是目标架构**，然后自动把两个 zip 附到该 tag 的 Release（已存在资产跳过，可安全重跑）。
+手动补资产用 `gh release upload`；本地手工构建仍可用 `./scripts/build-app.sh`。
 
 **现行行为（均有真机日志/验收实证）**：
 
@@ -226,6 +230,7 @@ tag 为 1Password 签名的 SSH 签名 tag；资产 `MultiDock-v0.1.0-x86_64.zip
 | 桌面名称展示 | `UI/DesktopNameOverlay.swift`、`UI/DesktopNameEffectCanvas.swift`、`UI/ToastPresenter.swift`、`UI/DesktopNameToast.swift` | **双通路调度**：桌面名 → `DesktopNameOverlayWindow`（磨砂面板 + 64 pt 字重 800 大字；位置 顶部/中部/底部 纯几何 `frameOrigin` 可单测；**背景效果三档**：默认走原生磨砂面板、霓虹两档走 `DesktopNameEffectCanvas` 自绘背景（暗底 + 流动光带 + 霓虹描边，插在 label **之下**；文字恒可见），30 fps `Timer` 只在展示的 1 秒里跑，`presentation/apply` 纯值可单测，`bandCenterX` 扫动几何纯函数）；系统告知（自愈等）→ `HudToastWindow` 胶囊 HUD（原 `DesktopNameToastWindow` 更名，HUD 材质 + 描边，属性清单逐条是踩坑项）；接替时旧窗立即收、只收当前通路；跨空间、不抢焦点、零权限；`ScreenMatching` 共享显示器映射 |
 | 启动台 | `Launchpad/LaunchpadModels.swift`、`LaunchpadDatabase.swift`、`LaunchpadResolver.swift`、`LaunchpadImport.swift` | **只读**启动台 SQLite 库（`$DARWIN_USER_DIR/com.apple.dock.launchpad/db/db`，`confstr(_CS_DARWIN_USER_DIR)`）：递归 CTE 按每层 `ordering` 还原文件夹与 App 的屏幕顺序（含多页文件夹）；bookmark（`book.resolving`）解真实路径、bundle id 索引兜底；`LaunchpadImport` = 搬运纯规则（并入 / 替换 / 三道闸 + 逐项报数）；`LaunchpadLoader` 三闭包全可注入（测试与 UI 快照不碰真实库）。**macOS 26 起没有启动台**（系统闸门 `LaunchpadSupport`） |
 | 脚本 | `scripts/build-app.sh`、`make-app-icon.swift`、`measure-menubar-baseline.swift`、`check-toast-window.sh`、`check-fullscreen-filter.swift`、`preview-toast.swift`、`spike-*.swift`、`measure-*.swift`、`spike-secondary-dock-sync.swift` | 打包（含 `Support/MultiDock.icns`）；**图标生成**（源图 → 苹果图标网格对齐的 icns，网格/投影参数见 `docs/rules.md`）；**菜单栏标题对齐测量**（离屏墨心扫描，调 `titleBaselineOffset` 用）；零权限验收工具；各实验复现脚本 |
+| CI / 发布 | `.github/workflows/ci.yml` | push/PR → 测试（arm64）+ **双架构构建**（两原生 runner：`macos-15` arm64 / `macos-15-intel` x86_64；构建后 `lipo` 断言架构、`codesign` 校验、`ditto` 打 zip）；push `v*` 标签 → 把两个 zip 附到该 tag 的 Release（已存在资产跳过）。⚠️ 别换 `macos-13`——自带 Xcode 带不动 Swift 6 工具链 |
 | 测试 | `Tests/MultiDockTests/` | **508 个测试，全绿**（其中 9 个真实 Dock 验收 + 5 个离屏窗口测试 + 1 个真机启动台只读验收默认跳过，需显式开启；`LaunchpadTests`/`LaunchpadStateTests` 守启动台读取与搬运规则（含 SQLITE_TRANSIENT 夹具坑、只读字节比对）；`L10nTests` 含「中文字面量必须在 L() 里」的源码扫描守卫；`NativeDockExclusionTests` 守「原生固定 App 不进自定义栏」；`SettingsChromeLayoutTests` 守「红绿灯对齐侧边栏图标列」；`NameFieldTests` 守「输入框宽 ≥ 10 个中文字实测宽」） |
 | 文档 | `docs/PLAN.md`（设计）、`docs/spikes.md`（27 个实验）、`docs/facts.md`（环境事实）、`docs/rules.md`（约定与陷阱台账） | 本文件为入口 |
 

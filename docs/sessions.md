@@ -3,6 +3,45 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 69 次）— GitHub Actions 双架构打包（arm64 + x86_64）
+
+**用户说**：「配置 github actions 打包流程，打包 macOS x86_64 和 arm64 两个平台」。
+
+**做了什么**：
+
+1. **`.github/workflows/ci.yml`**：三个 job ——
+   - `test`（macos-15，arm64）跑全量 `swift test`；
+   - `build` 矩阵**用两个原生 runner**（`macos-15` arm64 / `macos-15-intel` x86_64，
+     都是 GitHub 标准镜像、公开仓库免费），各自 `./scripts/build-app.sh`，构建后
+     `codesign --verify --deep --strict` + **`lipo -archs` 断言产物就是目标架构**
+     （runner 装错镜像 / 脚本被改成通用二进制时这一步会红），`ditto` 打
+     `MultiDock-v<版本>-<架构>.zip` 并传 artifact；
+   - `release`（仅 `v*` 标签）：`download-artifact` 合并后 `gh release create/upload`，
+     **已存在资产跳过**（可安全重跑、可给旧版本补架构包）。
+   - ⚠️ 刻意不换 `macos-13`（虽是 Intel，但自带 Xcode 15.x 带不动 swift-tools 6.0）。
+2. **首次实跑逮到 3 条 CI 环境敏感的测试**（本机过、CI 红，全是环境不是产品 bug）：
+   - `testSlowRestartReportsPollCountAndLongestGap`：600 轮 × 2 ms 在 runner 上超过 5 s
+     超时 → 主路径超时、kickstart 兜底接管，报出 1 次轮询。**超时放宽到 30 s**（断言不动）。
+   - `testStarvedPollLoopIsDistinguishableFromAbsentDock`：80/70 ms 信噪比不够
+     （CI sleep 抖动十几毫秒；主路径 300 ms 超时后兜底接管 → 最长间隔报 0）。
+     **阻塞放大到 200 ms、阈值 150 ms**，两次测量同一超时预算。
+   - `testBaselineContainsFullDockDomain`：CI runner 是干净账号（无 Dock 会话），
+     域里没有 `persistent-apps`/`tilesize`。断言改为**「与真实域同一套键」**
+     （任何机器成立；真出过滤照样红）。
+3. **端到端验证**：push main 触发 → 全绿；再推**临时标签 `v9.9.9-ci-test`** 验证
+   release job → 自动创建 release、两个架构资产就位；从 release 下载 arm64 zip 复验
+   （`lipo` = arm64、签名 OK）；**清理**临时 release 与标签（`gh release delete --cleanup-tag`）。
+4. **补齐 v0.1.0 的 arm64 资产**：用第 1 次 CI run 的 arm64 产物（内容 = 该 tag 的源码）
+   上传到已有 release，并把发布说明改成"按机器选 arm64 / x86_64 两个包"。
+
+**影响 / 未解决**：
+
+- 发版流程从"本机手工"改为"推标签即可"（AGENTS §3 顶部已更新）；本机手工构建仍可用于自用。
+- 已知限制：CI 只跑 arm64 测试一份（Intel 由构建 job 的编译覆盖，没必要跑两遍）；
+  产物**没有签名公证**（个人自用标准，发布说明里写明 Gatekeeper 绕过方式）。
+
+---
+
 ### 2026-10-06（第 68 次）— GitHub 首个发布版 v0.1.0
 
 **用户说**：「在 github 上 release 一个版本」。
