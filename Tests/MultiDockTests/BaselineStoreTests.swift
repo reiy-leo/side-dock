@@ -107,11 +107,18 @@ final class BaselineStoreTests: XCTestCase {
         try store.captureBaselineIfNeeded()
         let baseline = store.readBaseline()
 
-        // 只读校验：基准必须包含真实 Dock 的全部键（含被排除的那些），
+        // 只读校验：基准必须是真实 Dock 域的**全量快照**（含白名单之外的那些键），
         // 因为它是"还原到出厂状态"的唯一依据。
+        //
+        // ⚠️ 断言形式是「与真实域同一套键」，不是钉 `persistent-apps` / `tilesize` 这类具体键名：
+        // CI runner 是刚起的干净账号（没有 Dock 会话），域里可能压根没有这些键 ——
+        // 钉键名会把"环境长得不一样"误判成"代码把域过滤了"（CI 上红过一次）。
+        // 键集合比较在任何机器上都成立，真出过滤时照样红。
         XCTAssertFalse(baseline.isEmpty)
-        XCTAssertNotNil(baseline["persistent-apps"])
-        XCTAssertNotNil(baseline["tilesize"])
+        let live = DockPreferences.readDomain()
+        XCTAssertFalse(live.isEmpty, "读不到真实 Dock 域，这条用例的前提不成立")
+        XCTAssertEqual(Set(baseline.keys), Set(live.keys),
+                       "基准必须是真实域的全量快照（键集合逐一对上）")
     }
 
     func testResetBaselineOverwritesDeliberately() throws {

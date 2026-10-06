@@ -606,7 +606,11 @@ final class DockReloaderTests: XCTestCase {
         // 用假的短"慢"去测会把闸门绕过去、测不到真东西。
         let process = FakeDockProcess(restartsOn: [SIGHUP], restartDelayPolls: 600)
 
-        let outcome = await makeProbingReloader(process, timeout: .seconds(5)).reload(strategy: .auto)
+        // ⚠️ 超时给到 30 s：600 轮 × 2 ms 在**本机**约 1.2 s，但 GitHub runner 上
+        // `Task.sleep(2ms)` 的实际粒度可能差一个数量级 —— 实测 5 s 超时被绷断，主路径
+        // 超时后由 kickstart 兜底接管，报出来的轮询次数变成兜底那一段的 1 次（CI 红过一次）。
+        // 断言一个都不动：`elapsed > 1` 的前提与轮询计数在任何机器上都成立。
+        let outcome = await makeProbingReloader(process, timeout: .seconds(30)).reload(strategy: .auto)
 
         XCTAssertTrue(outcome.succeeded)
         XCTAssertGreaterThan(outcome.elapsed, 1, "这条用例的前提就是「真的慢过 1 秒」")
@@ -623,18 +627,24 @@ final class DockReloaderTests: XCTestCase {
         //   - 但**轮询次数极少**、**最长间隔是几十毫秒**。
         // 真机上如果看到这个形状，就说明"26 秒"里大部分时间是**我们没在看**，不是 Dock 不在。
         let process = FakeDockProcess(restartsOn: [SIGHUP], restartDelayPolls: 40)
-        process.stallDockPID(onCall: 3, for: 0.08)
+        // 阻塞放大到 200 ms、阈值 150 ms（初版是 80/70）：CI runner 的 sleep 抖动实测
+        // 能到十几毫秒，80/70 的信噪比不够（在 CI 上主路径 300 ms 超时、kickstart 兜底
+        // 接管后报出的最长间隔是 0，红过一次）。被冻住的形状要离噪声 5 倍以上。
+        process.stallDockPID(onCall: 3, for: 0.2)
 
-        let outcome = await makeProbingReloader(process).reload(strategy: .auto)
+        // 超时给足（同 `testSlowRestartReportsPollCountAndLongestGap` 的注释）：
+        // 主路径必须活到成功，报出来的才是带阻塞的那一段。
+        let outcome = await makeProbingReloader(process, timeout: .seconds(30)).reload(strategy: .auto)
 
         XCTAssertTrue(outcome.succeeded)
-        XCTAssertGreaterThanOrEqual(outcome.waitLongestGapMS, 70,
-                                    "阻塞 80 ms 必须体现在最长间隔上：\(outcome.description)")
+        XCTAssertGreaterThanOrEqual(outcome.waitLongestGapMS, 150,
+                                    "阻塞 200 ms 必须体现在最长间隔上：\(outcome.description)")
         // 对照：没有阻塞时最长间隔是个位/十几毫秒（pollInterval 是 2 ms）。
+        // 两次测量用同一个超时预算，口径才可比。
         let healthy = FakeDockProcess(restartsOn: [SIGHUP], restartDelayPolls: 40)
-        let healthyOutcome = await makeProbingReloader(healthy).reload(strategy: .auto)
-        XCTAssertLessThan(healthyOutcome.waitLongestGapMS, 70,
-                          "没被冻住时最长间隔不该接近 80 ms：\(healthyOutcome.description)")
+        let healthyOutcome = await makeProbingReloader(healthy, timeout: .seconds(30)).reload(strategy: .auto)
+        XCTAssertLessThan(healthyOutcome.waitLongestGapMS, 150,
+                          "没被冻住时最长间隔不该接近 200 ms：\(healthyOutcome.description)")
     }
 
     // MARK: - A8 的正解：**催一发 `kickstart`**（`docs/spikes.md` 实验 16）
