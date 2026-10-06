@@ -11,6 +11,15 @@ macOS 多桌面（Space）工具：**原生 Dock 全桌面保持一致，每个�
 
 ---
 
+## 下载
+
+最新发布版在 [GitHub Releases](https://github.com/reiy-leo/side-dock/releases/latest)：
+下载 `MultiDock-vX.Y.Z-x86_64.zip`，解压后把 `MultiDock.app` 拖进「应用程序」。
+
+> 本 App 按个人自用标准只做 **ad-hoc 签名、不公证**，首次打开会被 Gatekeeper 拦下：
+> 右键点 App →「打开」→ 弹窗里再点「打开」；或终端执行
+> `xattr -dr com.apple.quarantine /Applications/MultiDock.app`。
+
 ## 当前状态
 
 **计划里的功能全部完成并实测通过**：**508 个单元测试全绿**、真机 Dock 验收 **9/9 绿**。

@@ -3,6 +3,37 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 68 次）— GitHub 首个发布版 v0.1.0
+
+**用户说**：「在 github 上 release 一个版本」。
+
+**侦察**：远端 `reiy-leo/side-dock`（PUBLIC，默认 main）；`gh` 已用 `Antisunny` 登录且对该仓库有
+**admin** 权限；仓库此前**没有任何 tag / release**，main 领先 origin **31 个提交**（从未推送过）。
+本机 x86_64（Intel i9），`git tag.gpgsign` 未配置（`commit.gpgsign = true`，SSH 签名走 1Password）。
+
+**做了什么**：
+
+1. **发版前校验**：`swift test` 全绿（508）→ `./scripts/build-app.sh` → `codesign --verify --deep --strict`
+   通过（ad-hoc）；版本 `Support/Info.plist` = 0.1.0（与发布号一致，无需改）。
+2. **打包**：`ditto -c -k --keepParent` 出 `MultiDock-v0.1.0-x86_64.zip`（2.2 MB，保留符号链接与权限，
+   比 `zip -r` 正确）。
+3. **推送**：main（31 个提交）→ origin；`git tag -s v0.1.0`（**签名 tag**，1Password 通道）→ push。
+4. **发布**：`gh release create v0.1.0`，附 zip 与中文发布说明（亮点 / 安装步骤 / Gatekeeper 绕过 /
+   macOS 14+ 与 x86_64 说明 / 无痕原则）。
+5. **验收**：`gh release view` 资产 `uploaded`（2,305,453 B）；`releases/latest` API 读回
+   `tag_name: v0.1.0`（**App「关于」页更新检查同口径**，本机 0.1.0 → 显示已是最新）；
+   **从 GitHub 下载 zip 回来复验**：解压后 `codesign --verify --deep --strict` 通过、
+   版本 0.1.0、架构 x86_64。
+
+**影响 / 未解决**：
+
+- 发布说明里写明了 Gatekeeper 首次打开的绕过方式（不公证是有意为之，见 AGENTS 硬约束）。
+- 包是 x86_64（本机 Intel 构建）：Apple Silicon 上经 Rosetta 运行；将来要出 arm64/通用包，
+  需要一台 Apple Silicon 机器或交叉编译（尚未做）。
+- 发版流程已写进 AGENTS §3 顶部；下次发版记得改 `Support/Info.plist` 的版本号与 build 号。
+
+---
+
 ### 2026-10-06（第 67 次）— 桌面名称展示加效果：默认 / 流动霓虹 / 赛博紫韵
 
 **用户说**：「桌面名称展示添加效果：默认、流动霓虹、赛博紫韵」。
