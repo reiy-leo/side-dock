@@ -831,6 +831,21 @@ struct AppSettings: Codable {
 > 其外观规格（下面两节）原样保留、继续有效。调度侧 `ToastPresenter` 双通路，
 > 超时/收起只作用当前通路，接替时旧窗立即收。名称/告知的原「开关」语义不变。
 
+> **2026-10-06 第 3 版（用户规格「默认、流动霓虹、赛博紫韵」）：展示效果三档**
+> 新增 `desktopNameEffect`（默认 `.standard`）。**默认档不变**（磨砂面板 + `labelColor`
+> 大字）；两个霓虹档把文字交给 `DesktopNameEffectCanvas` **自绘**：
+> CoreText 取**字形路径** → 辉光（同路径带 shadow 填两遍：大半径光晕 + 小半径灯管芯）→
+> **流动渐变**裁进字形（`.neonFlow` 青→紫→品红 1.4 s / `.cyberPurple` 紫色系 2.6 s +
+> 光晕呼吸）。**为什么自绘而不是 CoreAnimation 图层**：① 项目快照验收走视图绘制路径
+> （`cacheDisplay`），CA 图层内容抓不全 —— 自绘让快照与真机同一份代码；② 项目既有教训
+> 「别依赖隐式动画通道」（animator alpha 随机静默失效）。动画 = `Timer`（30 fps，
+> RunLoop `.common` 模式）驱动 `needsDisplay`，**只在展示的那 1 秒里跑**
+> （`show()` 起表、`hide()` 停表）。流动几何是纯函数
+> `flowSegmentStarts(phase:)`（两段首尾相接、并集恒盖住整行）。窗口侧新增
+> `presentation(...)`/`apply(...)`（纯值 + 应用），效果与位置同为**实时 provider**，
+> 改设置下一次展示即生效。三档选择器在「桌面 → 名称展示」。
+> 配色/速度配方在 `DesktopNameEffectSpec`（`DesktopNameEffect.spec`，可单测）。
+
 **触发点只有一个：`SpaceObserver.onActiveSpaceChanged`。** 它是单一事实源——轮询每 300 ms 读活动空间，与切换来源无关，所以**用户自己用触控板/快捷键/Mission Control 切桌面也会弹 toast**，不只是 App 发起的切换。App 自己发起的切换在切换后立刻 `observer.refreshNow()`（必要时 50 ms 再补一次）把延迟压到最低，轮询兜底最坏 300 ms。
 
 **只在「用户桌面 → 另一个用户桌面」时弹**：要求上一次通知值也是非 nil 的桌面。这一条同时干掉两个噪音源：① App 刚启动的首次采样；② 从全屏 App 空间退回桌面（`activeSpace` 先变 nil 再变回，会被误判成切桌面）。

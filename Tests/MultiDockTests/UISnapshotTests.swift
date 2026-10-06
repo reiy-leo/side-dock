@@ -166,6 +166,52 @@ final class UISnapshotTests: XCTestCase {
         presenter.hide()
         print("名称面板快照 → \(outDir.path)")
     }
+
+    /// **三种展示效果**（2026-10-06 用户规格：默认 / 流动霓虹 / 赛博紫韵）。
+    /// 每个效果 × 亮/暗外观各一张；霓虹档用 `apply`（不 order front）抓同一渲染路径。
+    ///
+    /// 相位刻意固定在中段（0.45）——`show()` 的动画会实时推进相位，抓图时点不同画面就不同，
+    /// 快照不再确定；这里要验的是效果的外观配方与裁切/辉光是否正常，不是动画帧。
+    func testSnapshotDesktopNameEffects() throws {
+        guard ProcessInfo.processInfo.environment["MULTIDOCK_UI_SNAPSHOT"] == "1" else {
+            throw XCTSkip("需要 MULTIDOCK_UI_SNAPSHOT=1（生成 /tmp/multidock-ui-snapshot/*.png）")
+        }
+
+        let outDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("multidock-ui-snapshot", isDirectory: true)
+        try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let cases: [(effect: DesktopNameEffect, name: String)] = [
+            (.standard, "desktop-effect-standard"),
+            (.neonFlow, "desktop-effect-neon"),
+            (.cyberPurple, "desktop-effect-cyber"),
+        ]
+
+        for appearance in [NSAppearance.Name.aqua, NSAppearance.Name.darkAqua] {
+            let suffix = appearance == .darkAqua ? "dark" : "light"
+            for entry in cases {
+                // 每个用例一口新窗口：避免上一档的计时器/相位影响这一档的抓图。
+                let presenter = DesktopNameOverlayWindow(placementProvider: { .top })
+                presenter.snapshotWindow.appearance = NSAppearance(named: appearance)
+                presenter.apply(DesktopNameOverlayWindow.presentation(
+                    text: "工作环境",
+                    available: screen,
+                    placement: .top,
+                    effect: entry.effect
+                ))
+                if entry.effect.spec != nil {
+                    // 停在循环中段：文字上渐变两色分明（起点/终点同色，不便于看配色）。
+                    presenter.snapshotCanvas.phase = 0.45
+                    presenter.snapshotCanvas.stopAnimating()
+                    presenter.snapshotCanvas.display()
+                }
+                try capture(presenter.snapshotWindow, to: outDir.appendingPathComponent("\(entry.name)-\(suffix).png"))
+                presenter.hide()
+            }
+        }
+        print("名称效果快照 → \(outDir.path)")
+    }
     // MARK: - 夹具
 
     /// 与 `AppStateDockTests` 同一套注入姿势：临时目录的存储 + 假 Provider + 测试专用日志。

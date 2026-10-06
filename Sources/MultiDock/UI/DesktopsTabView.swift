@@ -5,8 +5,9 @@ import SwiftUI
 ///
 /// - 「桌面名称」：每个桌面一行（当前桌面带活动标记 + 壁纸缩略图 + 输入框），
 ///   最长 10 个字符（字素簇），仅存本地——macOS 没有系统接口。
-/// - 「名称展示」：开关 + 位置（顶部/中部/底部）。样式对标 iPhone 锁屏时钟
-///   （大号极细白字压壁纸 + 柔和投影），切换桌面后展示 1 秒，
+/// - 「名称展示」：开关 + 位置（顶部/中部/底部）+ 效果（默认 / 流动霓虹 / 赛博紫韵）。
+///   默认档 = 磨砂面板 + 跟随外观的大字；霓虹两档由 `DesktopNameEffectCanvas` 自绘
+///   （流动渐变 + 辉光，只在展示的那 1 秒里播动画）。切换桌面后展示 1 秒，
 ///   实现在 `DesktopNameOverlayWindow`。
 struct DesktopsTab: View {
     @Bindable var state: AppState
@@ -42,8 +43,14 @@ struct DesktopsTab: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                Text(L("样式对标 iPhone 锁屏时钟：大号极细白字压在壁纸上，1 秒后自动消失。不抢焦点、不挡点击；「顶部」即锁屏时钟的位置。",
-                       "Styled after the iPhone lock screen clock: large, ultra-light white text over the wallpaper, gone after one second. It never steals focus or blocks clicks; “Top” matches the lock-screen clock position."))
+                Picker(L("显示效果", "Effect"), selection: effectBinding) {
+                    ForEach(DesktopNameEffect.allCases, id: \.self) { effect in
+                        Text(effect.displayName).tag(effect)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(L("「默认」是磨砂面板 + 跟随外观的文字；「流动霓虹」有青紫流光，「赛博紫韵」是紫色慢流带呼吸光晕 —— 两个效果档只在展示的那 1 秒里播动画。1 秒后自动消失，不抢焦点、不挡点击；「顶部」即锁屏时钟的位置。",
+                       "“Default” is a frosted panel with appearance-aware text; “Flowing Neon” has a cyan-purple flow, “Cyber Purple” a slow purple flow with a breathing glow — both animate only during the one-second display. It disappears after a second, never steals focus or blocks clicks; “Top” matches the lock-screen clock position."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -92,6 +99,14 @@ struct DesktopsTab: View {
         Binding(
             get: { state.settings.desktopNamePlacement },
             set: { value in state.updateSettings { $0.desktopNamePlacement = value } }
+        )
+    }
+
+    /// 切效果立即生效：窗口每次展示都从 provider 实时读，改完下一次切换桌面就看到。
+    private var effectBinding: Binding<DesktopNameEffect> {
+        Binding(
+            get: { state.settings.desktopNameEffect },
+            set: { value in state.updateSettings { $0.desktopNameEffect = value } }
         )
     }
 }

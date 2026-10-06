@@ -13,6 +13,12 @@ import AppKit
 ///
 /// 位置三档不变（顶部/中部/底部，`desktopNamePlacement`）；窗口层配方与胶囊逐条相同
 /// （跨空间、不抢焦点、不挡点击、statusBar 层）。
+///
+/// **第 3 版（2026-10-06 用户规格「默认、流动霓虹、赛博紫韵」）**：
+/// 新增 `desktopNameEffect` 三档效果 —— 默认档仍是磨砂面板 + `labelColor` 大字；
+/// 两个霓虹档把文字交给 `DesktopNameEffectCanvas` 自绘（字形路径 + 辉光 + 流动渐变），
+/// 动画只在展示的那 1 秒里跑（`show()` 启动、`hide()` 停止）。效果是**实时读取**的
+/// （同位置的 provider 模式），改设置下一次展示就生效，不必重建窗口。
 @MainActor
 final class DesktopNameOverlayWindow: ToastPresenting {
 
@@ -44,14 +50,31 @@ final class DesktopNameOverlayWindow: ToastPresenting {
     private let panel: NSVisualEffectView
     private let edge: GlassEdgeView
     private let label: NSTextField
+    /// 霓虹档的自绘画布（默认档隐藏，文字仍走 `label`）。
+    private let canvas: DesktopNameEffectCanvas
     private let placementProvider: () -> DesktopNamePlacement
+    private let styleProvider: () -> DesktopNameEffect
+
+    /// 最近一次展示用的效果（单测断言「效果从 provider 流到了窗口」用）。
+    private(set) var activeEffect: DesktopNameEffect = .standard
+    /// 单测读视图状态用：默认档 label 可见、效果档画布可见。
+    var labelIsVisibleForTesting: Bool { !label.isHidden }
+    var canvasIsVisibleForTesting: Bool { !canvas.isHidden }
+    /// 画布是否正在播动画（展示期间应为 true，收起后 false）。
+    var canvasIsAnimatingForTesting: Bool { canvas.isAnimating }
 
     /// UI 快照测试用（验的是真窗口，与 `SecondaryDockWindowFactory` 同一口径）。
     var snapshotWindow: NSWindow { window }
+    /// UI 快照测试用：固定相位抓「确定的一帧」（动画在跑时相位每帧都不同，快照会不确定）。
+    var snapshotCanvas: DesktopNameEffectCanvas { canvas }
 
-    /// 位置实时读取：切到哪个档位，下一次展示就按哪个档位摆（不必重建窗口）。
-    init(placementProvider: @escaping () -> DesktopNamePlacement = { .top }) {
+    /// 位置/效果都**实时读取**：切到哪个档位，下一次展示就按哪个档位摆（不必重建窗口）。
+    init(
+        placementProvider: @escaping () -> DesktopNamePlacement = { .top },
+        styleProvider: @escaping () -> DesktopNameEffect = { .standard }
+    ) {
         self.placementProvider = placementProvider
+        self.styleProvider = styleProvider
         window = ToastWindow(
             contentRect: .zero,
             styleMask: .borderless,
@@ -94,30 +117,78 @@ final class DesktopNameOverlayWindow: ToastPresenting {
         label.isSelectable = false
         panel.addSubview(label)
 
+        canvas = DesktopNameEffectCanvas(frame: .zero)
+        canvas.autoresizingMask = [.width, .height]
+        canvas.isHidden = true
+        panel.addSubview(canvas)
+
         window.contentView = panel
     }
 
     func show(text: String, displayUUID: String?) {
         guard let screen = ScreenMatching.resolve(displayUUID) else { return }
-        let layout = Self.panelLayout(
+        let presentation = Self.presentation(
             text: text,
             available: screen.visibleFrame,
-            placement: placementProvider()
+            placement: placementProvider(),
+            effect: styleProvider()
         )
-        label.stringValue = text
-        panel.frame = NSRect(origin: .zero, size: layout.panelSize)
-        panel.maskImage = Self.panelMask(size: layout.panelSize)
-        label.frame = layout.labelFrame
-        edge.frame = panel.bounds
-        window.setFrame(
-            NSRect(origin: layout.origin, size: layout.panelSize),
-            display: true
-        )
+        apply(presentation)
         window.orderFrontRegardless()
     }
 
     func hide() {
         window.orderOut(nil)
+        // 收起即停：动画只在展示的那 1 秒里跑，隐藏后不烧 CPU。
+        canvas.stopAnimating()
+    }
+
+    // MARK: - 展示模型（纯函数 + 应用，单测不弹窗也能验接线）
+
+    /// 一次展示的完整描述（文本 + 效果 + 几何）。纯值，好断言。
+    static func presentation(
+        text: String,
+        available: NSRect,
+        placement: DesktopNamePlacement,
+        effect: DesktopNameEffect
+    ) -> DesktopNamePresentation {
+        DesktopNamePresentation(
+            text: text,
+            effect: effect,
+            layout: panelLayout(text: text, available: available, placement: placement)
+        )
+    }
+
+    /// 把一次展示应用到窗口与子视图上（**不 order front** —— 单测调它验接线，不会弹窗）。
+    func apply(_ presentation: DesktopNamePresentation) {
+        activeEffect = presentation.effect
+        let isEffect = presentation.effect.spec != nil
+
+        label.stringValue = presentation.text
+        label.isHidden = isEffect
+        canvas.isHidden = !isEffect
+
+        panel.frame = NSRect(origin: .zero, size: presentation.layout.panelSize)
+        panel.maskImage = Self.panelMask(size: presentation.layout.panelSize)
+        label.frame = presentation.layout.labelFrame
+        // 画布先立好尺寸，再喂文字/效果（两者变化都会按当前 bounds 重建字形路径）。
+        canvas.frame = panel.bounds
+        canvas.cornerRadius = Self.cornerRadius
+        canvas.text = presentation.text
+        canvas.effect = presentation.effect
+        edge.frame = panel.bounds
+
+        window.setFrame(
+            NSRect(origin: presentation.layout.origin, size: presentation.layout.panelSize),
+            display: true
+        )
+
+        if isEffect {
+            canvas.resetPhase()
+            canvas.startAnimating()
+        } else {
+            canvas.stopAnimating()
+        }
     }
 
     // MARK: - 布局（纯函数，单测直接打这里，不碰 NSScreen）
@@ -189,4 +260,11 @@ struct DesktopNamePanelLayout: Equatable {
     var panelSize: NSSize
     var labelFrame: NSRect
     var origin: NSPoint
+}
+
+/// 一次名称展示的完整描述（文本 + 效果 + 布局）。`presentation(...)` 产出、`apply(_:)` 消费。
+struct DesktopNamePresentation: Equatable {
+    var text: String
+    var effect: DesktopNameEffect
+    var layout: DesktopNamePanelLayout
 }

@@ -3,6 +3,45 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-06（第 67 次）— 桌面名称展示加效果：默认 / 流动霓虹 / 赛博紫韵
+
+**用户说**：「桌面名称展示添加效果：默认、流动霓虹、赛博紫韵」。
+
+**做了什么**：
+
+1. **模型**：`DesktopNameEffect`（`standard` / `neonFlow` / `cyberPurple`）+
+   `AppSettings.desktopNameEffect`（`decodeIfPresent` 默认 `.standard`，旧配置照常解码）。
+2. **自绘效果画布** `DesktopNameEffectCanvas`（新文件）：
+   - **CoreText 取字形路径**（run 级字体）→ **辉光**（同路径带 shadow 填两遍：大半径光晕 +
+     小半径灯管芯）→ **流动渐变**裁进字形；圆角裁剪保证光晕不越出面板。
+   - 配色/速度配方抽成 `DesktopNameEffectSpec`（`.neonFlow` 青→紫→品红 1.4 s；
+     `.cyberPurple` 紫色系 2.6 s + 光晕呼吸），可单测。
+   - 动画 = `Timer`（30 fps，RunLoop `.common`）驱动 `needsDisplay`，**只在展示的 1 秒里跑**：
+     `show()` 起表、`hide()` 停表。流动几何是纯函数 `flowSegmentStarts(phase:)`
+     （两段首尾相接、并集恒覆盖整行，20 个相位点全验）。
+3. **窗口重构**：`DesktopNameOverlayWindow` 新增 `styleProvider` 与
+   `presentation(...)`/`apply(...)`（纯值 + 应用）；默认档仍走 label（跟随外观），
+   效果档 label 隐藏、画布接管。效果与位置同为**实时 provider**，改设置下一次展示即生效。
+4. **接线**：`AppDelegate` 传 `styleProvider`；「桌面 → 名称展示」加三档选择器
+   （位置与效果两个分段控件）；说明文案双语。
+5. **测试 +14（495 → 509 全绿）**：效果枚举往返/旧配置默认、配方良构（渐变≥2 色、
+   辉光不超面板内边距）、流动分段覆盖性 ×21 相位、越界相位回绕、字形路径量级、
+   presentation 几何不受效果影响、apply 三档的 label/画布显隐与动画生命周期、
+   **定时器真的推进**（跑 0.2 s RunLoop 看相位前进、停表后冻住）。UI 快照新增
+   `desktop-effect-{standard,neon,cyber}-{light,dark}.png` 六张（相位钉在 0.45）。
+6. **真 bug（快照逮住）**：中文走 CoreText 回退字体，`CTRun` 的字形 ID 只在那个字体里
+   有意义 —— 最初拿系统字体取路径，把「工作环境」画成了 `i ∇ Y (`。修法：从
+   `CTRunGetAttributes` 取 run 自己的 `CTFont`。已写进 rules.md。
+7. **文档**：PLAN §3.10 第 3 版规格、rules 五条新坑、AGENTS/README 的说明与计数。
+
+**影响 / 未解决**：
+
+- 动画效果的真机观感（30 fps 顺滑度、辉光在真实壁纸上的表现）归 A13 手测；
+  快照只验配色/裁切/几何，验不了动态观感。
+- 展示时长仍是 1 秒（没动）；效果档看得到约一个半循环的流光。
+
+---
+
 ### 2026-10-06（第 66 次）— 新增「启动台」页：读 Launchpad 文件夹，添加到 / 替换任意 Dock 栏
 
 **用户说**：「如果 macOS 26 以下系统，那么从 Launchpad 中获取所有的文件夹（名称、包含的

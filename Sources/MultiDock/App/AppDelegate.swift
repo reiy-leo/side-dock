@@ -64,9 +64,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func attachToast(to state: AppState) {
         let window = HudToastWindow()
         toastWindow = window
-        let nameOverlay = DesktopNameOverlayWindow(placementProvider: { [weak state] in
-            state?.settings.desktopNamePlacement ?? .top
-        })
+        let nameOverlay = DesktopNameOverlayWindow(
+            placementProvider: { [weak state] in
+                state?.settings.desktopNamePlacement ?? .top
+            },
+            styleProvider: { [weak state] in
+                state?.settings.desktopNameEffect ?? .standard
+            }
+        )
         nameOverlayWindow = nameOverlay
         state.attachToastPresenter(
             ToastPresenter(

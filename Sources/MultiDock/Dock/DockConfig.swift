@@ -305,6 +305,28 @@ enum DesktopNamePlacement: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// 桌面名称展示的视觉效果（2026-10-06 用户规格：「默认、流动霓虹、赛博紫韵」）。
+///
+/// - `.standard`：磨砂面板 + `labelColor` 大字（既有样式，跟随亮/暗外观）；
+/// - `.neonFlow` / `.cyberPurple`：霓虹发光字 + 流动渐变（CoreGraphics 自绘，
+///   仅在展示的那 1 秒里以 30 fps 播放；起止时机由 `DesktopNameOverlayWindow` 管）。
+///
+/// 颜色的具体配方在 `DesktopNameEffectSpec`（UI 层，需要 AppKit 的 NSColor）。
+enum DesktopNameEffect: String, Codable, Sendable, CaseIterable {
+    /// 默认：磨砂玻璃面板 + 跟随外观的文字（`.standard` 不能叫 `default`，那是关键字）。
+    case standard
+    case neonFlow
+    case cyberPurple
+
+    var displayName: String {
+        switch self {
+        case .standard: return L("默认", "Default")
+        case .neonFlow: return L("流动霓虹", "Flowing Neon")
+        case .cyberPurple: return L("赛博紫韵", "Cyber Purple")
+        }
+    }
+}
+
 /// Dock 重载方式。P0 结论：不存在热重载，主路径为 SIGHUP（约 101 ms 不可用）。
 enum ReloadStrategy: String, Codable, Sendable, CaseIterable {
     /// 自动：SIGHUP 为主，SIGTERM + kickstart 兜底。
@@ -335,6 +357,8 @@ struct AppSettings: Codable, Hashable, Sendable {
     var showToastOnDesktopSwitch = true
     /// 桌面名称的展示位置（顶部/中部/底部，水平恒居中）。默认顶部（类 iPhone 锁屏，同旧版「中上部」）。
     var desktopNamePlacement: DesktopNamePlacement = .top
+    /// 桌面名称的展示效果（默认 / 流动霓虹 / 赛博紫韵，2026-10-06 用户规格）。
+    var desktopNameEffect: DesktopNameEffect = .standard
     /// 次级 Dock 条：贴着原生 Dock 内侧半露、hover 滑出、随桌面秒换内容的自绘图标条。
     var showSecondaryDock = true
     /// 冻结原生 Dock 的逐桌面切换：开启后切桌面不再写偏好/重启 Dock，
@@ -355,7 +379,7 @@ struct AppSettings: Codable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case restoreOnQuit, clickAction, autoApplyOnEdit, autoCaptureUserEdits, reloadStrategy
-        case showToastOnDesktopSwitch, desktopNamePlacement
+        case showToastOnDesktopSwitch, desktopNamePlacement, desktopNameEffect
         case showSecondaryDock, freezeNativeDockSwitching
         case dockBars, menuBarIcon, animatedDesktopSwitch
     }
@@ -378,6 +402,8 @@ struct AppSettings: Codable, Hashable, Sendable {
             try container.decodeIfPresent(Bool.self, forKey: .showToastOnDesktopSwitch) ?? true
         desktopNamePlacement =
             try container.decodeIfPresent(DesktopNamePlacement.self, forKey: .desktopNamePlacement) ?? .top
+        desktopNameEffect =
+            try container.decodeIfPresent(DesktopNameEffect.self, forKey: .desktopNameEffect) ?? .standard
         showSecondaryDock = try container.decodeIfPresent(Bool.self, forKey: .showSecondaryDock) ?? true
         freezeNativeDockSwitching =
             try container.decodeIfPresent(Bool.self, forKey: .freezeNativeDockSwitching) ?? true
