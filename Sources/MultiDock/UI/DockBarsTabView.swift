@@ -4,7 +4,7 @@ import SwiftUI
 /// 桌面命名与名称展示在「桌面」页）。
 ///
 /// 模型：栏是主实体 —— 每根栏有名字、屏幕位置（底部/左/右，台前调度占用的一侧自动避开）、
-/// 绑定的桌面（下拉，带缩略图）与图标（0...15，栏不固定任何 App）。一个桌面同时只挂一根栏。
+/// 绑定的桌面（下拉，带缩略图）与图标（0...15，栏不固定任何 App）。同一桌面同一条边最多挂 3 根栏（2026-10-23：在那条边的次级条里各占一行）。
 /// 没绑栏的桌面只有原生 Dock 可看（本 App 不生成内容、也不改写它）。
 ///
 /// 编辑器永远**横向**显示（不管栏在屏幕上是横是竖）；默认露出 8 个槽位，超出走滚动。
@@ -79,8 +79,8 @@ struct DockBarsTab: View {
                 }
             }
 
-            Text(L("一个桌面只挂一根栏 · 原生 Dock \(state.dockSideShortDescription)",
-                   "One bar per desktop · Native Dock \(state.dockSideShortDescription)"))
+            Text(L("每个桌面每条边最多 \(DockBar.maxRowsPerEdge) 根栏 · 原生 Dock \(state.dockSideShortDescription)",
+                   "Up to \(DockBar.maxRowsPerEdge) bars per edge per desktop · Native Dock \(state.dockSideShortDescription)"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -221,7 +221,7 @@ struct DockBarsTab: View {
     /// 台前调度占左缘时「左侧」置灰；勾标在当前位置上 —— 即使它已不可用也如实展示
     /// （改走可以，改回来不行）。
     private func positionPicker(_ bar: DockBar) -> some View {
-        let choices = DockBarPosition.choices(current: bar.position, available: state.availableBarPositions)
+        let choices = DockBarPosition.choices(current: bar.position, available: state.availableBarPositions(forBar: bar.id))
         return Menu {
             ForEach(choices, id: \.position) { choice in
                 Toggle(choice.position.displayName, isOn: positionBinding(for: bar, at: choice.position))
@@ -339,7 +339,7 @@ struct DockBarsTab: View {
             set: { isOn in
                 guard isOn,
                       bar.position != position,
-                      state.availableBarPositions.contains(position),
+                      state.availableBarPositions(forBar: bar.id).contains(position),
                       let current = state.dockBar(id: bar.id)
                 else { return }
                 var updated = current

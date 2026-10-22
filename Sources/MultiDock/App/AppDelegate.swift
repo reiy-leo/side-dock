@@ -15,8 +15,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var toastWindow: HudToastWindow!
     /// 桌面名称的锁屏式展示窗口（与胶囊 HUD 分工，见 `ToastPresenter`）。
     private var nameOverlayWindow: DesktopNameOverlayWindow!
-    private var secondaryDockWindow: SecondaryDockWindow!
-    private var secondaryDockController: SecondaryDockController?
+    /// 次级 Dock 条：每条屏幕边一扇窗口 + 一个调度器（2026-10-23 多行条）。
+    private var secondaryDockWindows: [SecondaryDockWindow] = []
+    private var secondaryDockControllers: [SecondaryDockController] = []
     /// 切桌面前置手势监视器（实验 26）：type 30 → 次级条预隐藏。
     private var spaceGestureMonitor: SpaceTransitionGestureMonitor?
 
@@ -93,43 +94,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 次级 Dock 条的接线：窗口在这里建，调度逻辑在 `SecondaryDockController`，
     /// 内容快照与开关仍归 `AppState`。同样必须在 `state.start()` 之前接上。
     private func attachSecondaryDock(to state: AppState) {
-        let window = SecondaryDockWindow()
-        secondaryDockWindow = window
-        let controller = SecondaryDockController(
-            deps: .init(
-                presenter: window,
-                faceProvider: ScreenInsetDockFaceProvider(),
-                content: { [weak state] space in state?.secondaryDockContent(for: space) },
-                isEnabled: { [weak state] in state?.settings.showSecondaryDock ?? true },
-                log: { [weak state] message in
-                    state?.append(.info, message)
-                }
+        // 每条屏幕边一扇窗口（2026-10-23 用户规格）：同一桌面同一条边的栏在那扇窗口里各占一行，
+        // 最多 3 行，可滚动切换、拖 handle 展开。三扇窗口互不干扰，各走各的显隐与 hover。
+        for edge in DockBarPosition.allCases {
+            let window = SecondaryDockWindow()
+            let controller = SecondaryDockController(
+                deps: .init(
+                    presenter: window,
+                    faceProvider: ScreenInsetDockFaceProvider(),
+                    content: { [weak state] space in state?.secondaryDockContent(for: space, edge: edge) },
+                    isEnabled: { [weak state] in state?.settings.showSecondaryDock ?? true },
+                    log: { [weak state] message in
+                        state?.append(.info, message)
+                    },
+                    onVisibleRowsCommitted: { [weak state] space, rows in
+                        state?.setSecondaryDockVisibleRows(rows, space: space, edge: edge)
+                    },
+                    onAnchorRowChanged: { [weak state] space, barID in
+                        state?.setSecondaryDockAnchorRow(barID, space: space, edge: edge)
+                    }
+                )
             )
-        )
-        secondaryDockController = controller
-        window.onActivate = { item in
-            guard let path = item.launchPath else { return }
-            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            secondaryDockWindows.append(window)
+            secondaryDockControllers.append(controller)
+            window.onActivate = { item in
+                guard let path = item.launchPath else { return }
+                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            }
+            window.onHoverChange = { [weak controller] inside in
+                controller?.hoverChanged(inside)
+            }
+            window.onRowScrolled = { [weak controller] barID in
+                controller?.rowScrolled(barID)
+            }
+            window.onResize = { [weak controller] phase in
+                controller?.resize(phase)
+            }
+            // 右键菜单（2026-10-06）：屏幕位置快捷切换。可选位置读 AppState 的环境缓存
+            // （台前调度开着避开左；2026-10-23 起同桌面同边满 3 根的边也置灰），
+            // 选择经光标所在行的栏 ID 落 `AppState.setDockBarPosition`。
+            window.availablePositionsProvider = { [weak state] in
+                state?.availableBarPositions ?? DockBarPosition.available(stageManagerActive: false)
+            }
+            window.availablePositionsForBar = { [weak state] barID in
+                state?.availableBarPositions(forBar: barID) ?? DockBarPosition.available(stageManagerActive: false)
+            }
+            window.onPositionSelected = { [weak state] barID, position in
+                guard let barID else { return }
+                state?.setDockBarPosition(id: barID, to: position)
+            }
+            state.attachSecondaryDock(controller)
+            controller.start()
+            observeSecondaryDockConfiguration(state, controller: controller)
         }
-        window.onHoverChange = { [weak controller] inside in
-            controller?.hoverChanged(inside)
-        }
-        // 右键菜单（2026-10-06）：屏幕位置快捷切换。可选位置读 AppState 的环境缓存
-        // （台前调度开着避开左），选择经快照里的栏 ID 落 `AppState.setDockBarPosition`。
-        window.availablePositionsProvider = { [weak state] in
-            state?.availableBarPositions ?? DockBarPosition.available(stageManagerActive: false)
-        }
-        window.onPositionSelected = { [weak state] barID, position in
-            guard let barID else { return }
-            state?.setDockBarPosition(id: barID, to: position)
-        }
-        state.attachSecondaryDock(controller)
-        controller.start()
-        observeSecondaryDockConfiguration(state, controller: controller)
         // 切桌面前置手势（实验 26）：type 30 一到就预隐藏次级条，翻转过渡不跟着滑。
-        // listen-only tap 零权限（mask 不含键盘事件，实验 26 第 2 轮实测）。
+        // listen-only tap 零权限（mask 不含键盘事件，实验 26 第 2 轮实测）。三扇窗口同一拍藏。
+        let controllers = secondaryDockControllers
         let monitor = SpaceTransitionGestureMonitor(
-            onGesture: { [weak controller] in controller?.spaceTransitionGestureDetected() },
+            onGesture: { controllers.forEach { $0.spaceTransitionGestureDetected() } },
             log: { [weak state] message in state?.append(.info, message) }
         )
         spaceGestureMonitor = monitor
@@ -197,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated {
                 self?.state.handleScreenParametersChanged()
                 // 插拔/改分辨率会改变 Dock 的排他内缩，次级条立刻重摆（1s 轮询兜底）。
-                self?.secondaryDockController?.geometryTick()
+                self?.secondaryDockControllers.forEach { $0.geometryTick() }
             }
         }
     }

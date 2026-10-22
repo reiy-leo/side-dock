@@ -3,6 +3,32 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-23（第 70 次）— 多行次级条：一个桌面多根栏（Hark 远程实现，待 CI 与真机）
+
+**用户说**：「每边多根……把现在的多根换成一根，但这一根可以上下滚动，最多 3 条的内容，
+用上方的 resize handle 扩大高度（最多三条高度），自动 hide 到原生 Dock 后方时变成一条高度，
+show 时显示成用户 resize 成的高度」；随后拍板：左右两边对称、收起显示上次滚到的行（没了回第一行）、
+拖成的高度按桌面各存各的。
+
+**做了什么**（规格全文见 `docs/PLAN.md` §3.12.x）：
+
+1. **绑定规则**：去掉「一个桌面只挂一根栏」的挤占逻辑，改为同桌面同边最多 3 根；满了自动挪边、
+   全满拒绝；改位置到满边置灰 + 兜底拒绝。`dockBar(for:)` 改为「主栏」。
+2. **每条边一扇窗口**：`AppDelegate` 建 3 套窗口 + 调度器；`AppState.secondaryDocks` 数组；
+   内容 `secondaryDockContent(for:edge:)`（旧的 `secondaryDockContent(for:)` 保留为主栏那条边的兼容入口）。
+3. **多行几何 + 拖拽**：`SecondaryDockLayout.thickness/multiRowSize/resized/snappedRows`；
+   `SecondaryDockController.resize(_:)`、`rowScrolled(_:)`；收起恒 1 行、显出按存的行数。
+4. **视图**：`SecondaryDockStripView` 改为多行（ScrollView 按行吸附 + handle）；`SecondaryDockRowsModel`
+   管滚动位置与静默窗；`SecondaryDockPresenting.setRevealed(_:)`（带默认实现，替身不用改）。
+5. **配置**：`AppSettings.secondaryDockRowPrefs`（`decodeIfPresent` 已补）。
+6. **测试**：替换「同桌面第二根挤掉第一根」用例为 5 条多栏规则用例 + 配置往返；新增
+   `MultiRowSecondaryDockTests`（几何 4 条 + 调度 5 条）。
+
+**环境说明**：本次在 Hark 的 Linux 沙箱里改的，**没有本地 swift build / test**，编译与测试以 GitHub Actions 为准；
+提交没走 1Password 签名（沙箱里没有 1Password），走 deploy key 推到分支 `feat/multi-row-dock` 开 PR。
+
+**未完成**：A15 真机手测（见 AGENTS.md §3）；Rei 本机 `swift test` 复核后再合并。
+
 ### 2026-10-06（第 69 次）— GitHub Actions 双架构打包（arm64 + x86_64）
 
 **用户说**：「配置 github actions 打包流程，打包 macOS x86_64 和 arm64 两个平台」。

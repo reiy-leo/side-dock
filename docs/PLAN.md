@@ -1019,6 +1019,38 @@ struct AppSettings: Codable {
 核验 `layer=19` 半露 frame 逐像素吻合（实验 21）、启动对齐日志、切桌面零重启日志（v3.6.1/2）；
 hover/点击/右键菜单/方案 ② 与手势预隐藏切桌面手感归入用户手测（A11/A12）。
 
+#### 3.12.x 多行次级条：一个桌面多根栏（2026-10-23，用户规格）
+
+**用户规格**：「每边多根，把现在的多根换成一根，但这一根可以上下滚动，最多 3 条的内容；
+用上方的 resize handle 扩大高度（最多三条高度）；自动 hide 到原生 Dock 后方时变成一条高度，
+show 时显示成用户 resize 成的高度」。同日拍板：①左右两边对称（handle 在内侧、往屏幕中间加宽成多列、
+横向滚动切列）；②收起时显示上次滚到的那一行，那行没了回第一行；③拖成的高度**按桌面各存各的**。
+
+- **绑定规则**：取消「一个桌面只挂一根栏」。同一桌面**同一条边最多 3 根**（`DockBar.maxRowsPerEdge`），
+  行序 = `dockBars` 列表顺序。绑定时栏所在的边已满 → 自动挪到第一条有空位的可用边；三条边都满 → 拒绝 + 警告。
+  改位置到已满的边：设置页下拉与条上右键菜单置灰（`AppState.availableBarPositions(forBar:)`），
+  `dockBarEdited` 兜底拒绝。`DockBar.spaceID` 仍是单值（一根栏只绑一个桌面），配置无需迁移。
+- **主栏**（`dockBar(for:)`）：优先与原生 Dock 同边的第一根，否则第一根。未冻结模式写进原生 Dock、
+  「立即应用」、手改 Dock 回存针对的都是主栏。
+- **窗口**：每条屏幕边一扇 `SecondaryDockWindow` + 一个 `SecondaryDockController`（`AppDelegate` 建 3 套），
+  内容 `AppState.secondaryDockContent(for:edge:)` 把同边的栏各做成一行（`SecondaryDockRow`）。
+  手势预隐藏三扇窗口同一拍广播。
+- **几何**：行厚 `thickness(rows:) = iconSize + 20 + (rows-1)·(iconSize + 10)`；收起恒 1 行
+  （与旧单行 frame 完全一致），显出按「桌面 × 边」存的行数（钳到 1…min(3, 行数)），
+  锚定靠原生 Dock / 屏幕边那一侧往屏幕内长（`SecondaryDockLayout.resized`）。窗口长度按最长那一行。
+- **行序与滚动**：第一行贴 Dock / 屏幕边（底部 = 最下一行，左 = 最左一列，右 = 最右一列）。
+  SwiftUI `ScrollView` + `scrollTargetBehavior(.viewAligned)` 按行吸附；横条只吃竖向滚动、竖条只吃横向，
+  不和系统切桌面手势抢。`scrollPosition(id:anchor:)` 的锚点就是第一行那一端，滚到的行 = 「上次滚到的行」，
+  经 `onAnchorRowChanged` 存进 `AppSettings.secondaryDockRowPrefs`。窗口变形期间（显出 / 收起 / 拖高）
+  ScrollView 自己夹紧滚动位置，0.4 s 静默窗内不回报；收起时滚回锚定行。
+- **handle**：外沿居中的短胶囊（底部 = 上沿，左 = 右沿，右 = 左沿），只在显出态且行数 > 1 时出现。
+  拖拽用屏幕坐标（`NSEvent.mouseLocation`），厚度跟手、钳在 1…可用行数，松手吸附到整行（过半进位）、
+  frame 动画回位并回存。**拖拽期间暂停收回防抖与显出宽限**（`isResizing`），轮询重摆沿用实时厚度。
+- **配置**：`AppSettings.secondaryDockRowPrefs: [String: SecondaryDockRowPref]`，键 `"<spaceID>|<edge>"`，
+  值 `visibleRows` + `anchorBarID`；手写 `init(from:)` 已补 `decodeIfPresent`（陷阱 #3）。
+- **待真机手测（A15）**：滚动吸附手感、handle 拖拽（含拖出窗口不收）、收起显示上次那一行、
+  三扇窗口同时存在时的角落观感、右键菜单作用在光标所在行。
+
 ### 3.13 「启动台」页（2026-10-06 新增，用户规格）
 
 **用户原话**：「如果 macOS 26 以下系统，那么从 Launchpad 中获取所有的文件夹（名称、包含的

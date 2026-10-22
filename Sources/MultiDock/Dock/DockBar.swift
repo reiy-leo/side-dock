@@ -51,6 +51,9 @@ struct DockBar: Codable, Hashable, Sendable, Identifiable {
     /// 每栏最多图标数（用户规格：最多 15）。**2026-10-06 起没有下限**——栏不固定任何 App，
     /// 允许清空（空栏的次级条隐藏）。
     static let maxApps = 15
+    /// 同一桌面、同一条屏幕边最多挂几根栏（2026-10-23 用户规格：每边一个窗口，
+    /// 里面最多 3 行，每根栏占一行，可滚动切换 / 拖高展开）。
+    static let maxRowsPerEdge = 3
     /// 设置页编辑器默认露出的槽位数，超出走滚动。
     static let visibleSlots = 8
 
@@ -143,5 +146,36 @@ enum DockBarCatalog {
         var counter = 2
         while used.contains("\(base) \(counter)") { counter += 1 }
         return "\(base) \(counter)"
+    }
+}
+
+/// 某个桌面某条边上那扇次级条窗口的行状态（2026-10-23 用户规格，**按桌面各存各的**）。
+///
+/// - `visibleRows`：hover 显出时展开几行（用户拖上沿/内侧 handle 定的高度，1–3）；
+///   收起（半露在原生 Dock 后方）时恒为 1 行。
+/// - `anchorBarID`：上次滚到的那一行（靠原生 Dock / 屏幕边那一侧的行）。收起时显示它；
+///   那根栏不在了（解绑 / 改边 / 删除）就回到第一行。
+struct SecondaryDockRowPref: Codable, Hashable, Sendable {
+    var visibleRows: Int = 1
+    var anchorBarID: UUID?
+
+    init(visibleRows: Int = 1, anchorBarID: UUID? = nil) {
+        self.visibleRows = visibleRows
+        self.anchorBarID = anchorBarID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case visibleRows, anchorBarID
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        visibleRows = try container.decodeIfPresent(Int.self, forKey: .visibleRows) ?? 1
+        anchorBarID = try container.decodeIfPresent(UUID.self, forKey: .anchorBarID) ?? nil
+    }
+
+    /// config.json 里的键：`"<spaceID>|<edge>"`（spaceID 自带 `#`，用 `|` 分隔不会撞）。
+    static func key(spaceID: String, edge: DockBarPosition) -> String {
+        "\(spaceID)|\(edge.rawValue)"
     }
 }

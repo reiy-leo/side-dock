@@ -70,6 +70,50 @@ enum SecondaryDockLayout {
             : CGSize(width: slotLength, height: thickness)
     }
 
+    /// 多行条（2026-10-23）：相邻两行的行距（单行内容厚 `iconSize + 6` + 行间距 4）。
+    static func rowPitch(iconSize: CGFloat) -> CGFloat { iconSize + 10 }
+
+    /// `rows` 行时条的厚度（横条=高、竖条=宽）。1 行与 `barSize` 的厚度一致（`iconSize + 20`）。
+    static func thickness(rows: Int, iconSize: CGFloat) -> CGFloat {
+        iconSize + 20 + CGFloat(max(rows, 1) - 1) * rowPitch(iconSize: iconSize)
+    }
+
+    /// 多行条的尺寸：长度按最长那一行，厚度按行数（可传非整数行厚给拖拽中的实时尺寸）。
+    static func multiRowSize(maxItemCount: Int, thickness: CGFloat, iconSize: CGFloat, isVertical: Bool) -> CGSize {
+        let base = barSize(itemCount: maxItemCount, iconSize: iconSize, isVertical: isVertical)
+        return isVertical ? CGSize(width: thickness, height: base.height)
+            : CGSize(width: base.width, height: thickness)
+    }
+
+    /// 拖拽松手：把实时厚度吸附到最近的整行数（1...maxRows）。
+    static func snappedRows(thickness: CGFloat, iconSize: CGFloat, maxRows: Int) -> Int {
+        let raw = (thickness - self.thickness(rows: 1, iconSize: iconSize)) / rowPitch(iconSize: iconSize)
+        let rows = Int(raw.rounded()) + 1
+        return min(max(rows, 1), max(maxRows, 1))
+    }
+
+    /// 把条的厚度改成 `thickness`，**锚定靠原生 Dock / 屏幕边的那一侧**
+    /// （底部 = 下沿不动往上长；左 = 左沿不动往右长；右 = 右沿不动往左长）。
+    static func resized(_ frame: CGRect, toThickness thickness: CGFloat, position: DockBarPosition) -> CGRect {
+        switch position {
+        case .bottom:
+            return CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: thickness)
+        case .left:
+            return CGRect(x: frame.minX, y: frame.minY, width: thickness, height: frame.height)
+        case .right:
+            return CGRect(x: frame.maxX - thickness, y: frame.minY, width: thickness, height: frame.height)
+        }
+    }
+
+    /// 拖拽中按光标位置算条的厚度（锚定侧到光标的距离）。
+    static func thickness(dragging point: CGPoint, anchoredFrame frame: CGRect, position: DockBarPosition) -> CGFloat {
+        switch position {
+        case .bottom: return point.y - frame.minY
+        case .left: return point.x - frame.minX
+        case .right: return frame.maxX - point.x
+        }
+    }
+
     /// 计算条的展开（hover）与半露（默认）两个 frame。
     ///
     /// 半露的定义：`tucked` 相对 `revealed` 向 Dock 方向平移 `tuckRatio` 个条厚

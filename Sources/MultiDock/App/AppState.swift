@@ -79,8 +79,9 @@ final class AppState {
     let switcher: SpaceSwitcher
     /// 切换桌面的中上部提示。由 `AppDelegate` 注入 —— `AppState` 不碰 AppKit 窗口。
     private(set) var toastPresenter: ToastPresenter?
-    /// 次级 Dock 条的调度器。同样由 `AppDelegate` 注入；内容与开关从本状态读取。
-    private(set) var secondaryDock: SecondaryDockController?
+    /// 次级 Dock 条的调度器，同样由 `AppDelegate` 注入；内容与开关从本状态读取。
+    /// **每条屏幕边一个**（2026-10-23：每边一扇窗口，装最多 3 行）。
+    private(set) var secondaryDocks: [SecondaryDockController] = []
 
     /// Dock 应用流水线（读全量域 → 只覆盖内容键 → 原子写 → 重启 Dock → 校验）。
     let dockController: DockController
@@ -228,7 +229,7 @@ final class AppState {
                 self.append(.info, L("活动空间不是用户桌面（可能是全屏 App），不触发切换", "Active space is not a user desktop (possibly a full-screen app); not switching"))
             }
             self.toastPresenter?.handleActiveSpaceChanged(space)
-            self.secondaryDock?.spaceDidChange(space)
+            self.secondaryDocks.forEach { $0.spaceDidChange(space) }
             // 桌面切换后把该桌面的 Dock 推下去（内容相同会被指纹短路，不会白重启 Dock）。
             if let space { self.applyForDesktopSwitch(space, reason: L("切到 \(self.displayName(for: space))", "switch to \(self.displayName(for: space))")) }
         }
@@ -293,13 +294,43 @@ final class AppState {
         guard pruned > 0 else { return 0 }
         append(.info, L("按「原生 Dock 已固定的 App 不进自定义栏」规则剔除（\(reason)）", "Removed per the “apps pinned in the native Dock stay out of custom bars” rule (\(reason))"))
         updateSettings { $0.dockBars = bars }
-        secondaryDock?.refresh()
+        secondaryDocks.forEach { $0.refresh() }
         return pruned
     }
 
-    /// 绑定到某个桌面的栏（一个桌面同时只认第一根，`bindDockBar` 保证不重）。
+    /// 桌面的**主栏**（2026-10-23 起一个桌面可挂多根栏）：优先和原生 Dock 同边的第一根，
+    /// 没有同边的就取 `dockBars` 顺序里的第一根。未冻结模式写进原生 Dock 的、
+    /// 「立即应用」与手改 Dock 回存针对的都是它。
     func dockBar(for space: DesktopSpace) -> DockBar? {
-        settings.dockBars.first { $0.spaceID == space.id }
+        let bars = settings.dockBars.filter { $0.spaceID == space.id }
+        if let dockSide, let primary = bars.first(where: { $0.position.matches(dockSide) }) {
+            return primary
+        }
+        return bars.first
+    }
+
+    /// 某桌面某条边上的栏（按 `dockBars` 顺序 = 行序，最多 `DockBar.maxRowsPerEdge` 根）。
+    func dockBars(for space: DesktopSpace, edge: DockBarPosition) -> [DockBar] {
+        Array(
+            settings.dockBars
+                .filter { $0.spaceID == space.id && $0.position == edge }
+                .prefix(DockBar.maxRowsPerEdge)
+        )
+    }
+
+    /// 某桌面某条边上**除了 `excluding` 之外**已经挂了几根栏（容量判定用）。
+    private func barCount(spaceID: String, edge: DockBarPosition, excluding id: UUID) -> Int {
+        settings.dockBars.filter { $0.spaceID == spaceID && $0.position == edge && $0.id != id }.count
+    }
+
+    /// 这根栏可以挪去的位置：台前调度避左 + **同桌面同边已满 3 根的边置灰**（2026-10-23）。
+    /// 栏当前所在的边永远算可用（它本来就在那儿）。
+    func availableBarPositions(forBar id: UUID?) -> [DockBarPosition] {
+        let base = availableBarPositions
+        guard let id, let bar = dockBar(id: id), let spaceID = bar.spaceID else { return base }
+        return base.filter { edge in
+            edge == bar.position || barCount(spaceID: spaceID, edge: edge, excluding: id) < DockBar.maxRowsPerEdge
+        }
     }
 
     func dockBar(id: UUID) -> DockBar? {
@@ -328,7 +359,7 @@ final class AppState {
             }
         }
         append(.warning, L("已解绑 \(orphans.count) 根失效的 Dock 栏（对应桌面已不存在，应用保留）", "Unbound \(orphans.count) orphaned Dock bar(s) (their desktops are gone; apps preserved)"))
-        secondaryDock?.refresh()
+        secondaryDocks.forEach { $0.refresh() }
         return orphans.count
     }
 
@@ -351,7 +382,7 @@ final class AppState {
         }
         updateSettings { $0.dockBars.removeAll { $0.id == id } }
         append(.info, L("已删除 Dock 栏「\(bar.name)」", "Deleted Dock bar “\(bar.name)”"))
-        secondaryDock?.refresh()
+        secondaryDocks.forEach { $0.refresh() }
     }
 
     /// 改栏名。归一化（≤10 字素簇）后与原值相同则不落盘。
@@ -365,25 +396,31 @@ final class AppState {
         append(.info, L("Dock 栏改名 →「\(name)」", "Dock bar renamed → “\(name)”"))
     }
 
-    /// 绑定栏到桌面。**一根桌面同时只挂一根栏**：绑到已有栏的桌面上，
-    /// 会把另一根挤成未绑定（应用保留）。`nil` = 解绑。
+    /// 绑定栏到桌面（2026-10-23 起**一个桌面可挂多根栏**：每条边最多 3 根，在那扇窗口里各占一行）。
+    /// 栏当前的边已满：自动挪到一条还有空位的可用边；三条边都满就拒绝并给警告。`nil` = 解绑。
     func bindDockBar(_ id: UUID, to spaceID: String?) {
         guard var bar = dockBar(id: id) else { return }
         guard bar.spaceID != spaceID else { return }
-        var displacedName: String?
         var bars = settings.dockBars
-        if let spaceID,
-            let index = bars.firstIndex(where: { $0.spaceID == spaceID && $0.id != id })
-        {
-            bars[index].spaceID = nil
-            displacedName = bars[index].name
-        }
         guard let index = bars.firstIndex(where: { $0.id == id }) else { return }
+        var movedTo: DockBarPosition?
+        if let spaceID, barCount(spaceID: spaceID, edge: bar.position, excluding: id) >= DockBar.maxRowsPerEdge {
+            guard let free = availableBarPositions.first(where: {
+                barCount(spaceID: spaceID, edge: $0, excluding: id) < DockBar.maxRowsPerEdge
+            }) else {
+                append(.warning, L("这个桌面每条边都已挂满 \(DockBar.maxRowsPerEdge) 根栏，「\(bar.name)」没有绑上",
+                                   "Every edge of this desktop already has \(DockBar.maxRowsPerEdge) bars; “\(bar.name)” was not bound"))
+                return
+            }
+            bars[index].position = free
+            movedTo = free
+        }
         bars[index].spaceID = spaceID
         bar = bars[index]
         updateSettings { $0.dockBars = bars }
-        if let displacedName {
-            append(.info, L("「\(displacedName)」让出桌面（一个桌面只挂一根栏）", "“\(displacedName)” gave up the desktop (one bar per desktop)"))
+        if let movedTo {
+            append(.info, L("原来那条边已满 \(DockBar.maxRowsPerEdge) 根，「\(bar.name)」改到\(movedTo.displayName)",
+                            "That edge already had \(DockBar.maxRowsPerEdge) bars; “\(bar.name)” moved to \(movedTo.displayName)"))
         }
         append(.info, L("Dock 栏「\(bar.name)」：\(spaceID.map { "绑定桌面 \($0)" } ?? "已解绑")",
                         "Dock bar “\(bar.name)”: \(spaceID.map { "bound to desktop \($0)" } ?? "unbound")"))
@@ -399,6 +436,14 @@ final class AppState {
     /// 一次编辑结束：落盘一次；绑定的桌面是活动桌面时按开关应用 + 刷新条。
     func dockBarEdited(_ bar: DockBar, reason: String) {
         var bar = bar
+        // 改边的容量闸（2026-10-23）：同桌面目标边已满 3 根就不挪（菜单里已置灰，这里兜底）。
+        if let stored = dockBar(id: bar.id), stored.position != bar.position, let spaceID = bar.spaceID,
+            barCount(spaceID: spaceID, edge: bar.position, excluding: bar.id) >= DockBar.maxRowsPerEdge
+        {
+            append(.warning, L("\(bar.position.displayName)已挂满 \(DockBar.maxRowsPerEdge) 根栏，「\(bar.name)」留在\(stored.position.displayName)",
+                               "\(bar.position.displayName) already has \(DockBar.maxRowsPerEdge) bars; “\(bar.name)” stays at \(stored.position.displayName)"))
+            bar.position = stored.position
+        }
         // 落盘前最后一道闸：任何入口都不许把「已固定在原生 Dock」的 App 留在栏里
         // （编辑器已经会拦下并给警告，这里是兜底 —— 用户规格 2026-10-06）。
         let (kept, removed) = DockStripRules.removingAppsPinnedInNativeDock(
@@ -427,7 +472,7 @@ final class AppState {
     }
 
     private func refreshAfterBarChange(_ bar: DockBar) {
-        secondaryDock?.refresh()
+        secondaryDocks.forEach { $0.refresh() }
         guard let spaceID = bar.spaceID,
             !settings.freezeNativeDockSwitching,
             settings.autoApplyOnEdit,
@@ -581,7 +626,7 @@ final class AppState {
     func setFreezeNativeDockSwitching(_ enabled: Bool) {
         guard settings.freezeNativeDockSwitching != enabled else { return }
         updateSettings { $0.freezeNativeDockSwitching = enabled }
-        secondaryDock?.refresh()
+        secondaryDocks.forEach { $0.refresh() }
         // 冻结打开 = 原生 Dock 从此归用户，排除集开始生效（并就地剔除栏里的重复项）；
         // 关闭 = 原生 Dock 由我们写，排除集清空（否则会把自己的内容当成"原生固定"剔掉）。
         refreshNativeDockPinnedApps(reason: enabled ? L("开启冻结", "freeze enabled") : L("关闭冻结", "freeze disabled"))
@@ -711,7 +756,7 @@ final class AppState {
         // 环境轮询（台前调度 / 原生 Dock 方位，2 s）：变化要反映到设置页的位置选项与提示。
         startEnvironmentPoll()
         // 次级 Dock 条按"此刻的活动桌面"初始化（之后由桌面变化回调驱动）。
-        secondaryDock?.spaceDidChange(observer.activeSpace)
+        secondaryDocks.forEach { $0.spaceDidChange(observer.activeSpace) }
         // 自愈必须放在最后：它要走还原链路（写偏好 + 重启 Dock），
         // 得等观察器、watcher、监视器都就位，否则还原完它们才启动，状态会错。
         scheduleSelfHealIfNeeded()
@@ -723,7 +768,7 @@ final class AppState {
         observer.stop()
         dockWatcher?.stop()
         dockPresenceMonitor?.stop()
-        secondaryDock?.stop()
+        secondaryDocks.forEach { $0.stop() }
         environmentTask?.cancel()
         environmentTask = nil
         append(.info, L("桌面观察已停止", "Desktop observation stopped"))
@@ -1260,7 +1305,7 @@ final class AppState {
 
     /// 注入次级 Dock 条调度器（由 `AppDelegate` 组装，见 `attachToast` 的同一模式）。
     func attachSecondaryDock(_ controller: SecondaryDockController) {
-        secondaryDock = controller
+        secondaryDocks.append(controller)
     }
 
     /// 次级 Dock 条的内容快照（调度器经注入闭包调用）。
@@ -1272,16 +1317,16 @@ final class AppState {
     /// 图标尺寸**跟随系统**（2026-10-05 用户规格）：读 `com.apple.dock` 的实时 `tilesize`
     /// （只读不写），钳制到 28–48 防止极端值把条撑破。
     func secondaryDockContent(for space: DesktopSpace?) -> SecondaryDockContentSnapshot? {
-        guard let space, var bar = dockBar(for: space), !bar.apps.isEmpty else { return nil }
-        // 展示路径也过一道「原生 Dock 已固定的不进自定义栏」——配置在运行期被外部改过
-        // （导入、手编 config.json）时，条上不该先冒出来再等剔除（用户规格 2026-10-06）。
-        if settings.freezeNativeDockSwitching, !nativeDockPinnedKeys.isEmpty {
-            bar.apps = DockStripRules.removingAppsPinnedInNativeDock(
-                bar.apps,
-                nativePinnedKeys: nativeDockPinnedKeys
-            ).kept
-            guard !bar.apps.isEmpty else { return nil }
-        }
+        guard let space, let bar = dockBar(for: space) else { return nil }
+        return secondaryDockContent(for: space, edge: bar.position)
+    }
+
+    /// 某条边那扇窗口的内容（2026-10-23 多行条）：同桌面同边的栏各占一行（`dockBars` 顺序，最多 3 行），
+    /// 空栏 / 全被原生 Dock 剔光的栏不占行。行状态（展开行数、上次滚到的行）按「桌面 × 边」存。
+    func secondaryDockContent(for space: DesktopSpace?, edge: DockBarPosition) -> SecondaryDockContentSnapshot? {
+        guard let space else { return nil }
+        let bars = dockBars(for: space, edge: edge)
+        guard !bars.isEmpty else { return nil }
         let running = Set(
             NSWorkspace.shared.runningApplications
                 .filter { $0.activationPolicy == .regular }
@@ -1289,14 +1334,59 @@ final class AppState {
         )
         let systemTileSize = dockController.readSystemTileSize() ?? 36
         let iconSize = min(max(systemTileSize, 28), 48)
-        guard var snapshot = SecondaryDockContentBuilder.snapshot(
-            from: DockConfig(pinnedApps: bar.apps, otherItems: bar.otherItems),
-            runningBundleIDs: running,
-            iconSize: iconSize
-        ) else { return nil }
-        snapshot.position = bar.position
-        snapshot.barID = bar.id
+        var rows: [SecondaryDockRow] = []
+        for var bar in bars {
+            guard !bar.apps.isEmpty else { continue }
+            // 展示路径也过一道「原生 Dock 已固定的不进自定义栏」——配置在运行期被外部改过
+            // （导入、手编 config.json）时，条上不该先冒出来再等剔除（用户规格 2026-10-06）。
+            if settings.freezeNativeDockSwitching, !nativeDockPinnedKeys.isEmpty {
+                bar.apps = DockStripRules.removingAppsPinnedInNativeDock(
+                    bar.apps,
+                    nativePinnedKeys: nativeDockPinnedKeys
+                ).kept
+                guard !bar.apps.isEmpty else { continue }
+            }
+            guard let row = SecondaryDockContentBuilder.snapshot(
+                from: DockConfig(pinnedApps: bar.apps, otherItems: bar.otherItems),
+                runningBundleIDs: running,
+                iconSize: iconSize
+            ) else { continue }
+            rows.append(SecondaryDockRow(barID: bar.id, name: bar.name, items: row.items))
+        }
+        guard let first = rows.first else { return nil }
+        var snapshot = SecondaryDockContentSnapshot(items: first.items, iconSize: iconSize)
+        snapshot.position = edge
+        snapshot.barID = first.barID
+        snapshot.rows = rows
+        let pref = settings.secondaryDockRowPrefs[SecondaryDockRowPref.key(spaceID: space.id, edge: edge)]
+        snapshot.visibleRows = pref?.visibleRows ?? 1
+        snapshot.anchorBarID = pref?.anchorBarID
         return snapshot
+    }
+
+    /// 拖拽 handle 松手后的行数（按「桌面 × 边」各存各的，2026-10-23 用户规格）。
+    func setSecondaryDockVisibleRows(_ rows: Int, space: DesktopSpace?, edge: DockBarPosition) {
+        guard let space else { return }
+        let key = SecondaryDockRowPref.key(spaceID: space.id, edge: edge)
+        let clamped = min(max(rows, 1), DockBar.maxRowsPerEdge)
+        guard settings.secondaryDockRowPrefs[key]?.visibleRows != clamped else { return }
+        updateSettings { settings in
+            var pref = settings.secondaryDockRowPrefs[key] ?? SecondaryDockRowPref()
+            pref.visibleRows = clamped
+            settings.secondaryDockRowPrefs[key] = pref
+        }
+    }
+
+    /// 用户滚到的行（收起时显示它；那根栏不在了就回到第一行）。
+    func setSecondaryDockAnchorRow(_ barID: UUID?, space: DesktopSpace?, edge: DockBarPosition) {
+        guard let space else { return }
+        let key = SecondaryDockRowPref.key(spaceID: space.id, edge: edge)
+        guard settings.secondaryDockRowPrefs[key]?.anchorBarID != barID else { return }
+        updateSettings { settings in
+            var pref = settings.secondaryDockRowPrefs[key] ?? SecondaryDockRowPref()
+            pref.anchorBarID = barID
+            settings.secondaryDockRowPrefs[key] = pref
+        }
     }
 
     // MARK: - 启动台（macOS 26 以下；「启动台」Tab）
@@ -1500,7 +1590,7 @@ final class AppState {
         refreshDockCapabilities()
         // 导入的栏里可能带着"原生 Dock 也有"的 App —— 按同一套规则清洗（用户规格 2026-10-06）。
         refreshNativeDockPinnedApps(reason: L("导入配置", "importing config"))
-        secondaryDock?.refresh()
+        secondaryDocks.forEach { $0.refresh() }
         // 解冻方向要恢复逐桌面写（开向 = 不再写，无需动作）。
         if settings.freezeNativeDockSwitching != previousFreeze,
            !settings.freezeNativeDockSwitching,

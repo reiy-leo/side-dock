@@ -21,6 +21,16 @@ protocol SecondaryDockPresenting: AnyObject {
     var isOnActiveSpace: Bool { get }
     /// 安全网信号：当前透明度（animator 卡死 / 渐回中断检测，实验 26 26f）。
     var currentAlpha: CGFloat { get }
+    /// 多行条（2026-10-23）：显出 / 收起态切换。真实窗口据此显隐拖拽 handle，
+    /// 收起时把滚动位置复位到「上次滚到的行」。
+    func setRevealed(_ revealed: Bool)
+}
+
+/// 新增要求的默认实现：替身（测试里的假 presenter）不必逐个补。
+/// ⚠️ 要求本身声明在协议里（不是只在扩展里），走 `any SecondaryDockPresenting` 也会分派到真实实现
+/// （rules.md「协议见证位」教训）。
+extension SecondaryDockPresenting {
+    func setRevealed(_ revealed: Bool) {}
 }
 
 /// 贴在原生 Dock 内侧的次级条窗口。
@@ -86,6 +96,23 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     /// 最近一次内容的位置与所属栏（右键菜单的勾标与落点）。
     private var currentPosition: DockBarPosition = .bottom
     private var currentBarID: UUID?
+    /// 光标最近停过的那一行（多行条右键菜单作用在它上面，2026-10-23）。
+    private var hoveredRowBarID: UUID?
+    /// 最近一次内容的锚定行（收起时复位到这一行）。
+    private var anchorRowBarID: UUID?
+    private var currentRowIDs: [UUID] = []
+    private var isRevealedState = false
+    /// 多行条的滚动 / handle 状态（视图经 `@Bindable` 读写）。
+    let rowsModel = SecondaryDockRowsModel()
+
+    /// 用户滚到了另一行（静默窗外的滚动才回报）。由 `AppDelegate` 接到
+    /// `SecondaryDockController.rowScrolled(_:)`，最终落 `AppState` 按桌面存。
+    var onRowScrolled: (UUID?) -> Void = { _ in }
+    /// 拖拽 handle。由 `AppDelegate` 接到 `SecondaryDockController.resize(_:)`。
+    var onResize: (SecondaryDockResizePhase) -> Void = { _ in }
+    /// 按栏给可选位置（同桌面同边满 3 根的边置灰，2026-10-23）。设了就优先于
+    /// `availablePositionsProvider`。
+    var availablePositionsForBar: ((UUID?) -> [DockBarPosition])?
 
     /// 工厂与测试共用：`SecondaryDockWindowFactory` 直接走这条装配路径，
     /// 快照验出来的才是真窗口。
@@ -112,7 +139,15 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         container.blendingMode = .behindWindow
         container.state = .active
 
-        hosting = SecondaryDockHostingView(rootView: makeStrip(items: [], isVertical: false, iconSize: 36))
+        hosting = SecondaryDockHostingView(rootView: SecondaryDockStripView(
+            rows: [],
+            position: .bottom,
+            isVertical: false,
+            iconSize: 36,
+            model: rowsModel,
+            onActivate: { _ in },
+            onHoverChange: { _ in }
+        ))
         hosting.autoresizingMask = [.width, .height]
         hosting.menuProvider = { [weak self] in self?.makeContextMenu() }
         container.addSubview(hosting)
@@ -120,22 +155,57 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
 
         menuTarget.onSelect = { [weak self] position in
             guard let self else { return }
-            self.onPositionSelected(self.currentBarID, position)
+            self.onPositionSelected(self.menuTargetBarID, position)
         }
+        rowsModel.onUserScrolled = { [weak self] rowID in
+            guard let self else { return }
+            self.anchorRowBarID = rowID
+            self.onRowScrolled(rowID)
+        }
+    }
+
+    /// 右键菜单作用的栏：光标停过、且仍在当前内容里的那一行；否则第一行。
+    private var menuTargetBarID: UUID? {
+        if let hoveredRowBarID, currentRowIDs.contains(hoveredRowBarID) { return hoveredRowBarID }
+        return currentBarID
     }
 
     func updateContent(_ content: SecondaryDockContentSnapshot, isVertical: Bool) {
         currentPosition = content.position
         currentBarID = content.barID
+        let rows = content.displayRows
+        let rowIDs = rows.map(\.barID)
+        let anchor = content.effectiveAnchorBarID
+        let rowsChanged = rowIDs != currentRowIDs
+        currentRowIDs = rowIDs
         hosting.rootView = makeStrip(
-            items: content.items,
+            rows: rows,
+            position: content.position,
             isVertical: isVertical,
             iconSize: content.iconSize
         )
+        // 行集合或锚定行变了（切桌面、改绑定、首次显示）：滚到锚定行。用户自己滚出来的
+        // 锚定行回写后原样回来，`scroll(to:)` 对同值不动作。
+        if rowsChanged || anchor != anchorRowBarID {
+            anchorRowBarID = anchor
+            rowsModel.scroll(to: anchor)
+        }
+        rowsModel.showsHandle = isRevealedState && rows.count > 1
+    }
+
+    func setRevealed(_ revealed: Bool) {
+        isRevealedState = revealed
+        rowsModel.showsHandle = revealed && currentRowIDs.count > 1
+        // 视口要变形：这段时间 ScrollView 的夹紧不是用户滚动。收起时回到上次滚到的行。
+        rowsModel.suppressReports()
+        if !revealed {
+            rowsModel.scroll(to: anchorRowBarID)
+        }
     }
 
     func setFrame(_ frame: NSRect, animated: Bool) {
         intendedFrame = frame
+        rowsModel.suppressReports()
         container.frame = NSRect(origin: .zero, size: frame.size)
         // NSVisualEffectView 没有 cornerRadius（那是 UIKit 的），圆角靠 maskImage 现画。
         container.maskImage = Self.maskImage(size: frame.size)
@@ -219,9 +289,11 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
         menu.title = L("屏幕位置", "Screen Position")
+        let target = menuTargetBarID
+        let available = availablePositionsForBar?(target) ?? availablePositionsProvider()
         for choice in DockBarPosition.choices(
             current: currentPosition,
-            available: availablePositionsProvider()
+            available: available
         ) {
             let menuItem = NSMenuItem(
                 title: choice.position.displayName,
@@ -255,13 +327,22 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         }
     }
 
-    private func makeStrip(items: [SecondaryDockItem], isVertical: Bool, iconSize: CGFloat) -> SecondaryDockStripView {
+    private func makeStrip(
+        rows: [SecondaryDockRow],
+        position: DockBarPosition,
+        isVertical: Bool,
+        iconSize: CGFloat
+    ) -> SecondaryDockStripView {
         SecondaryDockStripView(
-            items: items,
+            rows: rows,
+            position: position,
             isVertical: isVertical,
             iconSize: iconSize,
+            model: rowsModel,
             onActivate: { [weak self] item in self?.onActivate(item) },
-            onHoverChange: { [weak self] inside in self?.onHoverChange(inside) }
+            onHoverChange: { [weak self] inside in self?.onHoverChange(inside) },
+            onRowHover: { [weak self] barID in self?.hoveredRowBarID = barID },
+            onResize: { [weak self] phase in self?.onResize(phase) }
         )
     }
 

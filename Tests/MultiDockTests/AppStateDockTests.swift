@@ -487,25 +487,127 @@ final class AppStateDockTests: XCTestCase {
         XCTAssertEqual(bar?.position, .bottom)
     }
 
-    func testBindingOneBarDisplacesTheOtherOnTheSameDesktop() {
-        // 一个桌面同时只挂一根栏：把第二根绑上去，第一根自动让出（应用保留）。
+    // MARK: - 一个桌面多根栏（2026-10-23：每条边最多 3 根，在那条边的次级条里各占一行）
+
+    private func multiBarState(_ name: String) -> (AppState, [DesktopSpace]) {
         let fixture = twoDesktops()
         let state = makeState(
             preferences: FakePreferences(domain: baseDomain()),
-            stores: makeStores("bind-displace"),
+            stores: makeStores(name),
             provider: fixture.provider
         )
         state.start()
-        defer { state.stop() }
         state.updateSettings { $0.autoApplyOnEdit = false }
+        return (state, fixture.spaces)
+    }
 
-        let first = bindBar(state, to: fixture.spaces[0], apps: apps(count: 1), name: "第一根")
-        let second = bindBar(state, to: fixture.spaces[0], apps: apps(count: 2), name: "第二根")
+    func testUpToThreeBarsShareOneEdgeOfADesktop() {
+        let (state, spaces) = multiBarState("multi-bar-three")
+        defer { state.stop() }
 
-        XCTAssertNil(state.dockBar(id: first)?.spaceID, "先到的让出桌面")
-        XCTAssertEqual(state.dockBar(id: second)?.spaceID, fixture.spaces[0].id)
-        XCTAssertFalse(state.dockBar(id: first)!.apps.isEmpty, "让出的栏应用保留")
-        XCTAssertTrue(state.log.contains { $0.message.contains("让出桌面") })
+        let first = bindBar(state, to: spaces[0], apps: apps(count: 1, prefix: "A"), name: "第一根")
+        let second = bindBar(state, to: spaces[0], apps: apps(count: 2, prefix: "B"), name: "第二根")
+        let third = bindBar(state, to: spaces[0], apps: apps(count: 3, prefix: "C"), name: "第三根")
+
+        for id in [first, second, third] {
+            XCTAssertEqual(state.dockBar(id: id)?.spaceID, spaces[0].id, "同一条边 3 根以内都能绑，不再互相挤掉")
+            XCTAssertEqual(state.dockBar(id: id)?.position, .bottom)
+        }
+        XCTAssertEqual(state.dockBars(for: spaces[0], edge: .bottom).map(\.id), [first, second, third])
+        let content = state.secondaryDockContent(for: spaces[0], edge: .bottom)
+        XCTAssertEqual(content?.rows.map(\.barID), [first, second, third], "每根栏一行，按栏列表顺序")
+        XCTAssertEqual(content?.maxRowItemCount, 3, "窗口长度按最长那一行")
+        XCTAssertEqual(content?.effectiveVisibleRows, 1, "没拖过 handle：展开 1 行")
+        XCTAssertEqual(content?.effectiveAnchorBarID, first, "没滚过：收起显示第一行")
+        XCTAssertNil(state.secondaryDockContent(for: spaces[0], edge: .left), "左边没有栏")
+        XCTAssertEqual(state.dockBar(for: spaces[0])?.id, first, "主栏 = 第一根（原生 Dock 方位未知时）")
+    }
+
+    func testFourthBarOnAFullEdgeMovesToAFreeEdge() {
+        let (state, spaces) = multiBarState("multi-bar-overflow")
+        defer { state.stop() }
+
+        for index in 0..<3 {
+            bindBar(state, to: spaces[0], apps: apps(count: 1, prefix: "F\(index)"), name: "满\(index)")
+        }
+        let fourth = bindBar(state, to: spaces[0], apps: apps(count: 1, prefix: "G"), name: "第四根")
+
+        XCTAssertEqual(state.dockBar(id: fourth)?.spaceID, spaces[0].id)
+        XCTAssertEqual(state.dockBar(id: fourth)?.position, .left, "底部已满：挪到第一条有空位的可用边")
+        XCTAssertEqual(state.dockBars(for: spaces[0], edge: .bottom).count, 3)
+        XCTAssertTrue(state.log.contains { $0.message.contains("已满") })
+    }
+
+    func testBindingIsRefusedWhenEveryEdgeIsFull() {
+        let (state, spaces) = multiBarState("multi-bar-all-full")
+        defer { state.stop() }
+
+        for index in 0..<9 {
+            bindBar(state, to: spaces[0], apps: apps(count: 1, prefix: "P\(index)"), name: "栏\(index)")
+        }
+        for edge in DockBarPosition.allCases {
+            XCTAssertEqual(state.dockBars(for: spaces[0], edge: edge).count, 3, "三条边各 3 根")
+        }
+        let overflow = bindBar(state, to: spaces[0], apps: apps(count: 1, prefix: "Q"), name: "多余")
+        XCTAssertNil(state.dockBar(id: overflow)?.spaceID, "三条边都满：不绑")
+        XCTAssertTrue(state.log.contains { $0.level == .warning && $0.message.contains("挂满") })
+        XCTAssertEqual(state.dockBar(id: overflow)?.spaceID, nil)
+    }
+
+    func testMovingABarOntoAFullEdgeIsRefused() {
+        let (state, spaces) = multiBarState("multi-bar-move-full")
+        defer { state.stop() }
+
+        for index in 0..<3 {
+            bindBar(state, to: spaces[0], apps: apps(count: 1, prefix: "M\(index)"), name: "底\(index)")
+        }
+        let side = bindBar(state, to: spaces[0], apps: apps(count: 1, prefix: "S"), name: "侧栏")
+        XCTAssertEqual(state.dockBar(id: side)?.position, .left)
+        XCTAssertFalse(state.availableBarPositions(forBar: side).contains(.bottom), "底部满了：位置菜单里置灰")
+        XCTAssertTrue(state.availableBarPositions(forBar: side).contains(.left), "当前所在边永远可用")
+
+        state.setDockBarPosition(id: side, to: .bottom)
+        XCTAssertEqual(state.dockBar(id: side)?.position, .left, "兜底闸：不挪到已满的边")
+        XCTAssertTrue(state.log.contains { $0.level == .warning && $0.message.contains("已挂满") })
+
+        // 另一个桌面的同一条边不受影响。
+        let other = bindBar(state, to: spaces[1], apps: apps(count: 1, prefix: "O"), name: "别处")
+        XCTAssertEqual(state.dockBar(id: other)?.position, .bottom)
+    }
+
+    func testRowPrefsArePerDesktopAndEdgeAndFallBackToTheFirstRow() {
+        let (state, spaces) = multiBarState("multi-bar-prefs")
+        defer { state.stop() }
+
+        let first = bindBar(state, to: spaces[0], apps: apps(count: 1, prefix: "R"), name: "一")
+        let second = bindBar(state, to: spaces[0], apps: apps(count: 1, prefix: "T"), name: "二")
+        bindBar(state, to: spaces[1], apps: apps(count: 1, prefix: "U"), name: "别桌")
+
+        state.setSecondaryDockVisibleRows(9, space: spaces[0], edge: .bottom)
+        state.setSecondaryDockAnchorRow(second, space: spaces[0], edge: .bottom)
+
+        let content = state.secondaryDockContent(for: spaces[0], edge: .bottom)
+        XCTAssertEqual(state.settings.secondaryDockRowPrefs[SecondaryDockRowPref.key(spaceID: spaces[0].id, edge: .bottom)]?.visibleRows, 3, "存的时候钳到 3")
+        XCTAssertEqual(content?.effectiveVisibleRows, 2, "只有 2 根栏：最多展开 2 行")
+        XCTAssertEqual(content?.effectiveAnchorBarID, second, "收起显示上次滚到的行")
+        XCTAssertEqual(state.secondaryDockContent(for: spaces[1], edge: .bottom)?.effectiveVisibleRows, 1, "另一个桌面各存各的")
+
+        state.bindDockBar(second, to: nil)
+        XCTAssertEqual(state.secondaryDockContent(for: spaces[0], edge: .bottom)?.effectiveAnchorBarID, first,
+                       "上次滚到的那根栏不在了：回到第一行")
+    }
+
+    func testRowPrefsSurviveAConfigRoundTripAndOldConfigsDecode() throws {
+        var settings = AppSettings()
+        let id = UUID()
+        settings.secondaryDockRowPrefs["s#1|bottom"] = SecondaryDockRowPref(visibleRows: 2, anchorBarID: id)
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+        XCTAssertEqual(decoded.secondaryDockRowPrefs["s#1|bottom"], SecondaryDockRowPref(visibleRows: 2, anchorBarID: id))
+
+        let old = try JSONDecoder().decode(AppSettings.self, from: Data("{\"restoreOnQuit\": false}".utf8))
+        XCTAssertEqual(old.secondaryDockRowPrefs, [:], "旧配置没有这个键：解码成空，不连累其他设置")
+        XCTAssertFalse(old.restoreOnQuit)
     }
 
     func testUnbindingKeepsTheBarAndLeavesNoEffectiveConfig() {

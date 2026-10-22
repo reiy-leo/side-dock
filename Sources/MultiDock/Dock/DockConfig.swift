@@ -376,12 +376,16 @@ struct AppSettings: Codable, Hashable, Sendable {
     /// 只会让每次切换多等一次超时。留在 config 里是因为**换机器/系统放开后不用改代码**。
     /// ⚠️ 刻意**不做设置 UI**：能开也无效的开关就是假开关（项目规矩，见 D1/C7）。
     var animatedDesktopSwitch = false
+    /// 次级条每个「桌面 × 边」的行状态（展开行数 + 上次滚到的行），键见
+    /// `SecondaryDockRowPref.key`。2026-10-23 用户规格：拖成的高度按桌面各存各的。
+    var secondaryDockRowPrefs: [String: SecondaryDockRowPref] = [:]
 
     enum CodingKeys: String, CodingKey {
         case restoreOnQuit, clickAction, autoApplyOnEdit, autoCaptureUserEdits, reloadStrategy
         case showToastOnDesktopSwitch, desktopNamePlacement, desktopNameEffect
         case showSecondaryDock, freezeNativeDockSwitching
         case dockBars, menuBarIcon, animatedDesktopSwitch
+        case secondaryDockRowPrefs
     }
 
     init() {}
@@ -411,5 +415,9 @@ struct AppSettings: Codable, Hashable, Sendable {
         menuBarIcon = try container.decodeIfPresent(MenuBarIcon.self, forKey: .menuBarIcon) ?? .default
         animatedDesktopSwitch =
             try container.decodeIfPresent(Bool.self, forKey: .animatedDesktopSwitch) ?? false
+        secondaryDockRowPrefs = try container.decodeIfPresent(
+            [String: SecondaryDockRowPref].self,
+            forKey: .secondaryDockRowPrefs
+        ) ?? [:]
     }
 }

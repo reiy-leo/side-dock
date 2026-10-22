@@ -39,6 +39,10 @@ final class SecondaryDockController {
         /// 鼠标位置。收回去之前核对一遍 —— 窗口自己动过时 `onHover(false)` 可能丢事件；
         /// 显出带判定也用它。
         var mouseLocation: () -> CGPoint = { NSEvent.mouseLocation }
+        /// 多行条（2026-10-23）：拖拽 handle 松手后吸附出的行数 → `AppState` 按「桌面 × 边」存。
+        var onVisibleRowsCommitted: (DesktopSpace?, Int) -> Void = { _, _ in }
+        /// 多行条：用户滚到了另一行 → `AppState` 记成「上次滚到的行」（收起时显示它）。
+        var onAnchorRowChanged: (DesktopSpace?, UUID?) -> Void = { _, _ in }
     }
 
     private let deps: Dependencies
@@ -70,6 +74,13 @@ final class SecondaryDockController {
     /// 安全网连续未愈次数（退避：250 → 500 ms）。
     private var netBackoff = 0
     private let clock = ContinuousClock()
+    /// 最近一次内容快照（拖拽 handle 时要知道行数与图标尺寸）。
+    private var lastContent: SecondaryDockContentSnapshot?
+    /// 拖拽 handle 进行中（2026-10-23）：期间暂停收回防抖与显出宽限，
+    /// 否则光标一拖出窗口条就缩回去。
+    private(set) var isResizing = false
+    /// 拖拽中的实时厚度（非整数行）。轮询拍重摆时沿用它，不被已存的行数打回去。
+    private var resizeThickness: CGFloat?
 
     init(deps: Dependencies) {
         self.deps = deps
@@ -137,6 +148,8 @@ final class SecondaryDockController {
             isPreHidden = true
             // 顺手收回复展态：预隐藏期间收不到 hover 反馈，收回去切完桌面浮出的就是干净的半露。
             isRevealed = false
+            endResizeIfNeeded()
+            deps.presenter.setRevealed(false)
             applyCurrentFrame(animated: false)
             deps.presenter.hideForSpaceTransition()
             deps.log(L("次级 Dock 条：切桌面前置手势 → 预隐藏", "Secondary Dock: pre-switch gesture → pre-hide"))
@@ -226,9 +239,12 @@ final class SecondaryDockController {
             tuckTask = nil
             guard !isRevealed, let revealed = revealedFrame else { return }
             isRevealed = true
+            deps.presenter.setRevealed(true)
             deps.presenter.setFrame(revealed, animated: true)
             return
         }
+        // 拖拽 handle 期间光标常常拖出窗口：不收（松手时再核对一次光标）。
+        guard !isResizing else { return }
         guard isRevealed, tuckTask == nil else { return }
         tuckTask = Task { [debounce = deps.tuckDebounce] in
             try? await Task.sleep(for: debounce)
@@ -240,10 +256,98 @@ final class SecondaryDockController {
     /// 收回去。鼠标可能其实还停在条上（窗口自己动过、exit 事件丢了），先核对一遍位置。
     private func tuckIfMouseOutside() {
         tuckTask = nil
+        guard !isResizing else { return }
         guard isRevealed, let tucked = tuckedFrame, let revealed = revealedFrame else { return }
         guard !revealed.contains(deps.mouseLocation()) else { return }
         isRevealed = false
+        deps.presenter.setRevealed(false)
         deps.presenter.setFrame(tucked, animated: true)
+    }
+
+    // MARK: - 多行条：滚动与拖拽 handle（2026-10-23 用户规格）
+
+    /// 用户滚到了另一行（窗口的静默窗外才会回报）。
+    func rowScrolled(_ barID: UUID?) {
+        deps.onAnchorRowChanged(lastSpace, barID)
+    }
+
+    /// 拖拽 handle：厚度跟手（锚定靠 Dock / 屏幕边的那一侧），松手吸附到整行并回存。
+    /// 收起态固定 1 行，所以只改显出态的 frame；拖动时条一定是显出的。
+    func resize(_ phase: SecondaryDockResizePhase) {
+        guard let content = lastContent else { return }
+        let maxRows = min(content.displayRows.count, DockBar.maxRowsPerEdge)
+        guard maxRows > 1 else { return }
+        let iconSize = content.iconSize
+        let minThickness = SecondaryDockLayout.thickness(rows: 1, iconSize: iconSize)
+        let maxThickness = SecondaryDockLayout.thickness(rows: maxRows, iconSize: iconSize)
+        switch phase {
+        case .began:
+            guard !isPreHidden else { return }
+            isResizing = true
+            tuckTask?.cancel()
+            tuckTask = nil
+            hideGraceTask?.cancel()
+            hideGraceTask = nil
+            if !isRevealed, let revealed = revealedFrame {
+                isRevealed = true
+                deps.presenter.setRevealed(true)
+                deps.presenter.setFrame(revealed, animated: false)
+            }
+        case .changed(let point):
+            guard isResizing, let revealed = revealedFrame else { return }
+            let raw = SecondaryDockLayout.thickness(dragging: point, anchoredFrame: revealed, position: currentPosition)
+            let thickness = min(max(raw, minThickness), maxThickness)
+            resizeThickness = thickness
+            let frame = SecondaryDockLayout.resized(revealed, toThickness: thickness, position: currentPosition)
+            revealedFrame = frame
+            deps.presenter.setFrame(frame, animated: false)
+        case .ended:
+            guard isResizing else { return }
+            let current = resizeThickness
+                ?? SecondaryDockLayout.thickness(rows: content.effectiveVisibleRows, iconSize: iconSize)
+            endResizeIfNeeded()
+            let rows = SecondaryDockLayout.snappedRows(thickness: current, iconSize: iconSize, maxRows: maxRows)
+            if let revealed = revealedFrame {
+                let frame = SecondaryDockLayout.resized(
+                    revealed,
+                    toThickness: SecondaryDockLayout.thickness(rows: rows, iconSize: iconSize),
+                    position: currentPosition
+                )
+                revealedFrame = frame
+                deps.presenter.setFrame(frame, animated: true)
+            }
+            deps.log(L("次级 Dock 条：拖成 \(rows) 行（\(currentPosition.displayName)）",
+                       "Secondary Dock: resized to \(rows) row(s) (\(currentPosition.displayName))"))
+            deps.onVisibleRowsCommitted(lastSpace, rows)
+            // 松手时光标若已在条外：走正常的防抖收回。
+            if let revealed = revealedFrame, !revealed.contains(deps.mouseLocation()) {
+                hoverChanged(false)
+            }
+        }
+    }
+
+    /// 结束拖拽状态（松手 / 预隐藏 / 隐藏都会走到）。
+    private func endResizeIfNeeded() {
+        isResizing = false
+        resizeThickness = nil
+    }
+
+    /// 按内容算显出 / 收起两个 frame 的尺寸：收起恒 1 行，显出 = 拖拽中的实时厚度或已存行数。
+    private func frameSizes(for content: SecondaryDockContentSnapshot) -> (revealed: CGSize, tucked: CGSize) {
+        let isVertical = content.position.isBarVertical
+        let iconSize = content.iconSize
+        let maxItems = content.maxRowItemCount
+        let tuckedThickness = SecondaryDockLayout.thickness(rows: 1, iconSize: iconSize)
+        let revealedThickness = resizeThickness
+            ?? SecondaryDockLayout.thickness(rows: content.effectiveVisibleRows, iconSize: iconSize)
+        return (
+            SecondaryDockLayout.multiRowSize(
+                maxItemCount: maxItems, thickness: revealedThickness, iconSize: iconSize, isVertical: isVertical
+            ),
+            SecondaryDockLayout.multiRowSize(
+                maxItemCount: maxItems, thickness: tuckedThickness, iconSize: iconSize, isVertical: isVertical
+            )
+        )
     }
 
     // MARK: - 内部
@@ -264,16 +368,13 @@ final class SecondaryDockController {
             return
         }
         currentPosition = content.position
-        let barSize = SecondaryDockLayout.barSize(
-            itemCount: content.items.count,
-            iconSize: content.iconSize,
-            isVertical: content.position.isBarVertical
-        )
+        lastContent = content
+        let sizes = frameSizes(for: content)
         // 附着模式（face 在场且方位一致）：贴原生 Dock 内侧。
+        // 多行（2026-10-23）：显出按 N 行摆（锚定 Dock 内侧面往屏幕内长），收起按 1 行摆。
         if let face, currentPosition.matches(face.orientation) {
-            let placement = SecondaryDockLayout.placement(barSize: barSize, face: face)
-            revealedFrame = placement.revealed
-            tuckedFrame = placement.tucked
+            revealedFrame = SecondaryDockLayout.placement(barSize: sizes.revealed, face: face).revealed
+            tuckedFrame = SecondaryDockLayout.placement(barSize: sizes.tucked, face: face).tucked
             currentIsVertical = currentPosition.isBarVertical
             deps.presenter.updateContent(content, isVertical: currentIsVertical)
             applyCurrentFrame(animated: false)
@@ -296,13 +397,16 @@ final class SecondaryDockController {
         }
         // 独立贴边：与原生 Dock 的几何无关（即便 face == nil 也照摆）。
         if let screen = deps.faceProvider.currentScreenFrame() {
-            let placement = SecondaryDockLayout.standalonePlacement(
-                barSize: barSize,
+            revealedFrame = SecondaryDockLayout.standalonePlacement(
+                barSize: sizes.revealed,
                 position: currentPosition,
                 screen: screen
-            )
-            revealedFrame = placement.revealed
-            tuckedFrame = placement.tucked
+            ).revealed
+            tuckedFrame = SecondaryDockLayout.standalonePlacement(
+                barSize: sizes.tucked,
+                position: currentPosition,
+                screen: screen
+            ).tucked
             currentIsVertical = currentPosition.isBarVertical
             deps.presenter.updateContent(content, isVertical: currentIsVertical)
             applyCurrentFrame(animated: false)
@@ -326,7 +430,11 @@ final class SecondaryDockController {
         tuckTask = nil
         hideGraceTask?.cancel()
         hideGraceTask = nil
+        if isRevealed {
+            deps.presenter.setRevealed(false)
+        }
         isRevealed = false
+        endResizeIfNeeded()
         if isPreHidden {
             isPreHidden = false
             gestureRevealTask?.cancel()
@@ -351,6 +459,7 @@ final class SecondaryDockController {
         // 从没见过 Dock 几何就没有可用的 frame（零尺寸窗口），宁可继续藏着。
         guard tuckedFrame != nil else { return }
         if let content, cursorInRevealZone() {
+            lastContent = content
             hideGraceTask?.cancel()
             hideGraceTask = nil
             deps.presenter.updateContent(content, isVertical: currentIsVertical)
