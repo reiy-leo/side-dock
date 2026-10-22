@@ -9,8 +9,8 @@
 ```bash
 swift build -c release --disable-sandbox   # 编译
 swift test --disable-sandbox               # 364 个测试（9 个真实 Dock 验收 + 2 个 UI 快照默认跳过）
-./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
-open build/MultiDock.app                   # 运行（必须在 .app 里跑，菜单栏图标才正常）
+./scripts/build-app.sh                     # 组装 build/Side Dock.app（ad-hoc 签名）
+open "build/Side Dock.app"                 # 运行（必须在 .app 里跑，菜单栏图标才正常）
 ./scripts/check-toast-window.sh --watch 12 # 客观验收 toast（零权限，读窗口元数据）
 
 # 真实 Dock 验收：会真的改 com.apple.dock 并重启 Dock，跑完自动还原

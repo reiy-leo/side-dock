@@ -15,7 +15,6 @@ struct LaunchpadTab: View {
 
     /// 每个文件夹行下方的操作结果（itemID → 一句话），失败与成功同栏呈现。
     @State private var outcomes: [Int: LaunchpadOperationOutcome] = [:]
-    @State private var hoveredRow: Int?
 
     var body: some View {
         ScrollView {
@@ -37,7 +36,8 @@ struct LaunchpadTab: View {
             .padding(.bottom, 16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .onAppear { state.refreshLaunchpadFolders() }
+        // 2026-10-23「每次打开都很卡」：读库 / 解析 / 取图标挪到后台，主线程只接结果。
+        .onAppear { state.refreshLaunchpadFoldersInBackground() }
     }
 
     // MARK: - 状态分支
@@ -63,7 +63,7 @@ struct LaunchpadTab: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Button(L("刷新", "Refresh")) { state.refreshLaunchpadFolders() }
+            Button(L("刷新", "Refresh")) { state.refreshLaunchpadFoldersInBackground(forceReload: true) }
         }
     }
 
@@ -82,7 +82,7 @@ struct LaunchpadTab: View {
                        "Launchpad Folders (\(state.launchpadFolders.count))"))
                     .font(.headline)
                 Spacer(minLength: 8)
-                Button(L("刷新", "Refresh")) { state.refreshLaunchpadFolders() }
+                Button(L("刷新", "Refresh")) { state.refreshLaunchpadFoldersInBackground(forceReload: true) }
                     .controlSize(.small)
                     .help(L("重新读取启动台数据库（在启动台里改过文件夹后点它）",
                             "Re-read the Launchpad database (use this after changing folders in Launchpad)"))
@@ -98,7 +98,14 @@ struct LaunchpadTab: View {
             } else {
                 VStack(spacing: 6) {
                     ForEach(state.launchpadFolders) { folder in
-                        folderRow(folder)
+                        LaunchpadFolderRow(
+                            state: state,
+                            folder: folder,
+                            outcome: Binding(
+                                get: { outcomes[folder.id] },
+                                set: { outcomes[folder.id] = $0 }
+                            )
+                        )
                     }
                 }
             }
@@ -111,34 +118,42 @@ struct LaunchpadTab: View {
                 .padding(.top, 8)
         }
     }
+}
+
+/// 启动台页的一行文件夹。**独立成 View、悬停态自己持有**（2026-10-23 性能）：
+/// 以前悬停态在整页 `@State` 上，光标每跨一行整页 body 重算、上百个图标全量重取。
+private struct LaunchpadFolderRow: View {
+    @Bindable var state: AppState
+    let folder: LaunchpadFolder
+    @Binding var outcome: LaunchpadOperationOutcome?
+    @State private var isHovered = false
 
     /// 一行文件夹：名称 + 计数 + App 图标预览；右侧两个操作：
     /// 「添加到 Dock 栏 ▾」把本文件夹的 App 并入某根栏，**不清空它**；
     /// 「替换 Dock 栏 ▾」清空某根栏，换成这个文件夹的内容。
-    private func folderRow(_ folder: LaunchpadFolder) -> some View {
-        let isHovered = hoveredRow == folder.id
-        return VStack(alignment: .leading, spacing: 6) {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(folder.displayName)
                         .font(.body.weight(.medium))
                         .lineLimit(1)
-                    Text(folderCountText(folder))
+                    Text(folderCountText)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 .frame(width: 150, alignment: .leading)
 
-                iconPreview(folder)
+                iconPreview
 
                 Spacer(minLength: 8)
 
-                addMenu(folder)
-                replaceMenu(folder)
+                addMenu
+                replaceMenu
             }
 
-            if let outcome = outcomes[folder.id] {
+            if let outcome {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: outcome.failed ? "exclamationmark.triangle" : "checkmark.circle")
                         .foregroundStyle(outcome.failed ? Color.orange : Color.secondary)
@@ -147,7 +162,7 @@ struct LaunchpadTab: View {
                         .foregroundStyle(outcome.failed ? Color.orange : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    Button(L("知道了", "OK")) { outcomes[folder.id] = nil }
+                    Button(L("知道了", "OK")) { self.outcome = nil }
                         .font(.caption)
                 }
             }
@@ -162,13 +177,10 @@ struct LaunchpadTab: View {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
         )
-        .onHover { inside in
-            if inside { hoveredRow = folder.id }
-            else if hoveredRow == folder.id { hoveredRow = nil }
-        }
+        .onHover { isHovered = $0 }
     }
 
-    private func folderCountText(_ folder: LaunchpadFolder) -> String {
+    private var folderCountText: String {
         var text = L("\(folder.apps.count) 个 App", "\(folder.apps.count) app(s)")
         if folder.unresolvedCount > 0 {
             text += L("（\(folder.unresolvedCount) 个定位不到）", " (\(folder.unresolvedCount) not found)")
@@ -177,7 +189,7 @@ struct LaunchpadTab: View {
     }
 
     /// App 图标预览：只显示图标、不显示名字（与应用栏编辑器同口径），名字靠悬停 tooltip。
-    private func iconPreview(_ folder: LaunchpadFolder) -> some View {
+    private var iconPreview: some View {
         let shown = folder.apps.prefix(10)
         return HStack(spacing: 3) {
             ForEach(Array(shown.enumerated()), id: \.offset) { _, app in
@@ -207,9 +219,9 @@ struct LaunchpadTab: View {
 
     /// 目标栏列表的菜单项。用 `Menu` + `Button`（不是 `Picker`）：
     /// 每个文件夹行都要独立弹一份，且行标签要带图标数说明。
-    private func addMenu(_ folder: LaunchpadFolder) -> some View {
+    private var addMenu: some View {
         Menu {
-            barActions(for: folder) { bar in
+            barActions { bar in
                 state.addLaunchpadFolder(folder, to: bar.id)
             }
         } label: {
@@ -222,9 +234,9 @@ struct LaunchpadTab: View {
                 "Append this folder's apps to the chosen Dock bar (existing icons are kept)"))
     }
 
-    private func replaceMenu(_ folder: LaunchpadFolder) -> some View {
+    private var replaceMenu: some View {
         Menu {
-            barActions(for: folder) { bar in
+            barActions { bar in
                 state.replaceDockBar(bar.id, withLaunchpadFolder: folder)
             }
         } label: {
@@ -238,7 +250,6 @@ struct LaunchpadTab: View {
     }
 
     private func barActions(
-        for folder: LaunchpadFolder,
         perform: @escaping (DockBar) -> LaunchpadOperationOutcome
     ) -> some View {
         Group {
@@ -247,7 +258,7 @@ struct LaunchpadTab: View {
             } else {
                 ForEach(state.dockBars) { bar in
                     Button {
-                        outcomes[folder.id] = perform(bar)
+                        outcome = perform(bar)
                     } label: {
                         Text(barMenuTitle(bar))
                     }

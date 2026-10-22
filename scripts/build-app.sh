@@ -4,7 +4,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CONFIG="${1:-release}"
-APP="build/MultiDock.app"
+# 2026-10-23 改名 Side Dock：包名带空格，下面所有路径都要加引号。
+# 可执行文件、图标文件名、bundle id（local.multidock）保持旧名：登录项与配置不受影响。
+APP="build/Side Dock.app"
 
 # ⚠️ 必须带 `--disable-sandbox`：SwiftPM 自己的 `sandbox-exec` 在本机报
 # `sandbox_apply: Operation not permitted`，manifest 编译失败，错误信息伪装成

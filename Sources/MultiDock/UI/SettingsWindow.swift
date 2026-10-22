@@ -13,7 +13,7 @@ enum SettingsWindowFactory {
         // 仍保留 .titled —— 红绿灯与顶部隐藏拖拽区靠它；fullSizeContentView 让内容
         // 占满全高，侧边栏材质（NavigationSplitView 左列）因此延伸进原 titlebar 区。
         // title 只给「窗口」菜单与辅助功能用，界面上不再显示。
-        window.title = L("MultiDock 设置", "MultiDock Settings")
+        window.title = L("Side Dock 设置", "Side Dock Settings")
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true

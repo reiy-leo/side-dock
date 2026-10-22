@@ -1,4 +1,4 @@
-# MultiDock — 项目交接说明（Agent 入口）
+# Side Dock（原 MultiDock）— 项目交接说明（Agent 入口）
 
 > **本文件是入口与当前状态**；细节按主题分流：
 > 设计与规格 → `docs/PLAN.md`；实验数据 → `docs/spikes.md`；环境事实 → `docs/facts.md`；
@@ -239,7 +239,16 @@ arm64 由 CI 构建）。「关于」页的更新检查走 `releases/latest`，�
 **新增（2026-10-23，第 70 次）多行次级条（一个桌面多根栏）**：同桌面同边最多 3 根栏，在那条边的
 一扇窗口里各占一行；收起 1 行、显出按「桌面 × 边」存的行数；handle 拖高、按行滚动。规格见
 `docs/PLAN.md` §3.12.x。代码在分支 `feat/multi-row-dock`（Hark 远程改的，CI 全绿），已发预发布 **v0.2.0-alpha.1**（zip + dmg，双架构）。
-发版补充：标签带 `-` 自动发预发布；CI 同时产出 `MultiDock-v<版本>-<架构>.dmg`。
+发版补充：标签带 `-` 自动发预发布；CI 同时产出 `SideDock-v<版本>-<架构>.dmg` 与 `.zip`（v0.2.0-alpha.1 及更早叫 `MultiDock-…`）。
+
+**改名（2026-10-23，第 72 次）**：对外名称统一为 **Side Dock**（界面文案、`Side Dock.app` 包名、
+CFBundleName/DisplayName、Release 标题与资产名）。**刻意不改**：Swift 包 / target / 模块名 `MultiDock`、
+可执行文件名、图标文件名、bundle id `local.multidock`、配置目录 `~/Library/Application Support/MultiDock/`
+—— 改了会丢用户配置、登录项与历史测试。包名带空格，脚本里路径一律加引号。
+
+- **A16（待真机）**：① 次级条 hover 图标出名字（窗口开了 `allowsToolTipsWhenApplicationIsInactive`，
+  内容没变不再重建视图）；② 开台前调度：贴在它那边的栏临时显示到底部，关掉回原位；原生 Dock 放左时台前调度在右，
+  避让右边；③ 设置 → 启动台页打开不卡（后台读库 + 图标缓存 + 行级悬停）；④ 菜单栏 / 设置窗口 / 关于页显示 Side Dock。
 
 - **A15（待真机手测）**：① 同一桌面底部绑 2–3 根栏，收起只露 1 行、hover 显出；② 拖上沿 handle 到 2/3 行，
   松手吸附、拖出窗口时不收回；③ 双指竖向滚动按行吸附、横向滑动照常切桌面；④ 滚到第 2 行后移开，
@@ -337,8 +346,8 @@ arm64 由 CI 构建）。「关于」页的更新检查走 `releases/latest`，�
 ```bash
 swift build -c release --disable-sandbox   # 编译（--disable-sandbox 必须加）
 swift test --disable-sandbox               # 508 个测试（9 个真实 Dock 验收 + 5 个离屏窗口测试 + 1 个启动台只读验收默认跳过）
-./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
-open build/MultiDock.app                   # 运行（必须在 .app 里跑，菜单栏图标才正常）
+./scripts/build-app.sh                     # 组装 build/Side Dock.app（ad-hoc 签名）
+open "build/Side Dock.app"                 # 运行（必须在 .app 里跑，菜单栏图标才正常）
 MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests  # 真机 Dock 验收（先备份！）
 MULTIDOCK_UI_SNAPSHOT=1 swift test --disable-sandbox --filter UISnapshotTests          # UI 离屏快照（零权限）
 MULTIDOCK_LAUNCHPAD_ACCEPTANCE=1 swift test --disable-sandbox --filter LaunchpadAcceptanceTests  # 真机启动台只读验收（不改任何东西）

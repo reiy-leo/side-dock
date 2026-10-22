@@ -18,7 +18,9 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>MultiDock</string>
+	<string>Side Dock</string>
+	<key>CFBundleDisplayName</key>
+	<string>Side Dock</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

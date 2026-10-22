@@ -28,7 +28,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             button.action = #selector(statusItemClicked(_:))
             // 关键：同时接收左右键，否则拿不到右键事件。
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            button.toolTip = L("MultiDock — 左键切下一个桌面，⇧+左键切上一个，右键打开菜单", "MultiDock — click for next desktop, ⇧-click for previous, right-click for menu")
+            button.toolTip = L("Side Dock — 左键切下一个桌面，⇧+左键切上一个，右键打开菜单", "Side Dock — click for next desktop, ⇧-click for previous, right-click for menu")
         }
         applyIcon()
 
@@ -43,7 +43,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// 套用设置里的菜单栏图标（Lucide 五选一）。取不到时回落系统符号 —— 菜单栏绝不能空着。
     private func applyIcon() {
         statusItem.button?.image = state.settings.menuBarIcon.image
-            ?? NSImage(systemSymbolName: "dock.rectangle", accessibilityDescription: "MultiDock")
+            ?? NSImage(systemSymbolName: "dock.rectangle", accessibilityDescription: "Side Dock")
     }
 
     /// 设置页换图标 → 立即生效（`withObservationTracking` 只回调一次，重注册自己）。

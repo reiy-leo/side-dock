@@ -501,6 +501,40 @@ final class AppStateDockTests: XCTestCase {
         return (state, fixture.spaces)
     }
 
+    /// 2026-10-23「dock 要避开台前调度所在的那一边」：台前调度一开，贴在它那条边上的栏
+    /// 显示到底部（配置不改）；关掉后回原位。
+    func testBarsOnTheStageManagerEdgeShowAtTheBottomUntilItTurnsOff() {
+        let fixture = twoDesktops()
+        final class Toggle { var on = false }
+        let stageManager = Toggle()
+        let state = makeState(
+            preferences: FakePreferences(domain: baseDomain()),
+            stores: makeStores("stage-manager-avoid"),
+            provider: fixture.provider,
+            environment: { EnvironmentReading(stageManagerActive: stageManager.on, dockSide: .bottom) }
+        )
+        state.start()
+        defer { state.stop() }
+        state.updateSettings { $0.autoApplyOnEdit = false }
+        let space = fixture.spaces[0]
+
+        let side = bindBar(state, to: space, apps: apps(count: 2, prefix: "S"), name: "左边栏")
+        state.setDockBarPosition(id: side, to: .left)
+        XCTAssertEqual(state.dockBars(for: space, edge: .left).map(\.id), [side])
+
+        stageManager.on = true
+        state.refreshEnvironment()
+        XCTAssertEqual(state.stageManagerEdge, .left)
+        XCTAssertTrue(state.dockBars(for: space, edge: .left).isEmpty, "台前调度占着左缘：左边不摆栏")
+        XCTAssertEqual(state.dockBars(for: space, edge: .bottom).map(\.id), [side], "临时显示到底部")
+        XCTAssertEqual(state.secondaryDockContent(for: space)?.position, .bottom)
+        XCTAssertEqual(state.dockBar(id: side)?.position, .left, "配置不改写")
+
+        stageManager.on = false
+        state.refreshEnvironment()
+        XCTAssertEqual(state.dockBars(for: space, edge: .left).map(\.id), [side], "台前调度关掉后回到左边")
+    }
+
     func testUpToThreeBarsShareOneEdgeOfADesktop() {
         let (state, spaces) = multiBarState("multi-bar-three")
         defer { state.stop() }
@@ -1247,7 +1281,7 @@ final class AppStateDockTests: XCTestCase {
         XCTAssertFalse(state.importConfiguration(from: badURL))
         XCTAssertEqual(state.dockBars.count, barsBefore, "导入失败不能动当前配置")
         XCTAssertEqual(state.lastDataOperationFailed, true)
-        XCTAssertTrue(state.lastDataOperationMessage?.contains("不是有效的 MultiDock 配置文件") ?? false)
+        XCTAssertTrue(state.lastDataOperationMessage?.contains("不是有效的 Side Dock 配置文件") ?? false)
     }
 
     // MARK: - 更新检查（关于 Tab，2026-10-06）

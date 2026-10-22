@@ -2,8 +2,8 @@ import Foundation
 
 /// 次级 Dock 条（Dock 栏）在屏幕上的位置（2026-10-05 用户规格）。
 ///
-/// 台前调度开启时占掉屏幕**左缘**（最近使用窗口条固定在左侧，系统不提供换侧设置），
-/// 所以可选位置要避开左 —— 「避开台前调度占用的那边，其他两边都可以用」。
+/// 台前调度开启时占掉屏幕左缘（原生 Dock 在左时改占右缘），可选位置与实际摆放都要避开那条边 ——
+/// 「避开台前调度占用的那边，其他两边都可以用」（2026-10-05；2026-10-23 加上运行时避让）。
 enum DockBarPosition: String, Codable, Sendable, CaseIterable {
     case bottom
     case left
@@ -20,11 +20,27 @@ enum DockBarPosition: String, Codable, Sendable, CaseIterable {
     /// 条自身的走向：底部配横条，侧边配竖条。
     var isBarVertical: Bool { self != .bottom }
 
-    /// 可选位置（UI 呈现顺序）。台前调度开启时排除左。
-    /// 只约束**设置入口**：已经存在、存着 `.left` 的栏不做运行时改写 ——
-    /// 用户把台前调度关掉后这根栏应当原样可用。
-    static func available(stageManagerActive: Bool) -> [DockBarPosition] {
-        allCases.filter { !(stageManagerActive && $0 == .left) }
+    /// 台前调度的最近使用条占的那条边（2026-10-23 用户规格「dock 要避开台前调度所在的那一边」）。
+    /// 默认在左缘；**原生 Dock 放在左边时，系统把台前调度条挪到右缘**。台前调度没开 = nil。
+    static func stageManagerEdge(
+        stageManagerActive: Bool,
+        dockSide: SecondaryDockOrientation?
+    ) -> DockBarPosition? {
+        guard stageManagerActive else { return nil }
+        return dockSide == .left ? .right : .left
+    }
+
+    /// 可选位置（UI 呈现顺序）：排除台前调度所在的那条边。
+    static func available(stageManagerActive: Bool, dockSide: SecondaryDockOrientation? = nil) -> [DockBarPosition] {
+        let avoided = stageManagerEdge(stageManagerActive: stageManagerActive, dockSide: dockSide)
+        return allCases.filter { $0 != avoided }
+    }
+
+    /// 运行时实际摆放的边（2026-10-23 起）：存着的位置正好是台前调度那条边时，**只在显示上**
+    /// 挪到底部（底部永远不被台前调度占），不改写配置 —— 台前调度关掉后自动回到原位。
+    func effective(avoiding stageManagerEdge: DockBarPosition?) -> DockBarPosition {
+        guard let stageManagerEdge, self == stageManagerEdge else { return self }
+        return .bottom
     }
 
     /// 位置选择项的呈现模型（设置页下拉与条上右键菜单**共用同一口径**，2026-10-06 用户规格：

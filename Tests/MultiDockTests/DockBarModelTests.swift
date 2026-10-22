@@ -20,6 +20,19 @@ final class DockBarModelTests: XCTestCase {
         )
     }
 
+    /// 2026-10-23「dock 要避开台前调度所在的那一边」：原生 Dock 在左时台前调度条在右。
+    func testStageManagerEdgeFollowsNativeDockSide() {
+        XCTAssertNil(DockBarPosition.stageManagerEdge(stageManagerActive: false, dockSide: .left))
+        XCTAssertEqual(DockBarPosition.stageManagerEdge(stageManagerActive: true, dockSide: .bottom), .left)
+        XCTAssertEqual(DockBarPosition.stageManagerEdge(stageManagerActive: true, dockSide: nil), .left)
+        XCTAssertEqual(DockBarPosition.stageManagerEdge(stageManagerActive: true, dockSide: .left), .right,
+                       "原生 Dock 在左，台前调度条挪到右缘")
+        XCTAssertEqual(DockBarPosition.available(stageManagerActive: true, dockSide: .left), [.bottom, .left])
+        XCTAssertEqual(DockBarPosition.left.effective(avoiding: .left), .bottom, "撞上台前调度的边：显示到底部")
+        XCTAssertEqual(DockBarPosition.right.effective(avoiding: .left), .right)
+        XCTAssertEqual(DockBarPosition.left.effective(avoiding: nil), .left)
+    }
+
     func testPositionVerticality() {
         XCTAssertFalse(DockBarPosition.bottom.isBarVertical)
         XCTAssertTrue(DockBarPosition.left.isBarVertical)

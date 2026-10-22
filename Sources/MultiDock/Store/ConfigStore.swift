@@ -4,6 +4,7 @@ import Foundation
 enum AppPaths {
     static var supportDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        // 2026-10-23 改名 Side Dock：配置目录**保持旧名**，升级后设置原样可用。
         return base.appendingPathComponent("MultiDock", isDirectory: true)
     }
 

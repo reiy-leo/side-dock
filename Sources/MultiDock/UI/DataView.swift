@@ -106,7 +106,7 @@ struct DataView: View {
     private func exportConfiguration() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = L("MultiDock-配置-\(dateStamp).json", "MultiDock-config-\(dateStamp).json")
+        panel.nameFieldStringValue = L("SideDock-配置-\(dateStamp).json", "SideDock-config-\(dateStamp).json")
         panel.prompt = L("导出", "Export")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         state.exportConfiguration(to: url)

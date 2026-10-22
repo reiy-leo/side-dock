@@ -7,7 +7,7 @@ import SwiftUI
 /// （零权限，普通网络请求）。版本号来自 `Support/Info.plist` 的
 /// `CFBundleShortVersionString`（打包脚本原样拷贝）——发版时记得改它。
 enum AppAbout {
-    static let appName = "MultiDock"
+    static let appName = "Side Dock"
     static let repoURL = URL(string: "https://github.com/reiy-leo/side-dock")!
     static let releasesAPIURL = URL(string: "https://api.github.com/repos/reiy-leo/side-dock/releases/latest")!
 
@@ -37,7 +37,7 @@ enum AppAbout {
         var request = URLRequest(url: releasesAPIURL)
         request.timeoutInterval = 8
         // GitHub API 要求带 UA，否则 403。
-        request.setValue("MultiDock-UpdateCheck", forHTTPHeaderField: "User-Agent")
+        request.setValue("SideDock-UpdateCheck", forHTTPHeaderField: "User-Agent")
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else {

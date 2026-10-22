@@ -1,4 +1,6 @@
-# MultiDock
+# Side Dock
+
+> 2026-10-23 起由 MultiDock 改名为 **Side Dock**（配置目录、bundle id 不变，升级后设置原样保留）。
 
 macOS 多桌面（Space）工具：**原生 Dock 全桌面保持一致，每个桌面的差异由贴在原生 Dock 内侧的「次级 Dock 条」呈现**；
 也可以关掉冻结开关，回到「每个桌面一套原生 Dock、切换时自动换」的老模式。菜单栏常驻，单击图标切到下一个桌面，⇧+单击切上一个。
@@ -14,16 +16,18 @@ macOS 多桌面（Space）工具：**原生 Dock 全桌面保持一致，每个�
 ## 下载
 
 最新发布版在 [GitHub Releases](https://github.com/reiy-leo/side-dock/releases/latest)：
-按你的机器下载对应的包（每个版本两个原生架构），解压后把 `MultiDock.app` 拖进「应用程序」。
+按你的机器下载对应的包（每个版本两个原生架构，DMG 与 zip 二选一）：打开 DMG 把 `Side Dock.app` 拖进「应用程序」，或解压 zip 后拖进去。
 
-- **Apple Silicon（M 系列）**：`MultiDock-vX.Y.Z-arm64.zip`
-- **Intel**：`MultiDock-vX.Y.Z-x86_64.zip`
+- **Apple Silicon（M 系列）**：`SideDock-vX.Y.Z-arm64.dmg`（或 `.zip`）
+- **Intel**：`SideDock-vX.Y.Z-x86_64.dmg`（或 `.zip`）
+
+> 从 MultiDock 升级：删掉旧的 `MultiDock.app` 再装 `Side Dock.app`；若开过「登录时启动」，在设置里关一次再开一次。
 
 > 两个包由 GitHub Actions 在两个原生 runner 上构建并校验架构（见 [.github/workflows/ci.yml](.github/workflows/ci.yml)）。
 
 > 本 App 按个人自用标准只做 **ad-hoc 签名、不公证**，首次打开会被 Gatekeeper 拦下：
 > 右键点 App →「打开」→ 弹窗里再点「打开」；或终端执行
-> `xattr -dr com.apple.quarantine /Applications/MultiDock.app`。
+> `xattr -dr com.apple.quarantine "/Applications/Side Dock.app"`。
 
 ## 当前状态
 
@@ -56,8 +60,8 @@ macOS 多桌面（Space）工具：**原生 Dock 全桌面保持一致，每个�
 ```bash
 swift build -c release --disable-sandbox   # 编译（--disable-sandbox 在本机是必须的，见下）
 swift test --disable-sandbox               # 508 个单元测试
-./scripts/build-app.sh                     # 组装 build/MultiDock.app（ad-hoc 签名）
-open build/MultiDock.app                   # 运行
+./scripts/build-app.sh                     # 组装 build/Side Dock.app（ad-hoc 签名）
+open "build/Side Dock.app"                 # 运行
 ```
 
 必须打包成 `.app` 再运行：直接执行 `.build/release/MultiDock` 没有 bundle，菜单栏图标与登录项都会异常。
@@ -187,7 +191,7 @@ rm -f ~/Library/LaunchAgents/local.multidock.loginitem.plist
 
 ```bash
 rm -rf ~/Library/Application\ Support/MultiDock
-rm -rf /path/to/MultiDock.app        # 默认在仓库的 build/MultiDock.app
+rm -rf "/path/to/Side Dock.app"      # 默认在仓库的 build/Side Dock.app
 ```
 
 三步走完，系统里没有任何残留：Dock 回到安装前的状态，登录项与数据目录都不在了。

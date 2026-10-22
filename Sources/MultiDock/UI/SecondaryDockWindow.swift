@@ -132,6 +132,10 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         window.isMovable = false
         window.animationBehavior = .none
         window.ignoresMouseEvents = false
+        // 悬停显示 App 名（`.help`）：本 App 是菜单栏应用，绝大多数时候**不是前台 App**，
+        // AppKit 默认只给前台 App 的窗口弹 tooltip —— 不开这个，名字只在设置窗口刚用过时偶尔出现
+        // （2026-10-23「hover 图标没显示名称」）。
+        window.allowsToolTipsWhenApplicationIsInactive = true
 
         // 材质与 toast 同款：`.popover` 跟随亮/深色外观，`behindWindow` 能压在任意内容上。
         container = NSVisualEffectView()
@@ -178,24 +182,50 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         let anchor = content.effectiveAnchorBarID
         let rowsChanged = rowIDs != currentRowIDs
         currentRowIDs = rowIDs
-        hosting.rootView = makeStrip(
-            rows: rows,
-            position: content.position,
-            isVertical: isVertical,
-            iconSize: content.iconSize
-        )
+        // 内容没变就不换 rootView（2026-10-23）：自动隐藏模式下几何轮询每拍都会推一次内容，
+        // 每拍重建视图树会把正在计时的 tooltip（悬停显示 App 名）冲掉。
+        let signature = Self.contentSignature(rows: rows, content: content, isVertical: isVertical)
+        if signature != lastContentSignature {
+            lastContentSignature = signature
+            hosting.rootView = makeStrip(
+                rows: rows,
+                position: content.position,
+                isVertical: isVertical,
+                iconSize: content.iconSize
+            )
+        }
         // 行集合或锚定行变了（切桌面、改绑定、首次显示）：滚到锚定行。用户自己滚出来的
         // 锚定行回写后原样回来，`scroll(to:)` 对同值不动作。
         if rowsChanged || anchor != anchorRowBarID {
             anchorRowBarID = anchor
             rowsModel.scroll(to: anchor)
         }
-        rowsModel.showsHandle = isRevealedState && rows.count > 1
+        let showsHandle = isRevealedState && rows.count > 1
+        if rowsModel.showsHandle != showsHandle { rowsModel.showsHandle = showsHandle }
+    }
+
+    /// 视图真正依赖的内容摘要：行、条目（ID / 名字 / 运行态 / 安装态）、尺寸、方位。
+    private var lastContentSignature: String?
+
+    private static func contentSignature(
+        rows: [SecondaryDockRow],
+        content: SecondaryDockContentSnapshot,
+        isVertical: Bool
+    ) -> String {
+        var parts = ["\(content.position.rawValue)|\(isVertical)|\(content.iconSize)"]
+        for row in rows {
+            parts.append("#\(row.barID.uuidString)")
+            for item in row.items {
+                parts.append("\(item.id)\u{1F}\(item.label)\u{1F}\(item.isRunning)\u{1F}\(item.isInstalled)")
+            }
+        }
+        return parts.joined(separator: "\u{1E}")
     }
 
     func setRevealed(_ revealed: Bool) {
         isRevealedState = revealed
-        rowsModel.showsHandle = revealed && currentRowIDs.count > 1
+        let showsHandle = revealed && currentRowIDs.count > 1
+        if rowsModel.showsHandle != showsHandle { rowsModel.showsHandle = showsHandle }
         // 视口要变形：这段时间 ScrollView 的夹紧不是用户滚动。收起时回到上次滚到的行。
         rowsModel.suppressReports()
         if !revealed {

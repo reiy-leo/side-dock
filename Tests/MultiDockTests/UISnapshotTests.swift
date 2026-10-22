@@ -26,6 +26,8 @@ final class UISnapshotTests: XCTestCase {
         // 不走 start()（那会启动轮询与监视器）；手动把桌面列表与键可用性缓存填上。
         state.refreshDesktops()
         state.refreshDockCapabilities()
+        // 启动台页出现时走后台读取（2026-10-23）；快照先同步读好，免得拍到「正在读取」。
+        state.refreshLaunchpadFolders()
         seed(state)
         let tabModel = SettingsTabModel()
         // 用真的窗口装配（含隐藏 titlebar 的窗口样式），而不是测试里另拼一个 —— 否则验出来的不是真窗口。
@@ -65,6 +67,8 @@ final class UISnapshotTests: XCTestCase {
         let state = makeState()
         state.refreshDesktops()
         state.refreshDockCapabilities()
+        // 启动台页出现时走后台读取（2026-10-23）；快照先同步读好，免得拍到「正在读取」。
+        state.refreshLaunchpadFolders()
         seed(state)
         let tabModel = SettingsTabModel()
         let window = SettingsWindowFactory.makeWindow(state: state, tabModel: tabModel)

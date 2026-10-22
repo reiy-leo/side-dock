@@ -43,7 +43,7 @@ jobs:
         run: swift test --disable-sandbox
 
   # 双架构构建：每个 runner 原生编译自己的架构。产物名带架构后缀，
-  # 与已有发布资产命名一致（MultiDock-v<版本>-<架构>.zip）。
+  # 资产命名 SideDock-v<版本>-<架构>.zip / .dmg（2026-10-23 改名 Side Dock；v0.2.0-alpha.1 及更早叫 MultiDock-…）。
   build:
     name: Build ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
@@ -61,15 +61,15 @@ jobs:
         run: |
           swift --version
           xcodebuild -version
-      - name: Build MultiDock.app
+      - name: Build Side Dock.app
         run: ./scripts/build-app.sh
       # 守着"构建出来的真是目标架构"：runner 装错镜像 / 脚本被改成通用二进制时，
       # 这里会红，而不是悄悄发出一个同名不同架构的包。
       - name: Verify bundle
         run: |
           set -euo pipefail
-          codesign --verify --deep --strict build/MultiDock.app
-          ARCHS="$(lipo -archs build/MultiDock.app/Contents/MacOS/MultiDock)"
+          codesign --verify --deep --strict "build/Side Dock.app"
+          ARCHS="$(lipo -archs "build/Side Dock.app/Contents/MacOS/MultiDock")"
           echo "bundle archs: $ARCHS"
           [ "$ARCHS" = "${{ matrix.arch }}" ]
       - name: Package zip + dmg
@@ -82,21 +82,21 @@ jobs:
           else
             VERSION="$(plutil -extract CFBundleShortVersionString raw Support/Info.plist)"
           fi
-          BASE="MultiDock-v${VERSION}-${{ matrix.arch }}"
+          BASE="SideDock-v${VERSION}-${{ matrix.arch }}"
           # ditto 而不是 zip：保留符号链接与权限位（.app 包的标准打包方式）。
-          ditto -c -k --keepParent build/MultiDock.app "${BASE}.zip"
+          ditto -c -k --keepParent "build/Side Dock.app" "${BASE}.zip"
           # DMG（2026-10-23 用户规格「打包 dmg」）：App + 指向 /Applications 的快捷方式，拖进去即装。
-          STAGE="$(mktemp -d)/MultiDock"
+          STAGE="$(mktemp -d)/Side Dock"
           mkdir -p "$STAGE"
-          ditto build/MultiDock.app "$STAGE/MultiDock.app"
+          ditto "build/Side Dock.app" "$STAGE/Side Dock.app"
           ln -s /Applications "$STAGE/Applications"
-          hdiutil create -volname "MultiDock" -srcfolder "$STAGE" -ov -format UDZO "${BASE}.dmg"
+          hdiutil create -volname "Side Dock" -srcfolder "$STAGE" -ov -format UDZO "${BASE}.dmg"
           hdiutil verify "${BASE}.dmg"
           shasum -a 256 "${BASE}.zip" "${BASE}.dmg"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
-          name: MultiDock-${{ matrix.arch }}
+          name: SideDock-${{ matrix.arch }}
           path: |
             ${{ steps.package.outputs.base }}.zip
             ${{ steps.package.outputs.base }}.dmg
@@ -124,7 +124,7 @@ jobs:
           ls -lh
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             EXISTING="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
-            for file in MultiDock-*.zip MultiDock-*.dmg; do
+            for file in SideDock-*.zip SideDock-*.dmg; do
               if grep -qxF "$file" <<< "$EXISTING"; then
                 echo "已存在，跳过：$file"
               else
@@ -134,9 +134,9 @@ jobs:
           else
             PRERELEASE=()
             if [[ "$TAG" == *-* ]]; then PRERELEASE=(--prerelease); fi
-            gh release create "$TAG" MultiDock-*.zip MultiDock-*.dmg \
+            gh release create "$TAG" SideDock-*.zip SideDock-*.dmg \
               --repo "$GITHUB_REPOSITORY" \
-              --title "MultiDock $TAG" \
+              --title "Side Dock $TAG" \
               --generate-notes \
               "${PRERELEASE[@]}"
           fi

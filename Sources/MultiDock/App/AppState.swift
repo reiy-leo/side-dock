@@ -149,6 +149,8 @@ final class AppState {
     private(set) var launchpadStatus: LaunchpadStatus = .notLoaded
     /// 上次记过的读取日志键：同一结果只记一次（每次切回本页都会重读，重复灌日志没有信息量）。
     private var lastLaunchpadLogKey: String?
+    /// 后台读取的代号：连点刷新 / 反复进出页面时，只认最后一次发起的结果。
+    @ObservationIgnored private var launchpadLoadGeneration = 0
 
     // MARK: - 数据（导出 / 导入）与更新检查
 
@@ -303,17 +305,19 @@ final class AppState {
     /// 「立即应用」与手改 Dock 回存针对的都是它。
     func dockBar(for space: DesktopSpace) -> DockBar? {
         let bars = settings.dockBars.filter { $0.spaceID == space.id }
-        if let dockSide, let primary = bars.first(where: { $0.position.matches(dockSide) }) {
+        if let dockSide, let primary = bars.first(where: { effectivePosition(of: $0).matches(dockSide) }) {
             return primary
         }
         return bars.first
     }
 
     /// 某桌面某条边上的栏（按 `dockBars` 顺序 = 行序，最多 `DockBar.maxRowsPerEdge` 根）。
+    /// 按**实际摆放的边**取：台前调度那条边上的栏这时归到底部（2026-10-23）；底部因此超过
+    /// 3 根时按 `dockBars` 顺序只显示前 3 根，台前调度关掉后各回各位。
     func dockBars(for space: DesktopSpace, edge: DockBarPosition) -> [DockBar] {
         Array(
             settings.dockBars
-                .filter { $0.spaceID == space.id && $0.position == edge }
+                .filter { $0.spaceID == space.id && effectivePosition(of: $0) == edge }
                 .prefix(DockBar.maxRowsPerEdge)
         )
     }
@@ -323,7 +327,7 @@ final class AppState {
         settings.dockBars.filter { $0.spaceID == spaceID && $0.position == edge && $0.id != id }.count
     }
 
-    /// 这根栏可以挪去的位置：台前调度避左 + **同桌面同边已满 3 根的边置灰**（2026-10-23）。
+    /// 这根栏可以挪去的位置：避开台前调度那条边 + **同桌面同边已满 3 根的边置灰**（2026-10-23）。
     /// 栏当前所在的边永远算可用（它本来就在那儿）。
     func availableBarPositions(forBar id: UUID?) -> [DockBarPosition] {
         let base = availableBarPositions
@@ -490,9 +494,19 @@ final class AppState {
     }
 
     /// Dock 栏的可选位置（缓存值驱动，`refreshEnvironment` 更新后 SwiftUI 自动重渲染）。
-    /// 台前调度开着时避开左（其窗口条固定占屏幕左缘）。
+    /// 避开台前调度占的那条边（见 `DockBarPosition.stageManagerEdge`）。
     var availableBarPositions: [DockBarPosition] {
-        DockBarPosition.available(stageManagerActive: stageManagerActive ?? false)
+        DockBarPosition.available(stageManagerActive: stageManagerActive ?? false, dockSide: dockSide)
+    }
+
+    /// 台前调度现在占着的那条边（没开 / 未知 = nil）。
+    var stageManagerEdge: DockBarPosition? {
+        DockBarPosition.stageManagerEdge(stageManagerActive: stageManagerActive ?? false, dockSide: dockSide)
+    }
+
+    /// 栏在屏幕上**实际**贴的边：存着的位置撞上台前调度那条边时显示到底部（不改配置）。
+    func effectivePosition(of bar: DockBar) -> DockBarPosition {
+        bar.position.effective(avoiding: stageManagerEdge)
     }
 
     /// 设置页实时提示：原生 Dock 的方位决定了「位置=同侧」的栏是附着模式（贴 Dock 内侧）。
@@ -519,6 +533,7 @@ final class AppState {
     /// 首次读取静默（启动日志里没必要多两条）。
     func refreshEnvironment() {
         let reading = environmentReader()
+        let previousStageEdge = stageManagerEdge
         if reading.stageManagerActive != stageManagerActive {
             stageManagerActive = reading.stageManagerActive
             if hasReadEnvironment, let active = reading.stageManagerActive {
@@ -531,6 +546,10 @@ final class AppState {
             if hasReadEnvironment, let side = reading.dockSide {
                 append(.info, L("原生 Dock 位置变化 → \(side)", "Native Dock position changed → \(side)"))
             }
+        }
+        // 台前调度占的边变了（开 / 关 / 跟着原生 Dock 换侧）：贴在那条边上的栏要挪开或回位。
+        if hasReadEnvironment, stageManagerEdge != previousStageEdge {
+            secondaryDocks.forEach { $0.refresh() }
         }
         hasReadEnvironment = true
     }
@@ -716,7 +735,7 @@ final class AppState {
     // MARK: - 生命周期
 
     func start() {
-        append(.info, L("MultiDock 启动", "MultiDock launched"))
+        append(.info, L("Side Dock 启动", "Side Dock launched"))
         append(.info, L("系统 \(ProcessInfo.processInfo.operatingSystemVersionString)", "System \(ProcessInfo.processInfo.operatingSystemVersionString)"))
         // 界面语言留痕：真机核对「语言怎么没切」只看得到这一份日志（见 L10n 注释）。
         append(.info, L("界面语言：中文（可在系统设置里按 App 指定）", "UI language: English (per-app language can be set in System Settings)"))
@@ -1318,7 +1337,7 @@ final class AppState {
     /// （只读不写），钳制到 28–48 防止极端值把条撑破。
     func secondaryDockContent(for space: DesktopSpace?) -> SecondaryDockContentSnapshot? {
         guard let space, let bar = dockBar(for: space) else { return nil }
-        return secondaryDockContent(for: space, edge: bar.position)
+        return secondaryDockContent(for: space, edge: effectivePosition(of: bar))
     }
 
     /// 某条边那扇窗口的内容（2026-10-23 多行条）：同桌面同边的栏各占一行（`dockBars` 顺序，最多 3 行），
@@ -1394,44 +1413,84 @@ final class AppState {
     /// 重读启动台数据库并解析（打开「启动台」页时调用，「刷新」按钮也走它）。
     ///
     /// 系统闸门在最前：macOS 26 起没有启动台，状态直接给 `.unsupportedSystem`，
-    /// 连数据库路径都不碰。读 + 解析都在主线程（一次全量读实测毫秒级；兜底的
-    /// bundle id 索引只在有记录定位不到时才扫盘）。
+    /// 连数据库路径都不碰。**同步版**：测试与「刷新」按钮的语义口径；页面出现时走
+    /// `refreshLaunchpadFoldersInBackground()`，不在主线程读库 / 解析 / 取图标。
     func refreshLaunchpadFolders() {
+        guard checkLaunchpadSupported() else { return }
+        applyLaunchpadLoad(Result { try launchpadLoader.resolve(launchpadLoader.loadRecords()) })
+    }
+
+    /// 页面出现时用（2026-10-23「每次打开启动台页都很卡」）：读库 + 解析 bookmark + 预热图标
+    /// 全放后台，主线程只接结果。已有数据时照常显示旧列表、静默换新；结果没变就不动状态
+    /// （不触发整页重算）。`forceReload` = 手动刷新：清图标缓存。
+    func refreshLaunchpadFoldersInBackground(forceReload: Bool = false) {
+        guard checkLaunchpadSupported() else { return }
+        if forceReload { DockStripRules.clearIconCache() }
+        launchpadLoadGeneration += 1
+        let generation = launchpadLoadGeneration
+        let loader = launchpadLoader
+        Task.detached(priority: .userInitiated) {
+            let result = Result { try loader.resolve(loader.loadRecords()) }
+            if case .success(let folders) = result {
+                // 预热页面会画的图标（每个文件夹前 10 个，与 `LaunchpadTab.iconPreview` 同口径）。
+                for folder in folders {
+                    for app in folder.apps.prefix(10) {
+                        if let tile = app.tile { _ = DockStripRules.icon(for: tile, size: 22) }
+                    }
+                }
+            }
+            await MainActor.run { [weak self] in
+                guard let self, generation == self.launchpadLoadGeneration else { return }
+                self.applyLaunchpadLoad(result)
+            }
+        }
+    }
+
+    /// 系统闸门：没有启动台就落 `.unsupportedSystem` 并返回 false。
+    private func checkLaunchpadSupported() -> Bool {
         guard launchpadLoader.isSystemSupported() else {
-            launchpadFolders = []
-            launchpadStatus = .unsupportedSystem
+            if !launchpadFolders.isEmpty { launchpadFolders = [] }
+            if launchpadStatus != .unsupportedSystem { launchpadStatus = .unsupportedSystem }
             logLaunchpadOnce(
                 key: "unsupported",
                 level: .info,
                 message: L("本机系统没有启动台（macOS 26 起由「应用程序」取代），「启动台」页不可用",
                            "This macOS has no Launchpad (replaced by Applications in macOS 26); the Launchpad tab is unavailable")
             )
-            return
+            return false
         }
-        do {
-            let records = try launchpadLoader.loadRecords()
-            launchpadFolders = launchpadLoader.resolve(records)
-            launchpadStatus = .loaded
-            let appCount = launchpadFolders.reduce(0) { $0 + $1.apps.count }
+        return true
+    }
+
+    /// 把一次读取结果落到状态上。值没变就不写（`@Observable` 写同值也会让页面重算）。
+    private func applyLaunchpadLoad(_ result: Result<[LaunchpadFolder], any Error>) {
+        switch result {
+        case .success(let folders):
+            if launchpadFolders != folders { launchpadFolders = folders }
+            if launchpadStatus != .loaded { launchpadStatus = .loaded }
+            let appCount = folders.reduce(0) { $0 + $1.apps.count }
             logLaunchpadOnce(
-                key: "ok-\(launchpadFolders.count)-\(appCount)",
+                key: "ok-\(folders.count)-\(appCount)",
                 level: .info,
-                message: L("启动台：读到 \(launchpadFolders.count) 个文件夹、共 \(appCount) 个 App",
-                           "Launchpad: \(launchpadFolders.count) folder(s), \(appCount) app(s)")
+                message: L("启动台：读到 \(folders.count) 个文件夹、共 \(appCount) 个 App",
+                           "Launchpad: \(folders.count) folder(s), \(appCount) app(s)")
             )
-        } catch let error as LaunchpadDatabaseError {
-            launchpadFolders = []
-            launchpadStatus = .unavailable(error.userMessage)
+        case .failure(let error as LaunchpadDatabaseError):
+            setLaunchpadUnavailable(error.userMessage)
             logLaunchpadOnce(key: "err-\(error.userMessage)", level: .warning, message: error.userMessage)
-        } catch {
-            launchpadFolders = []
-            launchpadStatus = .unavailable(error.localizedDescription)
+        case .failure(let error):
+            setLaunchpadUnavailable(error.localizedDescription)
             logLaunchpadOnce(
                 key: "err-\(error.localizedDescription)",
                 level: .warning,
                 message: L("启动台读取失败：\(error.localizedDescription)", "Launchpad read failed: \(error.localizedDescription)")
             )
         }
+    }
+
+    private func setLaunchpadUnavailable(_ reason: String) {
+        if !launchpadFolders.isEmpty { launchpadFolders = [] }
+        launchpadStatus = .unavailable(reason)
     }
 
     /// 同一结果只记一次日志（每次切回本页都会重读；重复灌日志没有信息量）。
@@ -1576,7 +1635,7 @@ final class AppState {
         do {
             payload = try configStore.decode(from: data)
         } catch {
-            recordDataOperation(L("不是有效的 MultiDock 配置文件（解码失败）", "Not a valid MultiDock configuration file (decode failed)"), failed: true)
+            recordDataOperation(L("不是有效的 Side Dock 配置文件（解码失败）", "Not a valid Side Dock configuration file (decode failed)"), failed: true)
             append(.error, L("配置导入失败：解码失败（\(error.localizedDescription)）——请确认文件来自本 App 的导出", "Config import failed: decode error (\(error.localizedDescription)) — make sure the file was exported by this app"))
             return false
         }

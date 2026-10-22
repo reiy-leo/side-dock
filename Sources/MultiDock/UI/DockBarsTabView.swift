@@ -233,8 +233,8 @@ struct DockBarsTab: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(width: 96)
-        .help(L("栏贴在哪条屏幕边。台前调度开启时「左侧」选项置灰。",
-                "Which screen edge the bar sticks to. “Left” is greyed out while Stage Manager is on."))
+        .help(L("栏贴在哪条屏幕边。台前调度所在的那条边（通常是左侧；原生 Dock 在左时是右侧）选项置灰，已在那条边上的栏临时显示到底部。",
+                "Which screen edge the bar sticks to. The edge Stage Manager occupies (usually left; right when the Dock is on the left) is greyed out, and bars already there show at the bottom for now."))
     }
 
     // MARK: - 选中栏的编辑器

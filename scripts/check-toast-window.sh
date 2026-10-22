@@ -147,7 +147,7 @@ if [ -z "$PID" ]; then
     PID="$(pgrep -x MultiDock | head -1 || true)"
 fi
 if [ -z "$PID" ]; then
-    echo "找不到运行中的 MultiDock。先 ./scripts/build-app.sh && open build/MultiDock.app" >&2
+    echo "找不到运行中的 MultiDock。先 ./scripts/build-app.sh && open "build/Side Dock.app"" >&2
     exit 1
 fi
 

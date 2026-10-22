@@ -82,11 +82,32 @@ enum DockStripRules {
 
     /// 取文件图标。**不需要任何权限** —— `NSWorkspace.icon(forFile:)` 是公开 API。
     /// 取不到时退回一个通用图标，不让 UI 出现空洞。
+    ///
+    /// **带缓存（2026-10-23，「启动台」页卡顿）**：`NSWorkspace.icon(forFile:)` 每次都要问
+    /// LaunchServices / 读图标资源，SwiftUI 每重算一次 body 就全量重取一遍——启动台页一屏
+    /// 上百个图标、悬停一行就重算整页，是卡顿主因。按「尺寸 | 路径」缓存成品图；`NSCache`
+    /// 线程安全，后台预热与主线程读取可以并行。App 换了图标要等 `clearIconCache()`（启动台页
+    /// 手动「刷新」会清）或重启本 App。
     static func icon(forPath path: String, size: CGFloat = 48) -> NSImage {
+        let key = "\(size)|\(path)" as NSString
+        if let cached = iconCache.object(forKey: key) { return cached }
         let image = NSWorkspace.shared.icon(forFile: path)
         image.size = NSSize(width: size, height: size)
+        iconCache.setObject(image, forKey: key)
         return image
     }
+
+    /// 清掉图标缓存（用户手动刷新时调用）。
+    static func clearIconCache() {
+        iconCache.removeAllObjects()
+    }
+
+    /// 图标成品缓存。`nonisolated(unsafe)`：`NSCache` 自身线程安全（Apple 文档保证）。
+    nonisolated(unsafe) private static let iconCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 600
+        return cache
+    }()
 
     /// 条目的显示图标。找不到路径时用通用 App 图标。
     static func icon(for tile: DockTile, size: CGFloat = 48) -> NSImage {

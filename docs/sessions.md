@@ -3,6 +3,26 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-23（第 72 次）— 悬停名称 / 台前调度避让 / 启动台页性能 / 改名 Side Dock
+
+**用户说**：「hover图标没显示名称，之前是显示的」「dock要避开台前调度所在的那一边」
+「每次打开设置-启动台都很卡，优化一下性能」「名称统一修改成Side Dock，包括软件界面，github发版等」。
+
+**做了什么**：
+
+1. **悬停名称**：次级条窗口 `allowsToolTipsWhenApplicationIsInactive = true`（菜单栏 App 平时不在前台，
+   AppKit 默认不给后台 App 弹 tooltip）；`updateContent` 按内容摘要去重，内容没变不换 `rootView`
+   （自动隐藏模式下几何轮询每拍推内容，重建视图会冲掉计时中的 tooltip）；handle 显隐只在值变时写。
+   **未在真机确认根因**，A16①。
+2. **台前调度避让**：`DockBarPosition.stageManagerEdge`（默认左；原生 Dock 在左时为右）。可选位置排除那条边；
+   **运行时**贴在那条边上的栏显示到底部（`AppState.effectivePosition`，不改配置，关掉台前调度回原位）；
+   台前调度所占边变化时刷新三扇条。推翻了 10-05「已存在的左侧栏不做运行时改写」的旧口径（用户新规格）。
+3. **启动台页性能**：`DockStripRules.icon(forPath:size:)` 加 `NSCache`（手动刷新清空）；页面出现走
+   `refreshLaunchpadFoldersInBackground()`（后台读库 + 解析 + 预热图标，代号防乱序，结果没变不写状态）；
+   文件夹行拆成 `LaunchpadFolderRow` 自持悬停态（以前悬停一行整页重算）。同步版 `refreshLaunchpadFolders()` 保留给测试。
+4. **改名 Side Dock**：见 AGENTS.md「改名」段（不改模块名 / bundle id / 配置目录）。
+5. 测试：台前调度边推导与运行时避让（2 个新用例）；快照测试先同步读启动台。
+
 ### 2026-10-23（第 71 次）— 发 v0.2.0-alpha.1（多行次级条）+ CI 出 DMG
 
 **用户说**：「发布一个alpha版本」「打包dmg」。
