@@ -69,7 +69,12 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     private static let sinkMargin: CGFloat = 6
 
     private let window: SecondaryDockPanelWindow
+    /// 窗口内容根视图（透明）。条本体 `container` 只占其中「条」那一块；
+    /// 悬停放大开着时窗口朝屏幕内侧多出 `headroom` 的透明空间给放大的图标（2026-10-23）。
+    private let rootView = NSView()
     private let container: NSVisualEffectView
+    /// 当前朝屏幕内侧预留的透明厚度（0 = 不放大）。
+    private var headroom: CGFloat = 0
     private var hosting: SecondaryDockHostingView!
     /// 「设回单空间配方」的延迟任务；连切时取消上一拍未生效的，防止堆积。
     private var pullResetTask: Task<Void, Never>?
@@ -154,8 +159,11 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         ))
         hosting.autoresizingMask = [.width, .height]
         hosting.menuProvider = { [weak self] in self?.makeContextMenu() }
-        container.addSubview(hosting)
-        window.contentView = container
+        // 条本体（材质）与内容并排挂在透明根视图上：内容要能画出条外（放大的图标）。
+        rootView.addSubview(container)
+        hosting.frame = rootView.bounds
+        rootView.addSubview(hosting)
+        window.contentView = rootView
 
         menuTarget.onSelect = { [weak self] position in
             guard let self else { return }
@@ -184,15 +192,23 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         currentRowIDs = rowIDs
         // 内容没变就不换 rootView（2026-10-23）：自动隐藏模式下几何轮询每拍都会推一次内容，
         // 每拍重建视图树会把正在计时的 tooltip（悬停显示 App 名）冲掉。
+        let magnifiedSize = content.effectiveMagnifiedSize
         let signature = Self.contentSignature(rows: rows, content: content, isVertical: isVertical)
+            + "|m\(magnifiedSize ?? 0)"
         if signature != lastContentSignature {
             lastContentSignature = signature
             hosting.rootView = makeStrip(
                 rows: rows,
                 position: content.position,
                 isVertical: isVertical,
-                iconSize: content.iconSize
+                iconSize: content.iconSize,
+                magnifiedSize: magnifiedSize
             )
+        }
+        let newHeadroom = SecondaryDockMagnification.headroom(iconSize: content.iconSize, magnifiedSize: magnifiedSize)
+        if newHeadroom != headroom {
+            headroom = newHeadroom
+            if let intendedFrame { setFrame(intendedFrame, animated: false) }
         }
         // 行集合或锚定行变了（切桌面、改绑定、首次显示）：滚到锚定行。用户自己滚出来的
         // 锚定行回写后原样回来，`scroll(to:)` 对同值不动作。
@@ -224,6 +240,7 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
 
     func setRevealed(_ revealed: Bool) {
         isRevealedState = revealed
+        if rowsModel.isRevealed != revealed { rowsModel.isRevealed = revealed }
         let showsHandle = revealed && currentRowIDs.count > 1
         if rowsModel.showsHandle != showsHandle { rowsModel.showsHandle = showsHandle }
         // 视口要变形：这段时间 ScrollView 的夹紧不是用户滚动。收起时回到上次滚到的行。
@@ -233,21 +250,39 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         }
     }
 
+    /// `frame` 是**条本体**的位置（调度器只认条）；窗口实际 frame 再朝屏幕内侧扩出 `headroom`。
     func setFrame(_ frame: NSRect, animated: Bool) {
         intendedFrame = frame
         rowsModel.suppressReports()
-        container.frame = NSRect(origin: .zero, size: frame.size)
+        let windowFrame = Self.windowFrame(forBar: frame, headroom: headroom, position: currentPosition)
+        container.frame = Self.barRectInWindow(barSize: frame.size, headroom: headroom, position: currentPosition)
         // NSVisualEffectView 没有 cornerRadius（那是 UIKit 的），圆角靠 maskImage 现画。
         container.maskImage = Self.maskImage(size: frame.size)
         if animated {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.18
                 context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                window.animator().setFrame(frame, display: true)
+                window.animator().setFrame(windowFrame, display: true)
             }
         } else {
-            window.setFrame(frame, display: true)
+            window.setFrame(windowFrame, display: true)
         }
+    }
+
+    /// 条 frame → 窗口 frame：朝屏幕内侧扩 `headroom`（底部条往上、左侧条往右、右侧条往左）。
+    static func windowFrame(forBar bar: NSRect, headroom: CGFloat, position: DockBarPosition) -> NSRect {
+        guard headroom > 0 else { return bar }
+        switch position {
+        case .bottom: return NSRect(x: bar.minX, y: bar.minY, width: bar.width, height: bar.height + headroom)
+        case .left: return NSRect(x: bar.minX, y: bar.minY, width: bar.width + headroom, height: bar.height)
+        case .right: return NSRect(x: bar.minX - headroom, y: bar.minY, width: bar.width + headroom, height: bar.height)
+        }
+    }
+
+    /// 条本体在窗口里的位置（AppKit 坐标，原点左下）。
+    static func barRectInWindow(barSize: NSSize, headroom: CGFloat, position: DockBarPosition) -> NSRect {
+        let x: CGFloat = position == .right ? headroom : 0
+        return NSRect(origin: CGPoint(x: x, y: 0), size: barSize)
     }
 
     func orderFront() {
@@ -270,7 +305,9 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     func pullToActiveSpace() {
         pullResetTask?.cancel()
         fadeTask?.cancel()
-        let targetFrame = intendedFrame ?? window.frame
+        let targetFrame = intendedFrame.map {
+            Self.windowFrame(forBar: $0, headroom: headroom, position: currentPosition)
+        } ?? window.frame
         let visibleBottom = (window.screen ?? NSScreen.main)?.visibleFrame.minY ?? 0
         window.alphaValue = 0
         window.setFrame(
@@ -361,13 +398,15 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         rows: [SecondaryDockRow],
         position: DockBarPosition,
         isVertical: Bool,
-        iconSize: CGFloat
+        iconSize: CGFloat,
+        magnifiedSize: CGFloat? = nil
     ) -> SecondaryDockStripView {
         SecondaryDockStripView(
             rows: rows,
             position: position,
             isVertical: isVertical,
             iconSize: iconSize,
+            magnifiedSize: magnifiedSize,
             model: rowsModel,
             onActivate: { [weak self] item in self?.onActivate(item) },
             onHoverChange: { [weak self] inside in self?.onHoverChange(inside) },

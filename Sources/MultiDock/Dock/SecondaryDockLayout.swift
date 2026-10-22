@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 
 /// 次级 Dock 条的方位（随原生 Dock 的位置）。
 enum SecondaryDockOrientation: Equatable, Sendable {
@@ -246,5 +247,76 @@ extension DockBarPosition {
         case (.bottom, .bottom), (.left, .left), (.right, .right): return true
         default: return false
         }
+    }
+}
+
+/// 悬停放大（2026-10-23 用户规格：跟随系统「放大」开关与尺寸）。纯函数，方便单测。
+///
+/// 原生 Dock 的放大借不过来，这里自己算：光标附近的图标按距离做余弦衰减放大，
+/// 邻居沿条方向让位，并保证**光标所在那一点不动**（放大不会把光标下的图标推走）。
+/// 放大的图标朝屏幕内侧长出条外，窗口在内侧预留 `headroom` 的透明空间给它。
+enum SecondaryDockMagnification {
+    /// 系统 `largesize` 缺省值（macOS 默认放大尺寸）。
+    static let defaultLargeSize: CGFloat = 128
+
+    /// 放大后的图标尺寸：系统关了放大 → nil；开了 → `largesize`（缺省 128），钳在
+    /// `iconSize...128`，比图标还小就等于不放大（nil）。
+    static func magnifiedSize(enabled: Bool, largeSize: Double?, iconSize: CGFloat) -> CGFloat? {
+        guard enabled else { return nil }
+        let size = min(CGFloat(largeSize ?? Double(defaultLargeSize)), 128)
+        return size > iconSize + 0.5 ? size : nil
+    }
+
+    /// 窗口朝屏幕内侧要多留的透明厚度（整点）。
+    static func headroom(iconSize: CGFloat, magnifiedSize: CGFloat?) -> CGFloat {
+        guard let magnifiedSize else { return 0 }
+        return max(0, (magnifiedSize - iconSize).rounded(.up))
+    }
+
+    /// 影响半径：光标两侧这么远之内的图标会放大（约 2.5 个槽位，放大越大范围越宽）。
+    static func radius(pitch: CGFloat, magnifiedSize: CGFloat) -> CGFloat {
+        max(pitch * 2.5, magnifiedSize * 1.2)
+    }
+
+    /// 每个槽位的（放大倍数, 沿条方向的位移）。`cursor` 是光标在这一行内容坐标里沿条方向的位置
+    /// （第一个槽位起点 = 0）；nil = 不在行上，全部 (1, 0)。
+    static func effects(
+        count: Int,
+        slotLength: CGFloat,
+        spacing: CGFloat,
+        iconSize: CGFloat,
+        magnifiedSize: CGFloat?,
+        cursor: CGFloat?
+    ) -> [(scale: CGFloat, offset: CGFloat)] {
+        guard count > 0 else { return [] }
+        guard let magnifiedSize, let cursor, iconSize > 0 else {
+            return Array(repeating: (1, 0), count: count)
+        }
+        let pitch = slotLength + spacing
+        let maxScale = magnifiedSize / iconSize
+        let reach = radius(pitch: pitch, magnifiedSize: magnifiedSize)
+        var scales: [CGFloat] = []
+        var extras: [CGFloat] = []
+        var cursorShift: CGFloat = 0
+        for index in 0..<count {
+            let center = CGFloat(index) * pitch + slotLength / 2
+            let t = abs(center - cursor) / reach
+            let bump = t < 1 ? (1 + cos(.pi * t)) / 2 : 0
+            let scale = 1 + (maxScale - 1) * bump
+            let extra = (scale - 1) * iconSize
+            scales.append(scale)
+            extras.append(extra)
+            // 光标点在放大后布局里的位移 = 它之前（按比例）所有槽位多出来的长度。
+            let fraction = min(max((cursor - (center - pitch / 2)) / pitch, 0), 1)
+            cursorShift += extra * fraction
+        }
+        var result: [(scale: CGFloat, offset: CGFloat)] = []
+        var before: CGFloat = 0
+        for index in 0..<count {
+            let shift = before + extras[index] / 2
+            result.append((scales[index], shift - cursorShift))
+            before += extras[index]
+        }
+        return result
     }
 }

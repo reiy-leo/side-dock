@@ -1380,6 +1380,12 @@ final class AppState {
         let pref = settings.secondaryDockRowPrefs[SecondaryDockRowPref.key(spaceID: space.id, edge: edge)]
         snapshot.visibleRows = pref?.visibleRows ?? 1
         snapshot.anchorBarID = pref?.anchorBarID
+        // 悬停放大跟随系统「放大」开关与尺寸（2026-10-23 用户规格）。
+        snapshot.magnifiedSize = SecondaryDockMagnification.magnifiedSize(
+            enabled: dockController.readSystemMagnificationEnabled(),
+            largeSize: dockController.readSystemLargeSize(),
+            iconSize: iconSize
+        )
         return snapshot
     }
 

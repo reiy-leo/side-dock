@@ -131,6 +131,18 @@ final class DockController {
         preferences.readValue(forKey: "tilesize")?.doubleValue
     }
 
+    /// 系统 Dock 的「放大」开关（`magnification`，bool 或 0/1 数字；读不到 = 关）。
+    func readSystemMagnificationEnabled() -> Bool {
+        guard let value = preferences.readValue(forKey: "magnification") else { return false }
+        if let bool = value.boolValue { return bool }
+        return (value.doubleValue ?? 0) != 0
+    }
+
+    /// 系统 Dock 的放大尺寸（`largesize`，16–128；读不到 = nil，调用方用 macOS 缺省 128）。
+    func readSystemLargeSize() -> Double? {
+        preferences.readValue(forKey: "largesize")?.doubleValue
+    }
+
     /// 写 `mru-spaces`。写完之后要自己 `reloadOnly` 一次才生效。
     @discardableResult
     func writeMRUSpaces(_ enabled: Bool) -> Bool { preferences.writeMRUSpaces(enabled) }

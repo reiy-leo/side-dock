@@ -31,6 +31,13 @@ struct SecondaryDockContentSnapshot {
     var visibleRows: Int = 1
     /// 收起时显示的那一行（上次滚到的行；不在了就是第一行）。
     var anchorBarID: UUID? = nil
+    /// 悬停放大后的图标尺寸（跟随系统「放大」；nil = 系统没开放大，2026-10-23）。
+    var magnifiedSize: CGFloat? = nil
+
+    /// 这一份内容实际生效的放大尺寸：v1 只有单行条放大（多行条的滚动视口会裁掉长出去的图标）。
+    var effectiveMagnifiedSize: CGFloat? {
+        displayRows.count <= 1 ? magnifiedSize : nil
+    }
 
     /// 单行口径的占位 ID（`rows` 为空、也没有 `barID` 时用）。
     static let placeholderRowID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
@@ -85,6 +92,8 @@ final class SecondaryDockRowsModel {
     var scrolledRowID: UUID?
     var showsHandle = false
     var isResizing = false
+    /// 显出态（悬停放大只在显出时生效：收起时条大半在原生 Dock 身后，放大会从 Dock 上方冒出来）。
+    var isRevealed = false
     @ObservationIgnored var suppressScrollReportsUntil: Date = .distantPast
     @ObservationIgnored var onUserScrolled: (UUID?) -> Void = { _ in }
 
@@ -148,6 +157,8 @@ struct SecondaryDockStripView: View {
     let position: DockBarPosition
     let isVertical: Bool
     let iconSize: CGFloat
+    /// 悬停放大尺寸（nil = 不放大）。
+    var magnifiedSize: CGFloat? = nil
     @Bindable var model: SecondaryDockRowsModel
     let onActivate: (SecondaryDockItem) -> Void
     let onHoverChange: (Bool) -> Void
@@ -164,6 +175,17 @@ struct SecondaryDockStripView: View {
                 }
             }
             .onHover(perform: onHoverChange)
+            // 窗口朝屏幕内侧多出的透明空间（放大的图标长进去）；条本体只占其余部分。
+            .padding(innerEdge, headroom)
+    }
+
+    private var headroom: CGFloat {
+        SecondaryDockMagnification.headroom(iconSize: iconSize, magnifiedSize: magnifiedSize)
+    }
+
+    /// 屏幕内侧那条边（底部条 = 上；左侧条 = 右；右侧条 = 左）。
+    private var innerEdge: Edge.Set {
+        isVertical ? (position == .right ? .leading : .trailing) : .top
     }
 
     /// 靠 Dock / 屏幕边的第一行要画在哪一端：横条在最下（倒序），右侧竖条在最右（倒序）。
@@ -220,34 +242,22 @@ struct SecondaryDockStripView: View {
     /// 一行（竖条为一列）。厚度固定 = 图标 + 指示点槽位，长度撑满、内容居中。
     @ViewBuilder
     private func rowView(_ row: SecondaryDockRow?) -> some View {
-        let items = row?.items ?? []
+        let slots = SecondaryDockSlotsView(
+            items: row?.items ?? [],
+            position: position,
+            isVertical: isVertical,
+            iconSize: iconSize,
+            magnifiedSize: rows.count <= 1 && model.isRevealed ? magnifiedSize : nil,
+            onActivate: onActivate
+        )
         if isVertical {
-            VStack(spacing: 2) { slots(items) }
+            slots
                 .frame(width: iconSize + 6)
                 .frame(maxHeight: .infinity)
         } else {
-            HStack(spacing: 2) { slots(items) }
+            slots
                 .frame(height: iconSize + 6)
                 .frame(maxWidth: .infinity)
-        }
-    }
-
-    @ViewBuilder
-    private func slots(_ items: [SecondaryDockItem]) -> some View {
-        ForEach(items) { item in
-            VStack(spacing: 2) {
-                Image(nsImage: item.icon)
-                    .resizable()
-                    .frame(width: iconSize, height: iconSize)
-                    .opacity(item.isInstalled ? 1 : 0.35)
-                Circle()
-                    .fill(item.isRunning ? Color.primary.opacity(0.75) : Color.clear)
-                    .frame(width: 4, height: 4)
-            }
-            .frame(minWidth: iconSize + 4)
-            .contentShape(Rectangle())
-            .onTapGesture { onActivate(item) }
-            .help(item.label)
         }
     }
 
@@ -281,5 +291,89 @@ struct SecondaryDockStripView: View {
                     }
             )
             .help(L("拖动调整行数（最多 3 行）", "Drag to change the number of rows (up to 3)"))
+    }
+}
+
+/// 一行里的图标槽位 + 悬停放大（2026-10-23）。
+///
+/// 光标位置用 `onContinuousHover` 在这一排槽位自己的坐标里取（起点 = 第一个槽位），
+/// 放大倍数与让位由 `SecondaryDockMagnification.effects` 算。放大不用 `scaleEffect`
+/// （那是把已栅格化的小图拉大，会糊），而是直接把图片框放大、对齐到靠 Dock 的那一侧溢出。
+struct SecondaryDockSlotsView: View {
+    let items: [SecondaryDockItem]
+    let position: DockBarPosition
+    let isVertical: Bool
+    let iconSize: CGFloat
+    let magnifiedSize: CGFloat?
+    let onActivate: (SecondaryDockItem) -> Void
+
+    @State private var cursor: CGFloat?
+
+    private static let spacing: CGFloat = 2
+
+    /// 槽位沿条方向的长度：横条 = 宽（minWidth iconSize + 4）；竖条 = 高（图标 + 2 + 圆点 4）。
+    private var slotLength: CGFloat { isVertical ? iconSize + 6 : iconSize + 4 }
+
+    /// 放大朝屏幕内侧长：对齐到靠 Dock / 屏幕边的那一侧。
+    private var growAlignment: Alignment {
+        isVertical ? (position == .right ? .trailing : .leading) : .bottom
+    }
+
+    var body: some View {
+        let effects = SecondaryDockMagnification.effects(
+            count: items.count,
+            slotLength: slotLength,
+            spacing: Self.spacing,
+            iconSize: iconSize,
+            magnifiedSize: magnifiedSize,
+            cursor: magnifiedSize == nil ? nil : cursor
+        )
+        let layout = isVertical
+            ? AnyLayout(VStackLayout(spacing: Self.spacing))
+            : AnyLayout(HStackLayout(spacing: Self.spacing))
+        layout {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                let effect = index < effects.count ? effects[index] : (scale: 1, offset: 0)
+                slot(item, scale: effect.scale)
+                    .offset(x: isVertical ? 0 : effect.offset, y: isVertical ? effect.offset : 0)
+                    .zIndex(Double(effect.scale))
+            }
+        }
+        .onContinuousHover(coordinateSpace: .local) { phase in
+            guard magnifiedSize != nil else {
+                if cursor != nil { cursor = nil }
+                return
+            }
+            switch phase {
+            case .active(let point):
+                let value = isVertical ? point.y : point.x
+                if cursor == nil {
+                    withAnimation(.easeOut(duration: 0.12)) { cursor = value }
+                } else {
+                    cursor = value
+                }
+            case .ended:
+                withAnimation(.easeOut(duration: 0.15)) { cursor = nil }
+            }
+        }
+    }
+
+    private func slot(_ item: SecondaryDockItem, scale: CGFloat) -> some View {
+        let size = (iconSize * scale).rounded()
+        return VStack(spacing: 2) {
+            Image(nsImage: item.icon)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: size, height: size)
+                .frame(width: iconSize, height: iconSize, alignment: growAlignment)
+                .opacity(item.isInstalled ? 1 : 0.35)
+            Circle()
+                .fill(item.isRunning ? Color.primary.opacity(0.75) : Color.clear)
+                .frame(width: 4, height: 4)
+        }
+        .frame(minWidth: iconSize + 4)
+        .contentShape(Rectangle())
+        .onTapGesture { onActivate(item) }
+        .help(item.label)
     }
 }
