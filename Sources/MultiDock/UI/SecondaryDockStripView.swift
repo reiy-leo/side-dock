@@ -106,8 +106,21 @@ final class SecondaryDockRowsModel {
     /// 放大程度 0...1（进出时动画）。
     var magnifyAmount: CGFloat = 0
 
+    /// 光标在拖拽 handle 上（或正在拖）：放大让开，不然放大的图标正好盖住 handle（2026-10-23 用户反馈）。
+    private(set) var isHandleHovered = false
+
+    func setHandleHovered(_ hovered: Bool) {
+        guard isHandleHovered != hovered else { return }
+        isHandleHovered = hovered
+        if hovered, let row = magnifyRowID { updateMagnify(row: row, value: nil) }
+    }
+
     /// 行内光标变化（`value` = nil 表示离开这一行）。
     func updateMagnify(row: UUID, value: CGFloat?) {
+        if value != nil, isHandleHovered || isResizing {
+            if magnifyRowID == row { updateMagnify(row: row, value: nil) }
+            return
+        }
         if let value {
             if magnifyRowID != row {
                 magnifyRowID = row
@@ -214,7 +227,7 @@ struct SecondaryDockStripView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: handleAlignment) {
                 if model.showsHandle, rows.count > 1 {
-                    handle
+                    handle.zIndex(1)
                 }
             }
             .onHover(perform: onHoverChange)
@@ -315,6 +328,7 @@ struct SecondaryDockStripView: View {
             .anchorPreference(key: SecondaryDockRowBoundsKey.self, value: .bounds) { [row.barID: $0] }
             .id(row.barID)
             .onHover { inside in
+                model.setHandleHovered(inside)
                 if inside { onRowHover(row.barID) }
             }
     }
@@ -371,6 +385,7 @@ struct SecondaryDockStripView: View {
                     }
                     .onEnded { _ in
                         model.isResizing = false
+                        model.setHandleHovered(false)
                         onResize(.ended)
                         NSCursor.arrow.set()
                     }

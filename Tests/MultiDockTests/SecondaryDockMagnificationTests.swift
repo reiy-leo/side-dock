@@ -124,6 +124,21 @@ final class SecondaryDockMagnificationTests: XCTestCase {
         XCTAssertEqual(snapshot.effectiveMagnifiedSize, 96)
     }
 
+    func testHandleHoverSuppressesMagnification() {
+        // 2026-10-23 用户反馈：放大的图标盖住了 resize handle。光标上 handle 时放大让开。
+        let model = SecondaryDockRowsModel()
+        let row = UUID()
+        model.updateMagnify(row: row, value: 40)
+        XCTAssertEqual(model.magnifyAmount, 1)
+        model.setHandleHovered(true)
+        XCTAssertEqual(model.magnifyAmount, 0)
+        model.updateMagnify(row: row, value: 42)
+        XCTAssertEqual(model.magnifyAmount, 0, "handle 上不重新放大")
+        model.setHandleHovered(false)
+        model.updateMagnify(row: row, value: 42)
+        XCTAssertEqual(model.magnifyAmount, 1)
+    }
+
     func testRowsModelMagnifiesOnlyHoveredRow() {
         let model = SecondaryDockRowsModel()
         let first = UUID()
