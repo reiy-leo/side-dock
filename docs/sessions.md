@@ -21,7 +21,9 @@
    `refreshLaunchpadFoldersInBackground()`（后台读库 + 解析 + 预热图标，代号防乱序，结果没变不写状态）；
    文件夹行拆成 `LaunchpadFolderRow` 自持悬停态（以前悬停一行整页重算）。同步版 `refreshLaunchpadFolders()` 保留给测试。
 4. **改名 Side Dock**：见 AGENTS.md「改名」段（不改模块名 / bundle id / 配置目录）。
-5. 测试：台前调度边推导与运行时避让（2 个新用例）；快照测试先同步读启动台。
+5. **侧边附着条竖直居中**（用户截图「显示的位置没有居中」）：`SecondaryDockLayout.placement` 左/右分支
+   从「贴屏幕底角」改为在屏幕上竖直居中（原生侧边 Dock 本身居中），夹在边距内。
+6. 测试：台前调度边推导与运行时避让（2 个新用例）；侧边摆放用例改为居中；快照测试先同步读启动台。
 
 ### 2026-10-23（第 71 次）— 发 v0.2.0-alpha.1（多行次级条）+ CI 出 DMG
 

@@ -140,17 +140,18 @@ enum SecondaryDockLayout {
             let tucked = revealed.offsetBy(dx: 0, dy: -tuckOffset(size.height))
             return (revealed, tucked)
         case .right:
-            // 竖条，贴屏幕底角、右缘贴 Dock 内侧面；半露 = 向右滑进 Dock 身后。
+            // 竖条，右缘贴 Dock 内侧面、**竖直居中**（2026-10-23 用户反馈「没有居中」：原生侧边 Dock
+            // 本身竖直居中，以前贴屏幕底角看着歪）；半露 = 向右滑进 Dock 身后。
             let revealed = CGRect(
-                origin: CGPoint(x: face.visible.maxX - faceGap - size.width, y: screen.minY + screenMargin),
+                origin: CGPoint(x: face.visible.maxX - faceGap - size.width, y: verticallyCenteredY(size, in: screen)),
                 size: size
             )
             let tucked = revealed.offsetBy(dx: tuckOffset(size.width), dy: 0)
             return (revealed, tucked)
         case .left:
-            // 竖条，贴屏幕底角、左缘贴 Dock 内侧面；半露 = 向左滑进 Dock 身后。
+            // 竖条，左缘贴 Dock 内侧面、竖直居中（同右侧）；半露 = 向左滑进 Dock 身后。
             let revealed = CGRect(
-                origin: CGPoint(x: face.visible.minX + faceGap, y: screen.minY + screenMargin),
+                origin: CGPoint(x: face.visible.minX + faceGap, y: verticallyCenteredY(size, in: screen)),
                 size: size
             )
             let tucked = revealed.offsetBy(dx: -tuckOffset(size.width), dy: 0)
@@ -222,6 +223,15 @@ enum SecondaryDockLayout {
             let revealed = CGRect(origin: CGPoint(x: screen.maxX - size.width, y: y), size: size)
             return (revealed, revealed.offsetBy(dx: size.width / 2, dy: 0))
         }
+    }
+
+    /// 竖条在屏幕上竖直居中的 y（取整、夹在边距内）。
+    private static func verticallyCenteredY(_ size: CGSize, in screen: CGRect) -> CGFloat {
+        clamp(
+            (screen.midY - size.height / 2).rounded(),
+            low: screen.minY + screenMargin,
+            high: screen.maxY - size.height - screenMargin
+        )
     }
 
     private static func clamp(_ value: CGFloat, low: CGFloat, high: CGFloat) -> CGFloat {

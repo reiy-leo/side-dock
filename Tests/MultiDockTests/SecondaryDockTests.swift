@@ -80,10 +80,10 @@ final class SecondaryDockLayoutTests: XCTestCase {
         XCTAssertEqual(barSize, CGSize(width: 56, height: 192))
 
         let (revealed, tucked) = SecondaryDockLayout.placement(barSize: barSize, face: face)
-        // 展开贴 Dock 内侧面左侧：x = 1844 - 4 - 56 = 1784；贴屏幕底角：y = 4。
-        XCTAssertEqual(revealed, CGRect(x: 1784, y: 4, width: 56, height: 192))
+        // 展开贴 Dock 内侧面左侧：x = 1844 - 4 - 56 = 1784；竖直居中：y = 600 - 96 = 504（2026-10-23）。
+        XCTAssertEqual(revealed, CGRect(x: 1784, y: 504, width: 56, height: 192))
         // 半露 = 向右平移 0.8 个条宽（45），右大半截滑进 Dock 身后。
-        XCTAssertEqual(tucked, CGRect(x: 1829, y: 4, width: 56, height: 192))
+        XCTAssertEqual(tucked, CGRect(x: 1829, y: 504, width: 56, height: 192))
     }
 
     func testLeftPlacementMirrorsRight() {
@@ -94,9 +94,9 @@ final class SecondaryDockLayoutTests: XCTestCase {
         )
         let barSize = SecondaryDockLayout.barSize(itemCount: 4, iconSize: 36, isVertical: true)
         let (revealed, tucked) = SecondaryDockLayout.placement(barSize: barSize, face: face)
-        XCTAssertEqual(revealed, CGRect(x: 80, y: 4, width: 56, height: 192))
+        XCTAssertEqual(revealed, CGRect(x: 80, y: 504, width: 56, height: 192))
         // 半露 = 向左平移 0.8 个条宽（45）。
-        XCTAssertEqual(tucked, CGRect(x: 35, y: 4, width: 56, height: 192))
+        XCTAssertEqual(tucked, CGRect(x: 35, y: 504, width: 56, height: 192))
     }
 
     func testOversizedBarIsClampedIntoScreen() {
