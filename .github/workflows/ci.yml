@@ -8,7 +8,9 @@
 #
 # 触发：
 # - push 到 main / feat/** / PR → 跑测试 + 双架构构建（产物作为 artifacts，不发版）
-# - push `v*` 标签          → 在上一行基础上，把两个 zip 附到该标签的 GitHub Release
+# - push `v*` 标签          → 在上一行基础上，把两个架构的 zip + dmg 附到该标签的 GitHub Release；
+#                              标签带 `-`（如 v0.2.0-alpha.1）发成**预发布**——`releases/latest` 不认预发布，
+#                              「关于」页的更新检查不会把 alpha 推给正式版用户（2026-10-23）
 # - workflow_dispatch       → 手动跑一次（同上，不发版）
 name: CI
 
@@ -70,20 +72,34 @@ jobs:
           ARCHS="$(lipo -archs build/MultiDock.app/Contents/MacOS/MultiDock)"
           echo "bundle archs: $ARCHS"
           [ "$ARCHS" = "${{ matrix.arch }}" ]
-      - name: Package zip
+      - name: Package zip + dmg
         id: package
         run: |
           set -euo pipefail
-          VERSION="$(plutil -extract CFBundleShortVersionString raw Support/Info.plist)"
-          NAME="MultiDock-v${VERSION}-${{ matrix.arch }}.zip"
+          # 打标签时文件名用标签版本（预发布后缀如 -alpha.1 只在标签里，Info.plist 保持纯数字）。
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(plutil -extract CFBundleShortVersionString raw Support/Info.plist)"
+          fi
+          BASE="MultiDock-v${VERSION}-${{ matrix.arch }}"
           # ditto 而不是 zip：保留符号链接与权限位（.app 包的标准打包方式）。
-          ditto -c -k --keepParent build/MultiDock.app "$NAME"
-          shasum -a 256 "$NAME"
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          ditto -c -k --keepParent build/MultiDock.app "${BASE}.zip"
+          # DMG（2026-10-23 用户规格「打包 dmg」）：App + 指向 /Applications 的快捷方式，拖进去即装。
+          STAGE="$(mktemp -d)/MultiDock"
+          mkdir -p "$STAGE"
+          ditto build/MultiDock.app "$STAGE/MultiDock.app"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "MultiDock" -srcfolder "$STAGE" -ov -format UDZO "${BASE}.dmg"
+          hdiutil verify "${BASE}.dmg"
+          shasum -a 256 "${BASE}.zip" "${BASE}.dmg"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: MultiDock-${{ matrix.arch }}
-          path: ${{ steps.package.outputs.name }}
+          path: |
+            ${{ steps.package.outputs.base }}.zip
+            ${{ steps.package.outputs.base }}.dmg
           if-no-files-found: error
 
   # 打 v* 标签时把两个架构的 zip 附到 Release。已存在的资产跳过（不覆盖），
@@ -108,7 +124,7 @@ jobs:
           ls -lh
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             EXISTING="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
-            for file in MultiDock-*.zip; do
+            for file in MultiDock-*.zip MultiDock-*.dmg; do
               if grep -qxF "$file" <<< "$EXISTING"; then
                 echo "已存在，跳过：$file"
               else
@@ -116,8 +132,11 @@ jobs:
               fi
             done
           else
-            gh release create "$TAG" MultiDock-*.zip \
+            PRERELEASE=()
+            if [[ "$TAG" == *-* ]]; then PRERELEASE=(--prerelease); fi
+            gh release create "$TAG" MultiDock-*.zip MultiDock-*.dmg \
               --repo "$GITHUB_REPOSITORY" \
               --title "MultiDock $TAG" \
-              --generate-notes
+              --generate-notes \
+              "${PRERELEASE[@]}"
           fi

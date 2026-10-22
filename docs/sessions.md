@@ -3,6 +3,20 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-23（第 71 次）— 发 v0.2.0-alpha.1（多行次级条）+ CI 出 DMG
+
+**用户说**：「发布一个alpha版本」「打包dmg」。
+
+**做了什么**：
+
+1. `ci.yml` 构建 job 在 zip 之外再出 DMG（`hdiutil create`，App + `/Applications` 快捷方式，`hdiutil verify` 校验），
+   两个架构各一份；打标签时文件名用标签版本（`MultiDock-v0.2.0-alpha.1-arm64.dmg`）。
+2. release job 附 zip + dmg；标签带 `-` 发成**预发布**（`releases/latest` 不认预发布 → 正式版的更新检查不推 alpha）。
+3. `Info.plist`：0.1.0 (1) → **0.2.0 (2)**（ShortVersion 保持纯数字，alpha 后缀只在标签里）。
+4. 标签 `v0.2.0-alpha.1` 打在 `feat/multi-row-dock` 上（**未合并 main**，等 A15 真机手测）。
+
+**注意**：App 仍是 ad-hoc 签名、未公证，首次打开要右键 →「打开」（或系统设置 → 隐私与安全性里放行）。
+
 ### 2026-10-23（第 70 次）— 多行次级条：一个桌面多根栏（Hark 远程实现，待 CI 与真机）
 
 **用户说**：「每边多根……把现在的多根换成一根，但这一根可以上下滚动，最多 3 条的内容，
