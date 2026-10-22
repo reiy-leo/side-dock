@@ -7,14 +7,15 @@
 # 带不动 `swift-tools-version: 6.0`（Swift 6 工具链）。
 #
 # 触发：
-# - push 到 main / PR      → 跑测试 + 双架构构建（产物作为 artifacts，不发版）
+# - push 到 main / feat/** / PR → 跑测试 + 双架构构建（产物作为 artifacts，不发版）
 # - push `v*` 标签          → 在上一行基础上，把两个 zip 附到该标签的 GitHub Release
 # - workflow_dispatch       → 手动跑一次（同上，不发版）
 name: CI
 
 on:
   push:
-    branches: [main]
+    # feat/** 分支也跑（2026-10-23：远程开发推功能分支，不开 PR 也能看到测试与构建结果）。
+    branches: [main, "feat/**"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
