@@ -559,7 +559,11 @@ final class SecondaryDockControllerTests: XCTestCase {
         controller.spaceTransitionGestureDetected()
         try await Task.sleep(for: .milliseconds(30))
         controller.spaceTransitionGestureDetected() // 连击：续命
-        try await Task.sleep(for: .milliseconds(90))
+        // CI 机器慢时固定 sleep 不稳（2026-10-23 一次 0.6s 才跑完仍为 0）：轮询等渐回，最多 2s，再多等一个超时确认只一次。
+        for _ in 0..<200 where presenter.fadeBackCount == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try await Task.sleep(for: .milliseconds(120))
         XCTAssertEqual(presenter.hideCount, 1, "连击只隐藏一次")
         XCTAssertEqual(presenter.fadeBackCount, 1, "超时从最后一个手势起算，只渐回一次")
     }
