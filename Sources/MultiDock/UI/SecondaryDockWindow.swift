@@ -223,6 +223,7 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         }
         // 行集合或锚定行变了（切桌面、改绑定、首次显示）：滚到锚定行。用户自己滚出来的
         // 锚定行回写后原样回来，`scroll(to:)` 对同值不动作。
+        if rowsChanged { rowsModel.resetMagnify() }
         if rowsChanged || anchor != anchorRowBarID {
             anchorRowBarID = anchor
             rowsModel.scroll(to: anchor)
@@ -252,6 +253,7 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     func setRevealed(_ revealed: Bool) {
         isRevealedState = revealed
         if rowsModel.isRevealed != revealed { rowsModel.isRevealed = revealed }
+        if !revealed { rowsModel.resetMagnify() }
         let showsHandle = revealed && currentRowIDs.count > 1
         if rowsModel.showsHandle != showsHandle { rowsModel.showsHandle = showsHandle }
         // 视口要变形：这段时间 ScrollView 的夹紧不是用户滚动。收起时回到上次滚到的行。

@@ -113,14 +113,37 @@ final class SecondaryDockMagnificationTests: XCTestCase {
         )
     }
 
-    func testMultiRowDisablesMagnification() {
+    func testMultiRowKeepsMagnification() {
+        // 2026-10-23 用户规格：多行条也放大，只放大光标所在的那一行。
         var snapshot = SecondaryDockContentSnapshot(items: [], iconSize: 36)
         snapshot.magnifiedSize = 96
-        XCTAssertEqual(snapshot.effectiveMagnifiedSize, 96)
         snapshot.rows = [
             SecondaryDockRow(barID: UUID(), name: "A", items: []),
             SecondaryDockRow(barID: UUID(), name: "B", items: []),
         ]
-        XCTAssertNil(snapshot.effectiveMagnifiedSize)
+        XCTAssertEqual(snapshot.effectiveMagnifiedSize, 96)
+    }
+
+    func testRowsModelMagnifiesOnlyHoveredRow() {
+        let model = SecondaryDockRowsModel()
+        let first = UUID()
+        let second = UUID()
+        model.updateMagnify(row: first, value: 40)
+        XCTAssertEqual(model.magnifyRowID, first)
+        XCTAssertEqual(model.magnifyCursor, 40)
+        XCTAssertEqual(model.magnifyAmount, 1)
+        // 光标直接移到另一行：放大层跟过去，只放大新行。
+        model.updateMagnify(row: second, value: 12)
+        XCTAssertEqual(model.magnifyRowID, second)
+        XCTAssertEqual(model.magnifyCursor, 12)
+        // 旧行迟到的「离开」不影响新行。
+        model.updateMagnify(row: first, value: nil)
+        XCTAssertEqual(model.magnifyRowID, second)
+        XCTAssertEqual(model.magnifyAmount, 1)
+        model.updateMagnify(row: second, value: nil)
+        XCTAssertEqual(model.magnifyAmount, 0)
+        model.resetMagnify()
+        XCTAssertNil(model.magnifyRowID)
+        XCTAssertNil(model.magnifyCursor)
     }
 }

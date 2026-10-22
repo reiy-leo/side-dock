@@ -26,10 +26,13 @@
 6. **悬停放大**（用户：「side docks 可以添加原生的 hover 放大效果么」→「改」，推翻 2026-10-05「不用放大效果」）：
    跟随系统 `magnification` / `largesize`（缺省 128，钳 ≤128）；余弦衰减 + 邻居让位、光标下图标不动；
    放大改图片框尺寸（不用 scaleEffect 免糊），朝屏幕内侧溢出；窗口扩出透明 headroom，条材质只占条本体；
-   v1 限制：多行条不放大（滚动视口会裁）、收起态不放大。新增 `SecondaryDockMagnificationTests`（6 例）。
+   收起态不放大（多行条起初不放大，见下）。新增 `SecondaryDockMagnificationTests`（6 例）。
    ⚠️ 真机待验：headroom 透明区是否点击穿透、放大流畅度。
    **alpha.3 真机反馈「两端的 App hover 时被截断或完全看不到」**：让位的图标被推出窗口两端被裁。修法：窗口沿条方向
    两端再各扩 `endRoom`（`SecondaryDockMagnification.endRoom`，按长条上界估，条本体位置不变），新增越界扫描用例。
+   **多行条也放大（用户：「只放大光标所在的那一行」）**：滚动区里的行只跟踪光标（`SecondaryDockRowsModel.updateMagnify`），
+   放大的那一行由 ScrollView 外的 overlay（`SecondaryDockMagnifiedRowOverlay`，按 anchorPreference 定位）另画、不接事件，
+   原行图标隐去（opacity 0.001，仍接点击与 tooltip）；`magnifyAmount` 0→1 动画，0 时与原行像素一致。
 7. 发版：预发布 `v0.2.0-alpha.3`（Info.plist 0.2.0 (4)，含悬停放大）；此前 `v0.2.0-alpha.2`（Info.plist 0.2.0 (3)），首个资产命名 `SideDock-*` 的版本。
 8. 测试：台前调度边推导与运行时避让（2 个新用例）；侧边摆放用例改为居中；快照测试先同步读启动台。
 
