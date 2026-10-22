@@ -273,6 +273,27 @@ enum SecondaryDockMagnification {
         return max(0, (magnifiedSize - iconSize).rounded(.up))
     }
 
+    /// 窗口沿条方向**两端**各要多留的透明长度（整点，2026-10-23 真机：两端图标放大时被截断/看不见）。
+    /// 光标停在一端时，另一侧让位的累计位移最多约「半个放大鼓包」的总增量，
+    /// 再加末端图标自己放大后的半边溢出。按长条（足够多图标）估上界，保守取整。
+    static func endRoom(iconSize: CGFloat, magnifiedSize: CGFloat?, pitch: CGFloat) -> CGFloat {
+        guard let magnifiedSize, iconSize > 0, pitch > 0 else { return 0 }
+        let extraMax = max(0, magnifiedSize - iconSize)
+        guard extraMax > 0 else { return 0 }
+        let reach = radius(pitch: pitch, magnifiedSize: magnifiedSize)
+        // 余弦鼓包在 [-reach, reach] 上的积分 = reach，按槽位离散 ≈ reach / pitch 个满幅增量。
+        let bumpTotal = extraMax * reach / pitch
+        return (bumpTotal / 2 + extraMax / 2 + pitch).rounded(.up)
+    }
+
+    /// 槽位沿条方向的长度（与 `SecondaryDockSlotsView` 一致）：横条 = iconSize + 4；竖条 = iconSize + 6。
+    static func slotLength(iconSize: CGFloat, isVertical: Bool) -> CGFloat {
+        isVertical ? iconSize + 6 : iconSize + 4
+    }
+
+    /// 槽位间距（与 `SecondaryDockSlotsView` 一致）。
+    static let slotSpacing: CGFloat = 2
+
     /// 影响半径：光标两侧这么远之内的图标会放大（约 2.5 个槽位，放大越大范围越宽）。
     static func radius(pitch: CGFloat, magnifiedSize: CGFloat) -> CGFloat {
         max(pitch * 2.5, magnifiedSize * 1.2)

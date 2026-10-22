@@ -175,8 +175,19 @@ struct SecondaryDockStripView: View {
                 }
             }
             .onHover(perform: onHoverChange)
-            // 窗口朝屏幕内侧多出的透明空间（放大的图标长进去）；条本体只占其余部分。
+            // 窗口朝屏幕内侧多出的透明空间（放大的图标长进去），以及沿条方向两端给让位图标的余量；
+            // 条本体只占其余部分（与 `SecondaryDockWindow.barRectInWindow` 一致）。
             .padding(innerEdge, headroom)
+            .padding(isVertical ? .vertical : .horizontal, endRoom)
+    }
+
+    private var endRoom: CGFloat {
+        SecondaryDockMagnification.endRoom(
+            iconSize: iconSize,
+            magnifiedSize: magnifiedSize,
+            pitch: SecondaryDockMagnification.slotLength(iconSize: iconSize, isVertical: isVertical)
+                + SecondaryDockMagnification.slotSpacing
+        )
     }
 
     private var headroom: CGFloat {
@@ -309,10 +320,10 @@ struct SecondaryDockSlotsView: View {
 
     @State private var cursor: CGFloat?
 
-    private static let spacing: CGFloat = 2
+    private static let spacing: CGFloat = SecondaryDockMagnification.slotSpacing
 
     /// 槽位沿条方向的长度：横条 = 宽（minWidth iconSize + 4）；竖条 = 高（图标 + 2 + 圆点 4）。
-    private var slotLength: CGFloat { isVertical ? iconSize + 6 : iconSize + 4 }
+    private var slotLength: CGFloat { SecondaryDockMagnification.slotLength(iconSize: iconSize, isVertical: isVertical) }
 
     /// 放大朝屏幕内侧长：对齐到靠 Dock / 屏幕边的那一侧。
     private var growAlignment: Alignment {

@@ -69,6 +69,50 @@ final class SecondaryDockMagnificationTests: XCTestCase {
         )
     }
 
+    func testEndRoomCoversDisplacementAtBarEnds() {
+        // 真机（2026-10-23）：两端图标放大时被窗口边截断。光标停在第一个图标上时，
+        // 末端那一侧的累计让位 + 图标半边溢出必须落在 endRoom 里。
+        let icon: CGFloat = 36
+        for magnified in [CGFloat(64), 96, 128] {
+            for isVertical in [false, true] {
+                let slot = SecondaryDockMagnification.slotLength(iconSize: icon, isVertical: isVertical)
+                let pitch = slot + SecondaryDockMagnification.slotSpacing
+                let room = SecondaryDockMagnification.endRoom(iconSize: icon, magnifiedSize: magnified, pitch: pitch)
+                let count = 20
+                let length = CGFloat(count) * pitch - SecondaryDockMagnification.slotSpacing
+                for cursor in stride(from: CGFloat(0), through: length, by: 3) {
+                    let effects = SecondaryDockMagnification.effects(
+                        count: count, slotLength: slot, spacing: SecondaryDockMagnification.slotSpacing,
+                        iconSize: icon, magnifiedSize: magnified, cursor: cursor
+                    )
+                    for (index, effect) in effects.enumerated() {
+                        let center = CGFloat(index) * pitch + slot / 2 + effect.offset
+                        let half = icon * effect.scale / 2
+                        XCTAssertGreaterThanOrEqual(center - half, -room, "左/上端越界 m=\(magnified)")
+                        XCTAssertLessThanOrEqual(center + half, length + room, "右/下端越界 m=\(magnified)")
+                    }
+                }
+            }
+        }
+    }
+
+    func testWindowFrameAddsEndRoomAlongBar() {
+        let bar = NSRect(x: 100, y: 10, width: 200, height: 56)
+        XCTAssertEqual(
+            SecondaryDockWindow.windowFrame(forBar: bar, headroom: 60, endRoom: 30, position: .bottom),
+            NSRect(x: 70, y: 10, width: 260, height: 116)
+        )
+        let side = NSRect(x: 1784, y: 504, width: 56, height: 192)
+        XCTAssertEqual(
+            SecondaryDockWindow.windowFrame(forBar: side, headroom: 60, endRoom: 30, position: .right),
+            NSRect(x: 1724, y: 474, width: 116, height: 252)
+        )
+        XCTAssertEqual(
+            SecondaryDockWindow.barRectInWindow(barSize: side.size, headroom: 60, endRoom: 30, position: .right),
+            NSRect(x: 60, y: 30, width: 56, height: 192)
+        )
+    }
+
     func testMultiRowDisablesMagnification() {
         var snapshot = SecondaryDockContentSnapshot(items: [], iconSize: 36)
         snapshot.magnifiedSize = 96

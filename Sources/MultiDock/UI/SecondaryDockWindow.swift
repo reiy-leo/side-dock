@@ -75,6 +75,9 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     private let container: NSVisualEffectView
     /// 当前朝屏幕内侧预留的透明厚度（0 = 不放大）。
     private var headroom: CGFloat = 0
+    /// 当前沿条方向两端各预留的透明长度（0 = 不放大）。
+    private var endRoom: CGFloat = 0
+    private var currentIsVertical = false
     private var hosting: SecondaryDockHostingView!
     /// 「设回单空间配方」的延迟任务；连切时取消上一拍未生效的，防止堆积。
     private var pullResetTask: Task<Void, Never>?
@@ -206,8 +209,16 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
             )
         }
         let newHeadroom = SecondaryDockMagnification.headroom(iconSize: content.iconSize, magnifiedSize: magnifiedSize)
-        if newHeadroom != headroom {
+        let newEndRoom = SecondaryDockMagnification.endRoom(
+            iconSize: content.iconSize,
+            magnifiedSize: magnifiedSize,
+            pitch: SecondaryDockMagnification.slotLength(iconSize: content.iconSize, isVertical: isVertical)
+                + SecondaryDockMagnification.slotSpacing
+        )
+        if newHeadroom != headroom || newEndRoom != endRoom || isVertical != currentIsVertical {
             headroom = newHeadroom
+            endRoom = newEndRoom
+            currentIsVertical = isVertical
             if let intendedFrame { setFrame(intendedFrame, animated: false) }
         }
         // 行集合或锚定行变了（切桌面、改绑定、首次显示）：滚到锚定行。用户自己滚出来的
@@ -254,8 +265,10 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     func setFrame(_ frame: NSRect, animated: Bool) {
         intendedFrame = frame
         rowsModel.suppressReports()
-        let windowFrame = Self.windowFrame(forBar: frame, headroom: headroom, position: currentPosition)
-        container.frame = Self.barRectInWindow(barSize: frame.size, headroom: headroom, position: currentPosition)
+        let windowFrame = Self.windowFrame(forBar: frame, headroom: headroom, endRoom: endRoom, position: currentPosition)
+        container.frame = Self.barRectInWindow(
+            barSize: frame.size, headroom: headroom, endRoom: endRoom, position: currentPosition
+        )
         // NSVisualEffectView 没有 cornerRadius（那是 UIKit 的），圆角靠 maskImage 现画。
         container.maskImage = Self.maskImage(size: frame.size)
         if animated {
@@ -269,20 +282,33 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         }
     }
 
-    /// 条 frame → 窗口 frame：朝屏幕内侧扩 `headroom`（底部条往上、左侧条往右、右侧条往左）。
-    static func windowFrame(forBar bar: NSRect, headroom: CGFloat, position: DockBarPosition) -> NSRect {
-        guard headroom > 0 else { return bar }
+    /// 条 frame → 窗口 frame：朝屏幕内侧扩 `headroom`（底部条往上、左侧条往右、右侧条往左），
+    /// 沿条方向两端各扩 `endRoom`（让位的图标不被窗口边裁掉）。
+    static func windowFrame(
+        forBar bar: NSRect, headroom: CGFloat, endRoom: CGFloat = 0, position: DockBarPosition
+    ) -> NSRect {
         switch position {
-        case .bottom: return NSRect(x: bar.minX, y: bar.minY, width: bar.width, height: bar.height + headroom)
-        case .left: return NSRect(x: bar.minX, y: bar.minY, width: bar.width + headroom, height: bar.height)
-        case .right: return NSRect(x: bar.minX - headroom, y: bar.minY, width: bar.width + headroom, height: bar.height)
+        case .bottom:
+            return NSRect(x: bar.minX - endRoom, y: bar.minY,
+                          width: bar.width + endRoom * 2, height: bar.height + headroom)
+        case .left:
+            return NSRect(x: bar.minX, y: bar.minY - endRoom,
+                          width: bar.width + headroom, height: bar.height + endRoom * 2)
+        case .right:
+            return NSRect(x: bar.minX - headroom, y: bar.minY - endRoom,
+                          width: bar.width + headroom, height: bar.height + endRoom * 2)
         }
     }
 
     /// 条本体在窗口里的位置（AppKit 坐标，原点左下）。
-    static func barRectInWindow(barSize: NSSize, headroom: CGFloat, position: DockBarPosition) -> NSRect {
-        let x: CGFloat = position == .right ? headroom : 0
-        return NSRect(origin: CGPoint(x: x, y: 0), size: barSize)
+    static func barRectInWindow(
+        barSize: NSSize, headroom: CGFloat, endRoom: CGFloat = 0, position: DockBarPosition
+    ) -> NSRect {
+        switch position {
+        case .bottom: return NSRect(origin: CGPoint(x: endRoom, y: 0), size: barSize)
+        case .left: return NSRect(origin: CGPoint(x: 0, y: endRoom), size: barSize)
+        case .right: return NSRect(origin: CGPoint(x: headroom, y: endRoom), size: barSize)
+        }
     }
 
     func orderFront() {
@@ -306,7 +332,7 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         pullResetTask?.cancel()
         fadeTask?.cancel()
         let targetFrame = intendedFrame.map {
-            Self.windowFrame(forBar: $0, headroom: headroom, position: currentPosition)
+            Self.windowFrame(forBar: $0, headroom: headroom, endRoom: endRoom, position: currentPosition)
         } ?? window.frame
         let visibleBottom = (window.screen ?? NSScreen.main)?.visibleFrame.minY ?? 0
         window.alphaValue = 0
