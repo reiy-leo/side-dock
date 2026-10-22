@@ -30,6 +30,7 @@
    ⚠️ 真机待验：headroom 透明区是否点击穿透、放大流畅度。
    **alpha.3 真机反馈「两端的 App hover 时被截断或完全看不到」**：让位的图标被推出窗口两端被裁。修法：窗口沿条方向
    两端再各扩 `endRoom`（`SecondaryDockMagnification.endRoom`，按长条上界估，条本体位置不变），新增越界扫描用例。
+   **已发预发布 v0.2.0-alpha.4**（Info.plist 0.2.0 (5)，含两端防裁切 + 多行条放大）。
    **多行条也放大（用户：「只放大光标所在的那一行」）**：滚动区里的行只跟踪光标（`SecondaryDockRowsModel.updateMagnify`），
    放大的那一行由 ScrollView 外的 overlay（`SecondaryDockMagnifiedRowOverlay`，按 anchorPreference 定位）另画、不接事件，
    原行图标隐去（opacity 0.001，仍接点击与 tooltip）；`magnifyAmount` 0→1 动画，0 时与原行像素一致。
