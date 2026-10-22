@@ -552,18 +552,19 @@ final class SecondaryDockControllerTests: XCTestCase {
         let content = ContentBox()
         let controller = makeController(
             presenter: presenter, provider: provider, content: content,
-            gestureRevealTimeout: .milliseconds(60)
+            gestureRevealTimeout: .milliseconds(500)
         )
         showBar(controller, presenter: presenter, provider: provider, content: content)
 
         controller.spaceTransitionGestureDetected()
         try await Task.sleep(for: .milliseconds(30))
+        // 2026-10-23 CI 慢机上 sleep(30) 实际睡过 60ms 超时，第一下先渐回了（hide/fade 各 2）：超时放宽到 500ms 留足余量。
         controller.spaceTransitionGestureDetected() // 连击：续命
         // CI 机器慢时固定 sleep 不稳（2026-10-23 一次 0.6s 才跑完仍为 0）：轮询等渐回，最多 2s，再多等一个超时确认只一次。
-        for _ in 0..<200 where presenter.fadeBackCount == 0 {
+        for _ in 0..<400 where presenter.fadeBackCount == 0 {
             try await Task.sleep(for: .milliseconds(10))
         }
-        try await Task.sleep(for: .milliseconds(120))
+        try await Task.sleep(for: .milliseconds(600))
         XCTAssertEqual(presenter.hideCount, 1, "连击只隐藏一次")
         XCTAssertEqual(presenter.fadeBackCount, 1, "超时从最后一个手势起算，只渐回一次")
     }
