@@ -28,7 +28,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             button.action = #selector(statusItemClicked(_:))
             // 关键：同时接收左右键，否则拿不到右键事件。
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            button.toolTip = L("Side Dock — 左键切下一个桌面，⇧+左键切上一个，右键打开菜单", "Side Dock — click for next desktop, ⇧-click for previous, right-click for menu")
+            button.toolTip = L("侧边坞 — 左键切下一个桌面，⇧+左键切上一个，右键打开菜单", "Side Dock — click for next desktop, ⇧-click for previous, right-click for menu")
         }
         applyIcon()
 

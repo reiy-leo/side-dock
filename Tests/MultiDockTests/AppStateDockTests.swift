@@ -1278,7 +1278,7 @@ final class AppStateDockTests: XCTestCase {
         XCTAssertFalse(state.importConfiguration(from: badURL))
         XCTAssertEqual(state.dockBars.count, barsBefore, "导入失败不能动当前配置")
         XCTAssertEqual(state.lastDataOperationFailed, true)
-        XCTAssertTrue(state.lastDataOperationMessage?.contains("不是有效的 Side Dock 配置文件") ?? false)
+        XCTAssertTrue(state.lastDataOperationMessage?.contains("不是有效的侧边坞配置文件") ?? false)
     }
 
     // MARK: - 更新检查（关于 Tab，2026-10-06）

@@ -20,6 +20,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/MultiDock"
 cp Support/Info.plist "$APP/Contents/Info.plist"
 cp Support/MultiDock.icns "$APP/Contents/Resources/MultiDock.icns"
+# 显示名本地化（2026-10-24）：中文系统里 Finder / 启动台显示「侧边坞」，其它语言显示 Side Dock。
+# 包名本身仍是「Side Dock.app」（配合 Info.plist 的 LSHasLocalizedDisplayName）。
+for lproj in Support/*.lproj; do
+    cp -R "$lproj" "$APP/Contents/Resources/"
+done
 codesign --force --sign - "$APP"
 
 echo "已生成 $APP"

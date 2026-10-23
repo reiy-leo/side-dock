@@ -735,7 +735,7 @@ final class AppState {
     // MARK: - 生命周期
 
     func start() {
-        append(.info, L("Side Dock 启动", "Side Dock launched"))
+        append(.info, L("侧边坞已启动", "Side Dock launched"))
         append(.info, L("系统 \(ProcessInfo.processInfo.operatingSystemVersionString)", "System \(ProcessInfo.processInfo.operatingSystemVersionString)"))
         // 界面语言留痕：真机核对「语言怎么没切」只看得到这一份日志（见 L10n 注释）。
         append(.info, L("界面语言：中文（可在系统设置里按 App 指定）", "UI language: English (per-app language can be set in System Settings)"))
@@ -1627,7 +1627,7 @@ final class AppState {
         do {
             payload = try configStore.decode(from: data)
         } catch {
-            recordDataOperation(L("不是有效的 Side Dock 配置文件（解码失败）", "Not a valid Side Dock configuration file (decode failed)"), failed: true)
+            recordDataOperation(L("不是有效的侧边坞配置文件（解码失败）", "Not a valid Side Dock configuration file (decode failed)"), failed: true)
             append(.error, L("配置导入失败：解码失败（\(error.localizedDescription)）——请确认文件来自本 App 的导出", "Config import failed: decode error (\(error.localizedDescription)) — make sure the file was exported by this app"))
             return false
         }

@@ -227,7 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let window = makeWindow(
-            title: L("Side Dock 调试面板", "Side Dock Debug Panel"),
+            title: L("侧边坞调试面板", "Side Dock Debug Panel"),
             size: NSSize(width: 760, height: 620),
             content: DebugPanelView(state: state)
         )

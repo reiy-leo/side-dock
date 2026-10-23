@@ -241,7 +241,7 @@ arm64 由 CI 构建）。「关于」页的更新检查走 `releases/latest`，�
 `docs/PLAN.md` §3.12.x。代码在分支 `feat/multi-row-dock`（Hark 远程改的，CI 全绿），已发预发布 **v0.2.0-alpha.1**（zip + dmg，双架构）。
 发版补充：标签带 `-` 自动发预发布；CI 同时产出 `SideDock-v<版本>-<架构>.dmg` 与 `.zip`（v0.2.0-alpha.1 及更早叫 `MultiDock-…`）。
 
-**改名（2026-10-23，第 72 次）**：对外名称统一为 **Side Dock**（界面文案、`Side Dock.app` 包名、
+**改名（2026-10-23，第 72 次）**：对外名称统一为 **Side Dock**（**2026-10-24 中文名「侧边坞」**：界面中文文案走 `L("侧边坞…", "Side Dock…")`；Finder / 启动台显示名靠 `Support/<lang>.lproj/InfoPlist.strings` + `LSHasLocalizedDisplayName`，`build-app.sh` 拷进包里）（界面文案、`Side Dock.app` 包名、
 CFBundleName/DisplayName、Release 标题与资产名）。**刻意不改**：Swift 包 / target / 模块名 `MultiDock`、
 可执行文件名、图标文件名、bundle id `local.multidock`、配置目录 `~/Library/Application Support/MultiDock/`
 —— 改了会丢用户配置、登录项与历史测试。包名带空格，脚本里路径一律加引号。

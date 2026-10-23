@@ -7,7 +7,8 @@ import SwiftUI
 /// （零权限，普通网络请求）。版本号来自 `Support/Info.plist` 的
 /// `CFBundleShortVersionString`（打包脚本原样拷贝）——发版时记得改它。
 enum AppAbout {
-    static let appName = "Side Dock"
+    /// 对外名称（2026-10-24 用户：中文叫「侧边坞」，对应系统 Dock 的中文名「程序坞」；英文 Side Dock）。
+    static var appName: String { L("侧边坞", "Side Dock") }
     static let repoURL = URL(string: "https://github.com/reiy-leo/side-dock")!
     static let releasesAPIURL = URL(string: "https://api.github.com/repos/reiy-leo/side-dock/releases/latest")!
 
