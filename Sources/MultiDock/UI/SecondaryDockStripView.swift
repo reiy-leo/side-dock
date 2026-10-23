@@ -103,7 +103,7 @@ final class SecondaryDockRowsModel {
     @ObservationIgnored var pager = SecondaryDockRowPager()
     @ObservationIgnored private var bouncingIDs: Set<String> = []
     /// App 是否已启动完成（弹跳的停止条件；测试可替换）。
-    @ObservationIgnored var isLaunchFinished: (String) -> Bool = SecondaryDockRowsModel.appFinishedLaunching
+    @ObservationIgnored var isLaunchFinished: @MainActor (String) -> Bool = { SecondaryDockRowsModel.appFinishedLaunching($0) }
     /// 弹跳节拍（测试可缩短）。
     @ObservationIgnored var bounceRise: Duration = .milliseconds(190)
     @ObservationIgnored var bounceFall: Duration = .milliseconds(230)
