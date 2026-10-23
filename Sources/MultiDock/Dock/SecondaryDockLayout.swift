@@ -40,6 +40,8 @@ enum SecondaryDockLayout {
     static let faceGap: CGFloat = 4
     /// 条到屏幕边缘的最小边距。
     static let screenMargin: CGFloat = 4
+    /// 独立贴边时条与屏幕边的空隙（2026-10-24 用户：「底部应该和原生一样不粘在一起，是一根浮着的条」）。
+    static let standaloneGap: CGFloat = 6
     /// 内缩小于这个值视为「探测不到 Dock」（自动隐藏滑走后内缩 ≈ 0）。
     static let hiddenInsetThreshold: CGFloat = 8
     /// 半露滑入占比：`tucked` 相对 `revealed` 向 Dock 方向滑入多少个条厚。
@@ -156,7 +158,7 @@ enum SecondaryDockLayout {
     /// 独立贴边摆放：栏不贴原生 Dock（`position` ≠ Dock 方位），改贴**自己那一边**的屏幕边缘。
     ///
     /// 半露的机制不同：贴 Dock 时靠层级 19 被 Dock（层级 20）挡住一半；
-    /// 独立贴边没有可借用的遮挡者，改为**整条滑出屏幕一半** —— 出屏即「藏」，hover 滑回贴齐边缘。
+    /// 独立贴边没有可借用的遮挡者，改为**整条滑出屏幕一半** —— 出屏即「藏」，hover 滑回、离屏幕边留 `standaloneGap`（浮着，同原生 Dock）。
     static func standalonePlacement(
         barSize: CGSize,
         position: DockBarPosition,
@@ -173,24 +175,24 @@ enum SecondaryDockLayout {
                 low: screen.minX + screenMargin,
                 high: screen.maxX - size.width - screenMargin
             )
-            let revealed = CGRect(origin: CGPoint(x: x, y: screen.minY), size: size)
-            return (revealed, revealed.offsetBy(dx: 0, dy: -size.height / 2))
+            let revealed = CGRect(origin: CGPoint(x: x, y: screen.minY + standaloneGap), size: size)
+            return (revealed, revealed.offsetBy(dx: 0, dy: -(size.height / 2 + standaloneGap)))
         case .left:
             let y = clamp(
                 (screen.midY - size.height / 2).rounded(),
                 low: screen.minY + screenMargin,
                 high: screen.maxY - size.height - screenMargin
             )
-            let revealed = CGRect(origin: CGPoint(x: screen.minX, y: y), size: size)
-            return (revealed, revealed.offsetBy(dx: -size.width / 2, dy: 0))
+            let revealed = CGRect(origin: CGPoint(x: screen.minX + standaloneGap, y: y), size: size)
+            return (revealed, revealed.offsetBy(dx: -(size.width / 2 + standaloneGap), dy: 0))
         case .right:
             let y = clamp(
                 (screen.midY - size.height / 2).rounded(),
                 low: screen.minY + screenMargin,
                 high: screen.maxY - size.height - screenMargin
             )
-            let revealed = CGRect(origin: CGPoint(x: screen.maxX - size.width, y: y), size: size)
-            return (revealed, revealed.offsetBy(dx: size.width / 2, dy: 0))
+            let revealed = CGRect(origin: CGPoint(x: screen.maxX - size.width - standaloneGap, y: y), size: size)
+            return (revealed, revealed.offsetBy(dx: size.width / 2 + standaloneGap, dy: 0))
         }
     }
 

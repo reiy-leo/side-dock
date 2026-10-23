@@ -148,7 +148,7 @@ final class DockBarModelTests: XCTestCase {
             barSize: barSize, position: .bottom, screen: screen
         )
         // 4 * (36+8) + 16 = 192；36 + 20 = 56
-        XCTAssertEqual(revealed, CGRect(x: 864, y: 0, width: 192, height: 56), "贴屏幕底边、水平居中")
+        XCTAssertEqual(revealed, CGRect(x: 864, y: 6, width: 192, height: 56), "离屏幕底边留 6 pt（浮着）、水平居中")
         XCTAssertEqual(tucked, CGRect(x: 864, y: -28, width: 192, height: 56), "半露 = 滑出屏幕一半")
     }
 
@@ -157,8 +157,8 @@ final class DockBarModelTests: XCTestCase {
         let (revealed, tucked) = SecondaryDockLayout.standalonePlacement(
             barSize: barSize, position: .right, screen: screen
         )
-        XCTAssertEqual(revealed, CGRect(x: 1864, y: 504, width: 56, height: 192),
-                       "贴右缘、垂直居中：(1200-192)/2 = 504")
+        XCTAssertEqual(revealed, CGRect(x: 1858, y: 504, width: 56, height: 192),
+                       "离右缘 6 pt、垂直居中：(1200-192)/2 = 504")
         XCTAssertEqual(tucked, CGRect(x: 1892, y: 504, width: 56, height: 192), "半露 = 向右滑出屏幕一半")
     }
 
@@ -167,7 +167,7 @@ final class DockBarModelTests: XCTestCase {
         let (revealed, tucked) = SecondaryDockLayout.standalonePlacement(
             barSize: barSize, position: .left, screen: screen
         )
-        XCTAssertEqual(revealed, CGRect(x: 0, y: 504, width: 56, height: 192), "贴左缘")
+        XCTAssertEqual(revealed, CGRect(x: 6, y: 504, width: 56, height: 192), "离左缘 6 pt")
         XCTAssertEqual(tucked, CGRect(x: -28, y: 504, width: 56, height: 192), "半露 = 向左滑出屏幕一半")
     }
 
