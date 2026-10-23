@@ -1378,7 +1378,6 @@ final class AppState {
         snapshot.barID = first.barID
         snapshot.rows = rows
         let pref = settings.secondaryDockRowPrefs[SecondaryDockRowPref.key(spaceID: space.id, edge: edge)]
-        snapshot.visibleRows = pref?.visibleRows ?? 1
         snapshot.anchorBarID = pref?.anchorBarID
         // 悬停放大跟随系统「放大」开关与尺寸（2026-10-23 用户规格）。
         snapshot.magnifiedSize = SecondaryDockMagnification.magnifiedSize(
@@ -1387,19 +1386,6 @@ final class AppState {
             iconSize: iconSize
         )
         return snapshot
-    }
-
-    /// 拖拽 handle 松手后的行数（按「桌面 × 边」各存各的，2026-10-23 用户规格）。
-    func setSecondaryDockVisibleRows(_ rows: Int, space: DesktopSpace?, edge: DockBarPosition) {
-        guard let space else { return }
-        let key = SecondaryDockRowPref.key(spaceID: space.id, edge: edge)
-        let clamped = min(max(rows, 1), DockBar.maxRowsPerEdge)
-        guard settings.secondaryDockRowPrefs[key]?.visibleRows != clamped else { return }
-        updateSettings { settings in
-            var pref = settings.secondaryDockRowPrefs[key] ?? SecondaryDockRowPref()
-            pref.visibleRows = clamped
-            settings.secondaryDockRowPrefs[key] = pref
-        }
     }
 
     /// 用户滚到的行（收起时显示它；那根栏不在了就回到第一行）。

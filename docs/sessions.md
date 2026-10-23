@@ -31,6 +31,15 @@
    **alpha.3 真机反馈「两端的 App hover 时被截断或完全看不到」**：让位的图标被推出窗口两端被裁。修法：窗口沿条方向
    两端再各扩 `endRoom`（`SecondaryDockMagnification.endRoom`，按长条上界估，条本体位置不变），新增越界扫描用例。
    **已发预发布 v0.2.0-alpha.4**（Info.plist 0.2.0 (5)，含两端防裁切 + 多行条放大）。
+   **改版（用户：「把 dock drawer 删掉（含 resize handle），只能滚动切换；一侧要有多行提示；滚动要有停顿感」）**：
+   条恒 1 行厚；`SecondaryDockRowPager`（纯逻辑）一次触控板手势只翻一行、惯性不翻、滚轮一格一行、翻完 0.35 s 冷却；
+   窗口用本地 scrollWheel 监听喂事件（横条只吃竖向）。末端一列小圆点 = 行数 + 当前行。删了 resize / visibleRows 流程
+   （`SecondaryDockRowPref.visibleRows` 字段保留只为旧配置解码）。多行放大的 overlay 方案随之删掉，回到单行放大。
+   **点击弹跳（用户：「和原生一样，不然以为点了没反应」）**：未运行的 App 点了朝内侧弹，至少 2 下、到启动完成为止（最多 12 下）；
+   已运行的不弹；文件弹 1 下。`headroom` 至少留弹跳高度（图标 0.5 倍）。
+   **底板随内容变长（用户：「hover 时两边的 App 超出 bar 的范围」）**：放大时按图标实际范围算两端伸出量，
+   NSVisualEffectView 底板跟着伸（钳在 endRoom 内），hover 形状也一起伸。
+   （以下两条已被改版取代）
    **放大挡住 resize handle（用户反馈）**：光标上 handle 或拖动中，放大让开（`SecondaryDockRowsModel.setHandleHovered`），handle 在最上层。
    **多行条也放大（用户：「只放大光标所在的那一行」）**：滚动区里的行只跟踪光标（`SecondaryDockRowsModel.updateMagnify`），
    放大的那一行由 ScrollView 外的 overlay（`SecondaryDockMagnifiedRowOverlay`，按 anchorPreference 定位）另画、不接事件，

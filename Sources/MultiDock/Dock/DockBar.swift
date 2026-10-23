@@ -167,9 +167,8 @@ enum DockBarCatalog {
 
 /// 某个桌面某条边上那扇次级条窗口的行状态（2026-10-23 用户规格，**按桌面各存各的**）。
 ///
-/// - `visibleRows`：hover 显出时展开几行（用户拖上沿/内侧 handle 定的高度，1–3）；
-///   收起（半露在原生 Dock 后方）时恒为 1 行。
-/// - `anchorBarID`：上次滚到的那一行（靠原生 Dock / 屏幕边那一侧的行）。收起时显示它；
+/// - `visibleRows`：**已废弃**（2026-10-23 去掉抽屉 / 拖拽 handle，条恒为 1 行）。字段留着只为旧配置照常解码。
+/// - `anchorBarID`：上次切到的那一行。条只显示这一行；
 ///   那根栏不在了（解绑 / 改边 / 删除）就回到第一行。
 struct SecondaryDockRowPref: Codable, Hashable, Sendable {
     var visibleRows: Int = 1

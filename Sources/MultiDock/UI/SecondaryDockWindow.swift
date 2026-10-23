@@ -21,8 +21,7 @@ protocol SecondaryDockPresenting: AnyObject {
     var isOnActiveSpace: Bool { get }
     /// 安全网信号：当前透明度（animator 卡死 / 渐回中断检测，实验 26 26f）。
     var currentAlpha: CGFloat { get }
-    /// 多行条（2026-10-23）：显出 / 收起态切换。真实窗口据此显隐拖拽 handle，
-    /// 收起时把滚动位置复位到「上次滚到的行」。
+    /// 显出 / 收起态切换（2026-10-23）。真实窗口据此开关悬停放大。
     func setRevealed(_ revealed: Bool)
 }
 
@@ -110,14 +109,14 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     private var anchorRowBarID: UUID?
     private var currentRowIDs: [UUID] = []
     private var isRevealedState = false
-    /// 多行条的滚动 / handle 状态（视图经 `@Bindable` 读写）。
+    /// 多行条的当前行 / 弹跳 / 底板伸出状态（视图读它）。
     let rowsModel = SecondaryDockRowsModel()
 
     /// 用户滚到了另一行（静默窗外的滚动才回报）。由 `AppDelegate` 接到
     /// `SecondaryDockController.rowScrolled(_:)`，最终落 `AppState` 按桌面存。
     var onRowScrolled: (UUID?) -> Void = { _ in }
-    /// 拖拽 handle。由 `AppDelegate` 接到 `SecondaryDockController.resize(_:)`。
-    var onResize: (SecondaryDockResizePhase) -> Void = { _ in }
+    /// 滚轮 / 触控板滚动的本地监听（多行条切行，2026-10-23）。
+    private var scrollMonitor: Any?
     /// 按栏给可选位置（同桌面同边满 3 根的边置灰，2026-10-23）。设了就优先于
     /// `availablePositionsProvider`。
     var availablePositionsForBar: ((UUID?) -> [DockBarPosition])?
@@ -172,11 +171,46 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
             guard let self else { return }
             self.onPositionSelected(self.menuTargetBarID, position)
         }
+        rowsModel.onBarOverflowChange = { [weak self] overflow in
+            guard let self else { return }
+            self.barOverflow = overflow
+            self.layoutContainer()
+        }
         rowsModel.onUserScrolled = { [weak self] rowID in
             guard let self else { return }
             self.anchorRowBarID = rowID
+            self.hoveredRowBarID = rowID
             self.onRowScrolled(rowID)
         }
+        // 多行条切行（2026-10-23 用户规格）：只显示一行，滚动一次手势切一行、切完停顿。
+        // 落在本窗口上的滚动事件在这里吃掉；不是本窗口的、或这条边只有一行时原样放行。
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            let consumed: Bool = MainActor.assumeIsolated {
+                guard let self, event.window === self.window else { return false }
+                return self.handleScroll(event)
+            }
+            return consumed ? nil : event
+        }
+    }
+
+    /// 处理一次滚动事件；吃掉返回 true。
+    private func handleScroll(_ event: NSEvent) -> Bool {
+        guard currentRowIDs.count > 1 else { return false }
+        guard let value = SecondaryDockRowPager.directionalDelta(
+            dx: event.scrollingDeltaX, dy: event.scrollingDeltaY, position: currentPosition
+        ) else { return false }
+        let sample = SecondaryDockRowPager.Sample(
+            delta: value,
+            phase: SecondaryDockRowPager.Phase(event.phase),
+            isMomentum: !event.momentumPhase.isEmpty,
+            isPrecise: event.hasPreciseScrollingDeltas,
+            time: event.timestamp
+        )
+        let direction = rowsModel.pager.feed(sample)
+        if direction != 0 {
+            rowsModel.step(direction, rowIDs: currentRowIDs)
+        }
+        return true
     }
 
     /// 右键菜单作用的栏：光标停过、且仍在当前内容里的那一行；否则第一行。
@@ -221,15 +255,12 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
             currentIsVertical = isVertical
             if let intendedFrame { setFrame(intendedFrame, animated: false) }
         }
-        // 行集合或锚定行变了（切桌面、改绑定、首次显示）：滚到锚定行。用户自己滚出来的
-        // 锚定行回写后原样回来，`scroll(to:)` 对同值不动作。
-        if rowsChanged { rowsModel.resetMagnify() }
+        // 行集合或锚定行变了（切桌面、改绑定、首次显示）：定位到锚定行。用户自己切出来的
+        // 锚定行回写后原样回来，`show` 对同值不动作。
         if rowsChanged || anchor != anchorRowBarID {
             anchorRowBarID = anchor
-            rowsModel.scroll(to: anchor)
+            rowsModel.show(anchor)
         }
-        let showsHandle = isRevealedState && rows.count > 1
-        if rowsModel.showsHandle != showsHandle { rowsModel.showsHandle = showsHandle }
     }
 
     /// 视图真正依赖的内容摘要：行、条目（ID / 名字 / 运行态 / 安装态）、尺寸、方位。
@@ -253,26 +284,13 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     func setRevealed(_ revealed: Bool) {
         isRevealedState = revealed
         if rowsModel.isRevealed != revealed { rowsModel.isRevealed = revealed }
-        if !revealed { rowsModel.resetMagnify() }
-        let showsHandle = revealed && currentRowIDs.count > 1
-        if rowsModel.showsHandle != showsHandle { rowsModel.showsHandle = showsHandle }
-        // 视口要变形：这段时间 ScrollView 的夹紧不是用户滚动。收起时回到上次滚到的行。
-        rowsModel.suppressReports()
-        if !revealed {
-            rowsModel.scroll(to: anchorRowBarID)
-        }
     }
 
     /// `frame` 是**条本体**的位置（调度器只认条）；窗口实际 frame 再朝屏幕内侧扩出 `headroom`。
     func setFrame(_ frame: NSRect, animated: Bool) {
         intendedFrame = frame
-        rowsModel.suppressReports()
         let windowFrame = Self.windowFrame(forBar: frame, headroom: headroom, endRoom: endRoom, position: currentPosition)
-        container.frame = Self.barRectInWindow(
-            barSize: frame.size, headroom: headroom, endRoom: endRoom, position: currentPosition
-        )
-        // NSVisualEffectView 没有 cornerRadius（那是 UIKit 的），圆角靠 maskImage 现画。
-        container.maskImage = Self.maskImage(size: frame.size)
+        layoutContainer()
         if animated {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.18
@@ -282,6 +300,39 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         } else {
             window.setFrame(windowFrame, display: true)
         }
+    }
+
+    /// 放大时底板两端伸出的长度（视图量出来报上来）。
+    private var barOverflow: SecondaryDockBarOverflow = .zero
+
+    /// 底板（材质）= 条本体 + 两端伸出（钳在窗口两端的 `endRoom` 里）。
+    private func layoutContainer() {
+        guard let frame = intendedFrame else { return }
+        let rect = Self.containerRect(
+            barSize: frame.size, headroom: headroom, endRoom: endRoom,
+            overflow: barOverflow, position: currentPosition
+        )
+        guard rect != container.frame else { return }
+        container.frame = rect
+        // NSVisualEffectView 没有 cornerRadius（那是 UIKit 的），圆角靠 maskImage 现画。
+        container.maskImage = Self.maskImage(size: rect.size)
+    }
+
+    /// 底板在窗口里的位置：条本体沿条方向两端各伸出 overflow（leading = 横条左 / 竖条上），各钳到 `endRoom`。
+    static func containerRect(
+        barSize: NSSize, headroom: CGFloat, endRoom: CGFloat,
+        overflow: SecondaryDockBarOverflow, position: DockBarPosition
+    ) -> NSRect {
+        let bar = barRectInWindow(barSize: barSize, headroom: headroom, endRoom: endRoom, position: position)
+        let leading = min(max(overflow.leading, 0), endRoom)
+        let trailing = min(max(overflow.trailing, 0), endRoom)
+        if position.isBarVertical {
+            // AppKit 原点在左下：上端（leading）往 maxY 长，下端（trailing）往 minY 长。
+            return NSRect(x: bar.minX, y: bar.minY - trailing,
+                          width: bar.width, height: bar.height + leading + trailing)
+        }
+        return NSRect(x: bar.minX - leading, y: bar.minY,
+                      width: bar.width + leading + trailing, height: bar.height)
     }
 
     /// 条 frame → 窗口 frame：朝屏幕内侧扩 `headroom`（底部条往上、左侧条往右、右侧条往左），
@@ -438,8 +489,7 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
             model: rowsModel,
             onActivate: { [weak self] item in self?.onActivate(item) },
             onHoverChange: { [weak self] inside in self?.onHoverChange(inside) },
-            onRowHover: { [weak self] barID in self?.hoveredRowBarID = barID },
-            onResize: { [weak self] phase in self?.onResize(phase) }
+            onRowHover: { [weak self] barID in self?.hoveredRowBarID = barID }
         )
     }
 

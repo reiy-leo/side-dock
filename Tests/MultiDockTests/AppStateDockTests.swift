@@ -551,7 +551,6 @@ final class AppStateDockTests: XCTestCase {
         let content = state.secondaryDockContent(for: spaces[0], edge: .bottom)
         XCTAssertEqual(content?.rows.map(\.barID), [first, second, third], "每根栏一行，按栏列表顺序")
         XCTAssertEqual(content?.maxRowItemCount, 3, "窗口长度按最长那一行")
-        XCTAssertEqual(content?.effectiveVisibleRows, 1, "没拖过 handle：展开 1 行")
         XCTAssertEqual(content?.effectiveAnchorBarID, first, "没滚过：收起显示第一行")
         XCTAssertNil(state.secondaryDockContent(for: spaces[0], edge: .left), "左边没有栏")
         XCTAssertEqual(state.dockBar(for: spaces[0])?.id, first, "主栏 = 第一根（原生 Dock 方位未知时）")
@@ -617,14 +616,12 @@ final class AppStateDockTests: XCTestCase {
         let second = bindBar(state, to: spaces[0], apps: apps(count: 1, prefix: "T"), name: "二")
         bindBar(state, to: spaces[1], apps: apps(count: 1, prefix: "U"), name: "别桌")
 
-        state.setSecondaryDockVisibleRows(9, space: spaces[0], edge: .bottom)
         state.setSecondaryDockAnchorRow(second, space: spaces[0], edge: .bottom)
 
         let content = state.secondaryDockContent(for: spaces[0], edge: .bottom)
-        XCTAssertEqual(state.settings.secondaryDockRowPrefs[SecondaryDockRowPref.key(spaceID: spaces[0].id, edge: .bottom)]?.visibleRows, 3, "存的时候钳到 3")
-        XCTAssertEqual(content?.effectiveVisibleRows, 2, "只有 2 根栏：最多展开 2 行")
         XCTAssertEqual(content?.effectiveAnchorBarID, second, "收起显示上次滚到的行")
-        XCTAssertEqual(state.secondaryDockContent(for: spaces[1], edge: .bottom)?.effectiveVisibleRows, 1, "另一个桌面各存各的")
+        XCTAssertEqual(state.secondaryDockContent(for: spaces[1], edge: .bottom)?.effectiveAnchorBarID,
+                       state.secondaryDockContent(for: spaces[1], edge: .bottom)?.rows.first?.barID, "另一个桌面各存各的")
 
         state.bindDockBar(second, to: nil)
         XCTAssertEqual(state.secondaryDockContent(for: spaces[0], edge: .bottom)?.effectiveAnchorBarID, first,

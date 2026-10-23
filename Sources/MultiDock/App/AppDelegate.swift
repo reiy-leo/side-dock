@@ -95,7 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 内容快照与开关仍归 `AppState`。同样必须在 `state.start()` 之前接上。
     private func attachSecondaryDock(to state: AppState) {
         // 每条屏幕边一扇窗口（2026-10-23 用户规格）：同一桌面同一条边的栏在那扇窗口里各占一行，
-        // 最多 3 行，可滚动切换、拖 handle 展开。三扇窗口互不干扰，各走各的显隐与 hover。
+        // 最多 3 行，只显示一行、滚动切换（2026-10-23 去掉抽屉与拖拽 handle）。三扇窗口互不干扰，各走各的显隐与 hover。
         for edge in DockBarPosition.allCases {
             let window = SecondaryDockWindow()
             let controller = SecondaryDockController(
@@ -106,9 +106,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     isEnabled: { [weak state] in state?.settings.showSecondaryDock ?? true },
                     log: { [weak state] message in
                         state?.append(.info, message)
-                    },
-                    onVisibleRowsCommitted: { [weak state] space, rows in
-                        state?.setSecondaryDockVisibleRows(rows, space: space, edge: edge)
                     },
                     onAnchorRowChanged: { [weak state] space, barID in
                         state?.setSecondaryDockAnchorRow(barID, space: space, edge: edge)
@@ -126,9 +123,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             window.onRowScrolled = { [weak controller] barID in
                 controller?.rowScrolled(barID)
-            }
-            window.onResize = { [weak controller] phase in
-                controller?.resize(phase)
             }
             // 右键菜单（2026-10-06）：屏幕位置快捷切换。可选位置读 AppState 的环境缓存
             // （台前调度开着避开左；2026-10-23 起同桌面同边满 3 根的边也置灰），

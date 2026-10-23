@@ -27,9 +27,7 @@ struct SecondaryDockContentSnapshot {
     /// 多行条（2026-10-23 用户规格）：同一桌面同一条边上的栏，每根一行，最多 3 行，
     /// 按 `dockBars` 顺序。空 = 只有 `items` 这一行（旧调用点与测试的单行口径）。
     var rows: [SecondaryDockRow] = []
-    /// hover 显出时展开几行（用户拖成的高度，按桌面各存各的）。收起恒为 1 行。
-    var visibleRows: Int = 1
-    /// 收起时显示的那一行（上次滚到的行；不在了就是第一行）。
+    /// 条显示的那一行（上次切到的行；不在了就是第一行）。
     var anchorBarID: UUID? = nil
     /// 悬停放大后的图标尺寸（跟随系统「放大」；nil = 系统没开放大，2026-10-23）。
     var magnifiedSize: CGFloat? = nil
@@ -51,11 +49,6 @@ struct SecondaryDockContentSnapshot {
         displayRows.map(\.items.count).max() ?? items.count
     }
 
-    /// 钳制后的展开行数：1...min(行数, 3)。
-    var effectiveVisibleRows: Int {
-        min(max(visibleRows, 1), max(displayRows.count, 1))
-    }
-
     /// 钳制后的锚定行：`anchorBarID` 不在行里就回到第一行。
     var effectiveAnchorBarID: UUID? {
         let rows = displayRows
@@ -72,100 +65,105 @@ struct SecondaryDockRow: Identifiable {
     var id: UUID { barID }
 }
 
-/// 拖拽 handle 的阶段（光标位置用屏幕坐标 `NSEvent.mouseLocation`——拖拽中窗口自己在变形，
-/// 视图/窗口坐标系都靠不住）。
-enum SecondaryDockResizePhase: Equatable {
-    case began
-    case changed(CGPoint)
-    case ended
-}
-
-/// 多行条的滚动与 handle 状态（窗口持有，视图经 `@Bindable` 读写）。
+/// 多行条的当前行、切行与弹跳状态（窗口持有，视图读它）。
 ///
-/// 滚动位置的「用户滚动」回报有静默窗：窗口变形（显出/收起/拖高）时 ScrollView 会因为视口
-/// 变化自己夹紧滚动位置，那不是用户滚的，不能写进「上次滚到的行」。
+/// 2026-10-23 用户规格：去掉抽屉（展开多行）与拖拽 handle，条**只显示一行**，滚动切换；
+/// 一次手势只翻一行，翻完有停顿（`SecondaryDockRowPager`）。
 @MainActor
 @Observable
 final class SecondaryDockRowsModel {
-    var scrolledRowID: UUID?
-    var showsHandle = false
-    var isResizing = false
+    /// 正在显示的行。
+    var currentRowID: UUID?
+    /// 最近一次切行方向：+1 = 往屏幕内侧的下一行，-1 = 回上一行（决定切入动画从哪边来）。
+    var lastStepDirection: Int = 1
     /// 显出态（悬停放大只在显出时生效：收起时条大半在原生 Dock 身后，放大会从 Dock 上方冒出来）。
     var isRevealed = false
+    /// 点击启动后正在弹跳的图标（条目 ID → 当前朝屏幕内侧的位移）。
+    var bounceOffsets: [String: CGFloat] = [:]
+    /// 放大时条底板两端伸出的长度（图标超出条端就跟着变长，同原生 Dock）。
+    private(set) var barOverflow: SecondaryDockBarOverflow = .zero
+    /// 条本体沿条方向的长度（视图量出来写进来，算伸出量用）。
+    @ObservationIgnored var barLength: CGFloat = 0
+    /// 伸出量变了（窗口据此改底板的 frame）。
+    @ObservationIgnored var onBarOverflowChange: (SecondaryDockBarOverflow) -> Void = { _ in }
 
-    // MARK: 多行条悬停放大（2026-10-23 用户规格：只放大光标所在的那一行）
-    //
-    // 行在 ScrollView 里，放大的图标会被视口裁掉；所以滚动区里的行只负责**跟踪光标**，
-    // 放大的那一行由条最上层的 overlay 另画一份（不在 ScrollView 里，不被裁），
-    // 原行的图标在这期间隐去。`magnifyAmount` 0→1 动画化放大程度：0 时 overlay 与原行像素一致，换层无跳变。
-
-    /// 正在放大的行（nil = 没有）。
-    var magnifyRowID: UUID?
-    /// 光标在该行槽位坐标里沿条方向的位置。
-    var magnifyCursor: CGFloat?
-    /// 放大程度 0...1（进出时动画）。
-    var magnifyAmount: CGFloat = 0
-
-    /// 光标在拖拽 handle 上（或正在拖）：放大让开，不然放大的图标正好盖住 handle（2026-10-23 用户反馈）。
-    private(set) var isHandleHovered = false
-
-    func setHandleHovered(_ hovered: Bool) {
-        guard isHandleHovered != hovered else { return }
-        isHandleHovered = hovered
-        if hovered, let row = magnifyRowID { updateMagnify(row: row, value: nil) }
+    /// 某一行的图标范围（条坐标）。只认当前行（切行动画里淡出的旧行不算）。
+    func reportIconExtents(rowID: UUID?, start: CGFloat, end: CGFloat) {
+        if let rowID, let currentRowID, rowID != currentRowID { return }
+        setBarOverflow(SecondaryDockMagnification.barOverflow(start: start, end: end, barLength: barLength))
     }
 
-    /// 行内光标变化（`value` = nil 表示离开这一行）。
-    func updateMagnify(row: UUID, value: CGFloat?) {
-        if value != nil, isHandleHovered || isResizing {
-            if magnifyRowID == row { updateMagnify(row: row, value: nil) }
-            return
-        }
-        if let value {
-            if magnifyRowID != row {
-                magnifyRowID = row
-                magnifyCursor = value
-                magnifyAmount = 0
-                withAnimation(.easeOut(duration: 0.12)) { magnifyAmount = 1 }
-            } else {
-                magnifyCursor = value
-                if magnifyAmount < 1 {
-                    withAnimation(.easeOut(duration: 0.12)) { magnifyAmount = 1 }
-                }
-            }
-        } else if magnifyRowID == row {
-            withAnimation(.easeOut(duration: 0.15)) {
-                magnifyAmount = 0
-            } completion: { [weak self] in
-                guard let self, self.magnifyAmount == 0, self.magnifyRowID == row else { return }
-                self.magnifyRowID = nil
-                self.magnifyCursor = nil
-            }
-        }
+    func setBarOverflow(_ overflow: SecondaryDockBarOverflow) {
+        guard overflow != barOverflow else { return }
+        barOverflow = overflow
+        onBarOverflowChange(overflow)
     }
 
-    /// 立即清掉放大（收起、内容换了）。
-    func resetMagnify() {
-        if magnifyRowID != nil { magnifyRowID = nil }
-        if magnifyCursor != nil { magnifyCursor = nil }
-        if magnifyAmount != 0 { magnifyAmount = 0 }
-    }
-    @ObservationIgnored var suppressScrollReportsUntil: Date = .distantPast
     @ObservationIgnored var onUserScrolled: (UUID?) -> Void = { _ in }
+    @ObservationIgnored var pager = SecondaryDockRowPager()
+    @ObservationIgnored private var bouncingIDs: Set<String> = []
+    /// App 是否已启动完成（弹跳的停止条件；测试可替换）。
+    @ObservationIgnored var isLaunchFinished: (String) -> Bool = SecondaryDockRowsModel.appFinishedLaunching
+    /// 弹跳节拍（测试可缩短）。
+    @ObservationIgnored var bounceRise: Duration = .milliseconds(190)
+    @ObservationIgnored var bounceFall: Duration = .milliseconds(230)
 
-    /// 程序化滚到某行，并在 `quiet` 秒内不回报滚动变化。
-    func scroll(to rowID: UUID?, quiet: TimeInterval = 0.4) {
-        suppressScrollReportsUntil = Date().addingTimeInterval(quiet)
-        if scrolledRowID != rowID { scrolledRowID = rowID }
+    /// 程序化定位到某行（切桌面 / 内容换了），不回报、不动画。
+    func show(_ rowID: UUID?) {
+        if currentRowID != rowID { currentRowID = rowID }
     }
 
-    func suppressReports(for quiet: TimeInterval = 0.4) {
-        suppressScrollReportsUntil = max(suppressScrollReportsUntil, Date().addingTimeInterval(quiet))
+    /// 按方向切一行（钳在首尾，不循环）。切成了就回报并返回 true。
+    @discardableResult
+    func step(_ direction: Int, rowIDs: [UUID]) -> Bool {
+        guard direction != 0, rowIDs.count > 1 else { return false }
+        let index = currentRowID.flatMap { rowIDs.firstIndex(of: $0) } ?? 0
+        let target = index + (direction > 0 ? 1 : -1)
+        guard rowIDs.indices.contains(target) else { return false }
+        lastStepDirection = direction > 0 ? 1 : -1
+        withAnimation(.spring(duration: 0.3, bounce: 0.15)) {
+            currentRowID = rowIDs[target]
+        }
+        onUserScrolled(rowIDs[target])
+        return true
     }
 
-    func report(_ rowID: UUID?) {
-        guard Date() >= suppressScrollReportsUntil else { return }
-        onUserScrolled(rowID)
+    // MARK: 点击启动弹跳（2026-10-23 用户规格：和原生一样弹几下，不然以为点了没反应）
+
+    /// 最多弹几下（App 迟迟没起来也会停）。
+    static let maxBounces = 12
+    /// 至少弹几下（App 起得再快也弹满，看得见）。
+    static let minAppBounces = 2
+
+    /// 开始弹跳：已在运行的 App（点了只是切过去）不弹；非 App（文件 / 文件夹）弹一下；
+    /// App 弹到启动完成为止（至少 `minAppBounces` 下，最多 `maxBounces` 下）。
+    func bounce(_ item: SecondaryDockItem, height: CGFloat) {
+        guard !item.isRunning, let path = item.launchPath, !bouncingIDs.contains(item.id) else { return }
+        bouncingIDs.insert(item.id)
+        let isApp = path.hasSuffix(".app") || path.hasSuffix(".app/")
+        let id = item.id
+        Task { @MainActor [weak self] in
+            for count in 1...Self.maxBounces {
+                guard let self else { return }
+                withAnimation(.easeOut(duration: 0.19)) { self.bounceOffsets[id] = height }
+                try? await Task.sleep(for: self.bounceRise)
+                withAnimation(.easeIn(duration: 0.23)) { self.bounceOffsets[id] = 0 }
+                try? await Task.sleep(for: self.bounceFall)
+                if !isApp { break }
+                if count >= Self.minAppBounces, self.isLaunchFinished(path) { break }
+            }
+            self?.bounceOffsets[id] = nil
+            self?.bouncingIDs.remove(id)
+        }
+    }
+
+    func isBouncing(_ id: String) -> Bool { bouncingIDs.contains(id) }
+
+    static func appFinishedLaunching(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        return NSWorkspace.shared.runningApplications.contains {
+            $0.bundleURL?.standardizedFileURL == url && $0.isFinishedLaunching
+        }
     }
 }
 
@@ -200,14 +198,12 @@ enum SecondaryDockContentBuilder {
     }
 }
 
-/// 图标条本体。**不做放大效果**（用户规格），图标定尺寸；
-/// 运行指示点占一个固定高度的槽位，避免它出现/消失时条目跳动。
+/// 图标条本体。运行指示点占一个固定高度的槽位，避免它出现/消失时条目跳动。
 ///
-/// **多行（2026-10-23 用户规格）**：同一桌面同一条边的栏各占一行（竖条为一列），
-/// 靠原生 Dock / 屏幕边的那一行是第一行（底部 = 最下面一行；左 = 最左一列；右 = 最右一列），
-/// 往屏幕内侧依次是第 2、3 行。视口放不下全部行时可滚动（按行吸附），
-/// 只接与行排列同向的滚动分量——横条只吃竖向滚动，横向留给系统切桌面手势。
-/// 外沿（底部 = 上沿，左 = 右沿，右 = 左沿）有拖拽 handle，只在显出态出现。
+/// **多行（2026-10-23 用户规格，同日改版）**：同一桌面同一条边的栏各算一行，但条**只显示一行**，
+/// 滚动切换（一次手势一行，见 `SecondaryDockRowPager`）。有多行时条的末端（横条 = 右端，
+/// 竖条 = 下端）有一列小圆点：几行几个点，当前行高亮——一眼看出这条边不止一根栏。
+/// 去掉了抽屉（展开多行）与拖拽 handle。
 struct SecondaryDockStripView: View {
     let rows: [SecondaryDockRow]
     let position: DockBarPosition
@@ -215,27 +211,36 @@ struct SecondaryDockStripView: View {
     let iconSize: CGFloat
     /// 悬停放大尺寸（nil = 不放大）。
     var magnifiedSize: CGFloat? = nil
-    @Bindable var model: SecondaryDockRowsModel
+    var model: SecondaryDockRowsModel
     let onActivate: (SecondaryDockItem) -> Void
     let onHoverChange: (Bool) -> Void
     var onRowHover: (UUID) -> Void = { _ in }
-    var onResize: (SecondaryDockResizePhase) -> Void = { _ in }
 
     var body: some View {
-        rowsContent
+        content
             .padding(7)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: handleAlignment) {
-                if model.showsHandle, rows.count > 1 {
-                    handle.zIndex(1)
+            .background {
+                GeometryReader { proxy in
+                    let length = isVertical ? proxy.size.height : proxy.size.width
+                    Color.clear.onChange(of: length, initial: true) { _, value in model.barLength = value }
                 }
             }
-            .onHover(perform: onHoverChange)
-            // 窗口朝屏幕内侧多出的透明空间（放大的图标长进去），以及沿条方向两端给让位图标的余量；
+            .coordinateSpace(.named(Self.barSpace))
+            // hover 区域随底板伸出（光标停在伸出去的那段上不算离开）。
+            .contentShape(SecondaryDockOverflowShape(overflow: model.barOverflow, isVertical: isVertical))
+            .onHover { inside in
+                onHoverChange(inside)
+                if inside, let id = currentRow?.barID { onRowHover(id) }
+            }
+            // 窗口朝屏幕内侧多出的透明空间（放大 / 弹跳的图标长进去），以及沿条方向两端给让位图标的余量；
             // 条本体只占其余部分（与 `SecondaryDockWindow.barRectInWindow` 一致）。
             .padding(innerEdge, headroom)
             .padding(isVertical ? .vertical : .horizontal, endRoom)
     }
+
+    /// 条本体的坐标空间（图标范围按它量）。
+    static let barSpace = "secondaryDockBar"
 
     private var endRoom: CGFloat {
         SecondaryDockMagnification.endRoom(
@@ -255,146 +260,102 @@ struct SecondaryDockStripView: View {
         isVertical ? (position == .right ? .leading : .trailing) : .top
     }
 
-    /// 靠 Dock / 屏幕边的第一行要画在哪一端：横条在最下（倒序），右侧竖条在最右（倒序）。
-    private var isReversed: Bool { isVertical ? position == .right : true }
-
-    private var orderedRows: [SecondaryDockRow] { isReversed ? rows.reversed() : rows }
-
-    /// 滚动位置的锚点 = 第一行所在的那一端（记住的「上次滚到的行」就是贴着这一端的行）。
-    private var scrollAnchor: UnitPoint {
-        isVertical ? (position == .right ? .trailing : .leading) : .bottom
-    }
-
-    private var handleAlignment: Alignment {
-        isVertical ? (position == .right ? .leading : .trailing) : .top
+    private var currentRow: SecondaryDockRow? {
+        if let id = model.currentRowID, let row = rows.first(where: { $0.barID == id }) { return row }
+        return rows.first
     }
 
     @ViewBuilder
-    private var rowsContent: some View {
-        if rows.count <= 1 {
-            rowView(rows.first)
-        } else if isVertical {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    ForEach(orderedRows) { row in scrollableRow(row) }
+    private var content: some View {
+        if rows.count > 1 {
+            if isVertical {
+                VStack(spacing: 2) {
+                    rowArea.frame(maxHeight: .infinity)
+                    indicator
                 }
-                .scrollTargetLayout()
+            } else {
+                HStack(spacing: 2) {
+                    rowArea.frame(maxWidth: .infinity)
+                    indicator
+                }
             }
-            .scrollTargetBehavior(.viewAligned)
-            .scrollPosition(id: $model.scrolledRowID, anchor: scrollAnchor)
-            .defaultScrollAnchor(scrollAnchor)
-            .onChange(of: model.scrolledRowID) { _, newValue in model.report(newValue) }
-            .overlayPreferenceValue(SecondaryDockRowBoundsKey.self) { bounds in magnifiedRowOverlay(bounds) }
         } else {
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 4) {
-                    ForEach(orderedRows) { row in scrollableRow(row) }
-                }
-                .scrollTargetLayout()
-            }
-            .scrollTargetBehavior(.viewAligned)
-            .scrollPosition(id: $model.scrolledRowID, anchor: scrollAnchor)
-            .defaultScrollAnchor(scrollAnchor)
-            .onChange(of: model.scrolledRowID) { _, newValue in model.report(newValue) }
-            .overlayPreferenceValue(SecondaryDockRowBoundsKey.self) { bounds in magnifiedRowOverlay(bounds) }
+            rowArea
         }
     }
 
-    private func cursorHandler(for rowID: UUID?) -> ((CGFloat?) -> Void)? {
-        guard let rowID else { return nil }
-        let rowsModel = model
-        return { value in rowsModel.updateMagnify(row: rowID, value: value) }
-    }
-
-    /// 多行条：放大中的那一行在最上层另画一份（不被 ScrollView 视口裁掉），不接事件
-    /// （点击 / tooltip / 光标跟踪仍由滚动区里的原行负责）。
-    private func magnifiedRowOverlay(_ bounds: [UUID: Anchor<CGRect>]) -> some View {
-        GeometryReader { proxy in
-            SecondaryDockMagnifiedRowOverlay(
-                rows: rows,
-                bounds: bounds.mapValues { proxy[$0] },
-                position: position,
-                isVertical: isVertical,
-                iconSize: iconSize,
-                magnifiedSize: magnifiedSize,
-                model: model
-            )
-        }
-        .allowsHitTesting(false)
-    }
-
-    private func scrollableRow(_ row: SecondaryDockRow) -> some View {
-        rowView(row)
-            .anchorPreference(key: SecondaryDockRowBoundsKey.self, value: .bounds) { [row.barID: $0] }
-            .id(row.barID)
-            .onHover { inside in
-                model.setHandleHovered(inside)
-                if inside { onRowHover(row.barID) }
+    /// 当前行。切行时新行从「它所在的那一侧」滑入（往内侧的下一行从内侧来）并淡入，旧行淡出。
+    private var rowArea: some View {
+        ZStack {
+            if let row = currentRow {
+                rowView(row)
+                    .id(row.barID)
+                    .transition(rowTransition)
             }
+        }
     }
 
-    /// 一行（竖条为一列）。厚度固定 = 图标 + 指示点槽位，长度撑满、内容居中。
-    @ViewBuilder
-    private func rowView(_ row: SecondaryDockRow?) -> some View {
-        let isMultiRow = rows.count > 1
-        let rowID = row?.barID
+    private var rowTransition: AnyTransition {
+        let distance = (iconSize * 0.6).rounded()
+        // 内侧方向的位移：底部条往上（-y），左侧条往右（+x），右侧条往左（-x）。
+        let inward: CGSize = isVertical
+            ? CGSize(width: position == .right ? -distance : distance, height: 0)
+            : CGSize(width: 0, height: -distance)
+        let sign: CGFloat = model.lastStepDirection > 0 ? 1 : -1
+        let from = CGSize(width: inward.width * sign, height: inward.height * sign)
+        let to = CGSize(width: -from.width, height: -from.height)
+        return .asymmetric(
+            insertion: .offset(from).combined(with: .opacity),
+            removal: .offset(to).combined(with: .opacity)
+        )
+    }
+
+    private func rowView(_ row: SecondaryDockRow) -> some View {
         let slots = SecondaryDockSlotsView(
-            items: row?.items ?? [],
+            items: row.items,
             position: position,
             isVertical: isVertical,
             iconSize: iconSize,
             magnifiedSize: model.isRevealed ? magnifiedSize : nil,
-            onActivate: onActivate,
-            // 多行：只跟踪光标交给 overlay 画放大；放大期间原行图标隐去。
-            onCursorChange: isMultiRow ? cursorHandler(for: rowID) : nil,
-            contentHidden: isMultiRow && rowID != nil && model.magnifyRowID == rowID
+            model: model,
+            rowID: row.barID,
+            onActivate: onActivate
         )
-        if isVertical {
-            slots
-                .frame(width: iconSize + 6)
-                .frame(maxHeight: .infinity)
-        } else {
-            slots
-                .frame(height: iconSize + 6)
-                .frame(maxWidth: .infinity)
+        return Group {
+            if isVertical {
+                slots
+                    .frame(width: iconSize + 6)
+                    .frame(maxHeight: .infinity)
+            } else {
+                slots
+                    .frame(height: iconSize + 6)
+                    .frame(maxWidth: .infinity)
+            }
         }
     }
 
-    /// 拖拽 handle：外沿居中的一根短胶囊，热区比胶囊大一圈。
-    private var handle: some View {
-        Capsule()
-            .fill(Color.primary.opacity(0.35))
-            .frame(width: isVertical ? 4 : 36, height: isVertical ? 36 : 4)
-            .frame(width: isVertical ? 10 : 64, height: isVertical ? 64 : 10)
-            .contentShape(Rectangle())
-            .onHover { inside in
-                if inside {
-                    (isVertical ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).set()
-                } else if !model.isResizing {
-                    NSCursor.arrow.set()
-                }
+    /// 多行提示：几行几个点，当前行高亮。点的排列与行的空间顺序一致
+    /// （横条：第一行在最下；左侧条：第一行在最左；右侧条：第一行在最右）。
+    private var indicator: some View {
+        let ids = rows.map(\.barID)
+        let ordered = (isVertical ? position == .right : true) ? Array(ids.reversed()) : ids
+        let current = currentRow?.barID
+        let layout = isVertical
+            ? AnyLayout(HStackLayout(spacing: 3))
+            : AnyLayout(VStackLayout(spacing: 3))
+        return layout {
+            ForEach(ordered, id: \.self) { id in
+                Circle()
+                    .fill(Color.primary.opacity(id == current ? 0.8 : 0.25))
+                    .frame(width: 5, height: 5)
             }
-            .gesture(
-                DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                    .onChanged { _ in
-                        if !model.isResizing {
-                            model.isResizing = true
-                            onResize(.began)
-                        }
-                        onResize(.changed(NSEvent.mouseLocation))
-                    }
-                    .onEnded { _ in
-                        model.isResizing = false
-                        model.setHandleHovered(false)
-                        onResize(.ended)
-                        NSCursor.arrow.set()
-                    }
-            )
-            .help(L("拖动调整行数（最多 3 行）", "Drag to change the number of rows (up to 3)"))
+        }
+        .animation(.easeOut(duration: 0.2), value: current)
+        .help(L("这条边有 \(rows.count) 行，滚动切换", "\(rows.count) rows on this edge — scroll to switch"))
     }
 }
 
-/// 一行里的图标槽位 + 悬停放大（2026-10-23）。
+/// 一行里的图标槽位 + 悬停放大（2026-10-23）+ 点击启动弹跳。
 ///
 /// 光标位置用 `onContinuousHover` 在这一排槽位自己的坐标里取（起点 = 第一个槽位），
 /// 放大倍数与让位由 `SecondaryDockMagnification.effects` 算。放大不用 `scaleEffect`
@@ -405,14 +366,10 @@ struct SecondaryDockSlotsView: View {
     let isVertical: Bool
     let iconSize: CGFloat
     let magnifiedSize: CGFloat?
+    var model: SecondaryDockRowsModel? = nil
+    /// 这排图标属于哪一行（报图标范围用）。
+    var rowID: UUID? = nil
     let onActivate: (SecondaryDockItem) -> Void
-    /// 设了 = 只跟踪光标、交给调用方（多行条的 overlay 画放大），自己不放大。
-    var onCursorChange: ((CGFloat?) -> Void)? = nil
-    /// 图标隐去（多行条放大期间 overlay 顶上，原行不重影）。仍接点击与 tooltip。
-    var contentHidden: Bool = false
-    /// 外部给定的光标（overlay 用）；`usesExternalCursor` 为真时取它，忽略自身跟踪。
-    var externalCursor: CGFloat? = nil
-    var usesExternalCursor: Bool = false
 
     @State private var cursor: CGFloat?
 
@@ -432,8 +389,8 @@ struct SecondaryDockSlotsView: View {
             slotLength: slotLength,
             spacing: Self.spacing,
             iconSize: iconSize,
-            magnifiedSize: onCursorChange == nil ? magnifiedSize : nil,
-            cursor: magnifiedSize == nil ? nil : (usesExternalCursor ? externalCursor : cursor)
+            magnifiedSize: magnifiedSize,
+            cursor: magnifiedSize == nil ? nil : cursor
         )
         let layout = isVertical
             ? AnyLayout(VStackLayout(spacing: Self.spacing))
@@ -442,23 +399,28 @@ struct SecondaryDockSlotsView: View {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 let effect = index < effects.count ? effects[index] : (scale: 1, offset: 0)
                 slot(item, scale: effect.scale)
-                    .opacity(contentHidden ? 0.001 : 1)
                     .offset(x: isVertical ? 0 : effect.offset, y: isVertical ? effect.offset : 0)
                     .zIndex(Double(effect.scale))
             }
         }
+        .background {
+            if let model {
+                let range = SecondaryDockMagnification.extents(
+                    effects: effects, slotLength: slotLength, spacing: Self.spacing, iconSize: iconSize
+                )
+                GeometryReader { proxy in
+                    let frame = proxy.frame(in: .named(SecondaryDockStripView.barSpace))
+                    let origin = isVertical ? frame.minY : frame.minX
+                    let probe = SecondaryDockExtentProbe(start: origin + range.start, end: origin + range.end)
+                    Color.clear.onChange(of: probe, initial: true) { _, value in
+                        model.reportIconExtents(rowID: rowID, start: value.start, end: value.end)
+                    }
+                }
+            }
+        }
         .onContinuousHover(coordinateSpace: .local) { phase in
-            guard !usesExternalCursor else { return }
             guard magnifiedSize != nil else {
                 if cursor != nil { cursor = nil }
-                onCursorChange?(nil)
-                return
-            }
-            if let onCursorChange {
-                switch phase {
-                case .active(let point): onCursorChange(isVertical ? point.y : point.x)
-                case .ended: onCursorChange(nil)
-                }
                 return
             }
             switch phase {
@@ -475,6 +437,14 @@ struct SecondaryDockSlotsView: View {
         }
     }
 
+    /// 弹跳位移（朝屏幕内侧：底部条往上，左侧条往右，右侧条往左）。
+    private func bounceOffset(_ item: SecondaryDockItem) -> CGSize {
+        let amount = model?.bounceOffsets[item.id] ?? 0
+        guard amount != 0 else { return .zero }
+        if isVertical { return CGSize(width: position == .right ? -amount : amount, height: 0) }
+        return CGSize(width: 0, height: -amount)
+    }
+
     private func slot(_ item: SecondaryDockItem, scale: CGFloat) -> some View {
         let size = (iconSize * scale).rounded()
         return VStack(spacing: 2) {
@@ -482,6 +452,7 @@ struct SecondaryDockSlotsView: View {
                 .resizable()
                 .interpolation(.high)
                 .frame(width: size, height: size)
+                .offset(bounceOffset(item))
                 .frame(width: iconSize, height: iconSize, alignment: growAlignment)
                 .opacity(item.isInstalled ? 1 : 0.35)
             Circle()
@@ -490,55 +461,31 @@ struct SecondaryDockSlotsView: View {
         }
         .frame(minWidth: iconSize + 4)
         .contentShape(Rectangle())
-        .onTapGesture { onActivate(item) }
+        .onTapGesture {
+            model?.bounce(item, height: SecondaryDockMagnification.bounceHeight(iconSize: iconSize))
+            onActivate(item)
+        }
         .help(item.label)
     }
 }
 
-/// 多行条每一行在条坐标里的位置（overlay 据此把放大行画回原处）。
-struct SecondaryDockRowBoundsKey: PreferenceKey {
-    static let defaultValue: [UUID: Anchor<CGRect>] = [:]
-    static func reduce(value: inout [UUID: Anchor<CGRect>], nextValue: () -> [UUID: Anchor<CGRect>]) {
-        value.merge(nextValue()) { $1 }
-    }
+/// 图标范围在条坐标里的位置（`onChange` 要 Equatable）。
+struct SecondaryDockExtentProbe: Equatable {
+    var start: CGFloat
+    var end: CGFloat
 }
 
-/// 多行条的放大层：只画 `model.magnifyRowID` 那一行，放大程度按 `magnifyAmount` 插值。
-/// 单独成一个 View，光标每动一下只重算这一层，不连带整条（滚动区）重建。
-struct SecondaryDockMagnifiedRowOverlay: View {
-    let rows: [SecondaryDockRow]
-    let bounds: [UUID: CGRect]
-    let position: DockBarPosition
-    let isVertical: Bool
-    let iconSize: CGFloat
-    let magnifiedSize: CGFloat?
-    var model: SecondaryDockRowsModel
+/// 条的 hover 形状：本体沿条方向两端各伸出 `overflow`。
+struct SecondaryDockOverflowShape: Shape {
+    var overflow: SecondaryDockBarOverflow
+    var isVertical: Bool
 
-    var body: some View {
-        if let rowID = model.magnifyRowID,
-           let rect = bounds[rowID],
-           let row = rows.first(where: { $0.barID == rowID }),
-           let magnifiedSize {
-            let size = iconSize + (magnifiedSize - iconSize) * model.magnifyAmount
-            let slots = SecondaryDockSlotsView(
-                items: row.items,
-                position: position,
-                isVertical: isVertical,
-                iconSize: iconSize,
-                magnifiedSize: size,
-                onActivate: { _ in },
-                externalCursor: model.magnifyCursor,
-                usesExternalCursor: true
-            )
-            Group {
-                if isVertical {
-                    slots.frame(width: iconSize + 6).frame(maxHeight: .infinity)
-                } else {
-                    slots.frame(height: iconSize + 6).frame(maxWidth: .infinity)
-                }
-            }
-            .frame(width: rect.width, height: rect.height)
-            .position(x: rect.midX, y: rect.midY)
+    func path(in rect: CGRect) -> Path {
+        if isVertical {
+            return Path(CGRect(x: rect.minX, y: rect.minY - overflow.leading,
+                               width: rect.width, height: rect.height + overflow.leading + overflow.trailing))
         }
+        return Path(CGRect(x: rect.minX - overflow.leading, y: rect.minY,
+                           width: rect.width + overflow.leading + overflow.trailing, height: rect.height))
     }
 }

@@ -71,48 +71,16 @@ enum SecondaryDockLayout {
             : CGSize(width: slotLength, height: thickness)
     }
 
-    /// 多行条（2026-10-23）：相邻两行的行距（单行内容厚 `iconSize + 6` + 行间距 4）。
-    static func rowPitch(iconSize: CGFloat) -> CGFloat { iconSize + 10 }
+    /// 多行指示点（2026-10-23 用户规格：去掉抽屉，只显示一行、滚动切换）沿条方向占的长度。
+    static let rowIndicatorLength: CGFloat = 10
 
-    /// `rows` 行时条的厚度（横条=高、竖条=宽）。1 行与 `barSize` 的厚度一致（`iconSize + 20`）。
-    static func thickness(rows: Int, iconSize: CGFloat) -> CGFloat {
-        iconSize + 20 + CGFloat(max(rows, 1) - 1) * rowPitch(iconSize: iconSize)
-    }
-
-    /// 多行条的尺寸：长度按最长那一行，厚度按行数（可传非整数行厚给拖拽中的实时尺寸）。
-    static func multiRowSize(maxItemCount: Int, thickness: CGFloat, iconSize: CGFloat, isVertical: Bool) -> CGSize {
+    /// 条的尺寸：长度按最长那一行（切行时窗口不忽宽忽窄），厚度恒为 1 行；
+    /// 有多行时末端多留 `rowIndicatorLength` 放指示点。
+    static func multiRowSize(maxItemCount: Int, rowCount: Int, iconSize: CGFloat, isVertical: Bool) -> CGSize {
         let base = barSize(itemCount: maxItemCount, iconSize: iconSize, isVertical: isVertical)
-        return isVertical ? CGSize(width: thickness, height: base.height)
-            : CGSize(width: base.width, height: thickness)
-    }
-
-    /// 拖拽松手：把实时厚度吸附到最近的整行数（1...maxRows）。
-    static func snappedRows(thickness: CGFloat, iconSize: CGFloat, maxRows: Int) -> Int {
-        let raw = (thickness - self.thickness(rows: 1, iconSize: iconSize)) / rowPitch(iconSize: iconSize)
-        let rows = Int(raw.rounded()) + 1
-        return min(max(rows, 1), max(maxRows, 1))
-    }
-
-    /// 把条的厚度改成 `thickness`，**锚定靠原生 Dock / 屏幕边的那一侧**
-    /// （底部 = 下沿不动往上长；左 = 左沿不动往右长；右 = 右沿不动往左长）。
-    static func resized(_ frame: CGRect, toThickness thickness: CGFloat, position: DockBarPosition) -> CGRect {
-        switch position {
-        case .bottom:
-            return CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: thickness)
-        case .left:
-            return CGRect(x: frame.minX, y: frame.minY, width: thickness, height: frame.height)
-        case .right:
-            return CGRect(x: frame.maxX - thickness, y: frame.minY, width: thickness, height: frame.height)
-        }
-    }
-
-    /// 拖拽中按光标位置算条的厚度（锚定侧到光标的距离）。
-    static func thickness(dragging point: CGPoint, anchoredFrame frame: CGRect, position: DockBarPosition) -> CGFloat {
-        switch position {
-        case .bottom: return point.y - frame.minY
-        case .left: return point.x - frame.minX
-        case .right: return frame.maxX - point.x
-        }
+        let extra = rowCount > 1 ? rowIndicatorLength : 0
+        return isVertical ? CGSize(width: base.width, height: base.height + extra)
+            : CGSize(width: base.width + extra, height: base.height)
     }
 
     /// 计算条的展开（hover）与半露（默认）两个 frame。
@@ -269,8 +237,15 @@ enum SecondaryDockMagnification {
 
     /// 窗口朝屏幕内侧要多留的透明厚度（整点）。
     static func headroom(iconSize: CGFloat, magnifiedSize: CGFloat?) -> CGFloat {
-        guard let magnifiedSize else { return 0 }
-        return max(0, (magnifiedSize - iconSize).rounded(.up))
+        let bounce = bounceHeight(iconSize: iconSize)
+        guard let magnifiedSize else { return bounce }
+        return max(bounce, (magnifiedSize - iconSize).rounded(.up))
+    }
+
+    /// 点击启动时图标的弹跳高度（2026-10-23 用户规格：和原生一样弹几下）。
+    /// 朝屏幕内侧弹，所以 `headroom` 至少要留这么多。
+    static func bounceHeight(iconSize: CGFloat) -> CGFloat {
+        (iconSize * 0.5).rounded(.up)
     }
 
     /// 窗口沿条方向**两端**各要多留的透明长度（整点，2026-10-23 真机：两端图标放大时被截断/看不见）。
@@ -340,4 +315,45 @@ enum SecondaryDockMagnification {
         }
         return result
     }
+
+    /// 一排图标（放大 / 让位后）沿条方向实际占的范围，坐标原点 = 第一个槽位的起点。
+    /// 图标在槽位里居中，放大后的边 = 槽位中心 + 位移 ± 放大尺寸 / 2。
+    /// 用于让条的底板随内容变长（2026-10-23 用户反馈：hover 时两边的 App 超出条的范围）。
+    static func extents(
+        effects: [(scale: CGFloat, offset: CGFloat)],
+        slotLength: CGFloat,
+        spacing: CGFloat,
+        iconSize: CGFloat
+    ) -> (start: CGFloat, end: CGFloat) {
+        guard !effects.isEmpty else { return (0, 0) }
+        let pitch = slotLength + spacing
+        var start = CGFloat.infinity
+        var end = -CGFloat.infinity
+        for (index, effect) in effects.enumerated() {
+            let center = CGFloat(index) * pitch + slotLength / 2 + effect.offset
+            let half = iconSize * effect.scale / 2
+            start = min(start, center - half)
+            end = max(end, center + half)
+        }
+        return (start, end)
+    }
+
+    /// 条底板两端要多伸出去的长度：图标边离条端不足 `margin` 的部分。
+    /// `start` / `end` 是图标范围在条坐标里的位置，`barLength` 是条本体长度。
+    static func barOverflow(start: CGFloat, end: CGFloat, barLength: CGFloat, margin: CGFloat = 6)
+        -> SecondaryDockBarOverflow
+    {
+        guard barLength > 0 else { return .zero }
+        return SecondaryDockBarOverflow(
+            leading: max(0, (margin - start).rounded(.up)),
+            trailing: max(0, (end - (barLength - margin)).rounded(.up))
+        )
+    }
+}
+
+/// 条底板沿条方向两端伸出的长度（leading = 横条左端 / 竖条上端）。
+struct SecondaryDockBarOverflow: Equatable, Sendable {
+    var leading: CGFloat
+    var trailing: CGFloat
+    static let zero = SecondaryDockBarOverflow(leading: 0, trailing: 0)
 }

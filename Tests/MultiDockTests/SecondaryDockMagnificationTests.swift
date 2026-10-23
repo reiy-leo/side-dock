@@ -14,7 +14,7 @@ final class SecondaryDockMagnificationTests: XCTestCase {
         // 放大尺寸不比图标大 → 等于不放大。
         XCTAssertNil(SecondaryDockMagnification.magnifiedSize(enabled: true, largeSize: 30, iconSize: 36))
         XCTAssertEqual(SecondaryDockMagnification.headroom(iconSize: 36, magnifiedSize: 96), 60)
-        XCTAssertEqual(SecondaryDockMagnification.headroom(iconSize: 36, magnifiedSize: nil), 0)
+        XCTAssertEqual(SecondaryDockMagnification.headroom(iconSize: 36, magnifiedSize: nil), 18, "不放大也给弹跳留空间")
     }
 
     func testNoCursorMeansIdentity() {
@@ -114,7 +114,7 @@ final class SecondaryDockMagnificationTests: XCTestCase {
     }
 
     func testMultiRowKeepsMagnification() {
-        // 2026-10-23 用户规格：多行条也放大，只放大光标所在的那一行。
+        // 2026-10-23 用户规格：多行条也放大（同日改为只显示一行，放大的就是这一行）。
         var snapshot = SecondaryDockContentSnapshot(items: [], iconSize: 36)
         snapshot.magnifiedSize = 96
         snapshot.rows = [
@@ -124,41 +124,43 @@ final class SecondaryDockMagnificationTests: XCTestCase {
         XCTAssertEqual(snapshot.effectiveMagnifiedSize, 96)
     }
 
-    func testHandleHoverSuppressesMagnification() {
-        // 2026-10-23 用户反馈：放大的图标盖住了 resize handle。光标上 handle 时放大让开。
-        let model = SecondaryDockRowsModel()
-        let row = UUID()
-        model.updateMagnify(row: row, value: 40)
-        XCTAssertEqual(model.magnifyAmount, 1)
-        model.setHandleHovered(true)
-        XCTAssertEqual(model.magnifyAmount, 0)
-        model.updateMagnify(row: row, value: 42)
-        XCTAssertEqual(model.magnifyAmount, 0, "handle 上不重新放大")
-        model.setHandleHovered(false)
-        model.updateMagnify(row: row, value: 42)
-        XCTAssertEqual(model.magnifyAmount, 1)
+
+    func testExtentsAndBarOverflowGrowWithMagnification() {
+        let slot = SecondaryDockMagnification.slotLength(iconSize: 36, isVertical: false)
+        let spacing = SecondaryDockMagnification.slotSpacing
+        let flat = SecondaryDockMagnification.effects(
+            count: 5, slotLength: slot, spacing: spacing, iconSize: 36, magnifiedSize: 96, cursor: nil
+        )
+        let flatRange = SecondaryDockMagnification.extents(effects: flat, slotLength: slot, spacing: spacing, iconSize: 36)
+        XCTAssertEqual(flatRange.start, (slot - 36) / 2, accuracy: 0.01)
+        // 光标停在第一个图标上：左端图标放大后越过槽位起点，右侧整体让位往后推。
+        let hot = SecondaryDockMagnification.effects(
+            count: 5, slotLength: slot, spacing: spacing, iconSize: 36, magnifiedSize: 96, cursor: slot / 2
+        )
+        let hotRange = SecondaryDockMagnification.extents(effects: hot, slotLength: slot, spacing: spacing, iconSize: 36)
+        XCTAssertLessThan(hotRange.start, flatRange.start)
+        XCTAssertGreaterThan(hotRange.end, flatRange.end)
+
+        let barLength: CGFloat = 220
+        XCTAssertEqual(SecondaryDockMagnification.barOverflow(start: 20, end: 200, barLength: barLength), .zero,
+                       "图标都在条里：不伸")
+        let overflow = SecondaryDockMagnification.barOverflow(start: -10, end: 230, barLength: barLength)
+        XCTAssertEqual(overflow.leading, 16, "超出左端 10 + 留边 6")
+        XCTAssertEqual(overflow.trailing, 16)
     }
 
-    func testRowsModelMagnifiesOnlyHoveredRow() {
-        let model = SecondaryDockRowsModel()
-        let first = UUID()
-        let second = UUID()
-        model.updateMagnify(row: first, value: 40)
-        XCTAssertEqual(model.magnifyRowID, first)
-        XCTAssertEqual(model.magnifyCursor, 40)
-        XCTAssertEqual(model.magnifyAmount, 1)
-        // 光标直接移到另一行：放大层跟过去，只放大新行。
-        model.updateMagnify(row: second, value: 12)
-        XCTAssertEqual(model.magnifyRowID, second)
-        XCTAssertEqual(model.magnifyCursor, 12)
-        // 旧行迟到的「离开」不影响新行。
-        model.updateMagnify(row: first, value: nil)
-        XCTAssertEqual(model.magnifyRowID, second)
-        XCTAssertEqual(model.magnifyAmount, 1)
-        model.updateMagnify(row: second, value: nil)
-        XCTAssertEqual(model.magnifyAmount, 0)
-        model.resetMagnify()
-        XCTAssertNil(model.magnifyRowID)
-        XCTAssertNil(model.magnifyCursor)
+    func testContainerRectGrowsAlongTheBarWithinEndRoom() {
+        let size = NSSize(width: 200, height: 56)
+        let rect = SecondaryDockWindow.containerRect(
+            barSize: size, headroom: 60, endRoom: 30,
+            overflow: SecondaryDockBarOverflow(leading: 10, trailing: 50), position: .bottom
+        )
+        XCTAssertEqual(rect, NSRect(x: 20, y: 0, width: 240, height: 56), "左伸 10，右伸钳到 endRoom 30")
+        let side = SecondaryDockWindow.containerRect(
+            barSize: NSSize(width: 56, height: 200), headroom: 60, endRoom: 30,
+            overflow: SecondaryDockBarOverflow(leading: 10, trailing: 5), position: .left
+        )
+        XCTAssertEqual(side, NSRect(x: 0, y: 25, width: 56, height: 215), "竖条：上端往 maxY、下端往 minY")
     }
 }
+

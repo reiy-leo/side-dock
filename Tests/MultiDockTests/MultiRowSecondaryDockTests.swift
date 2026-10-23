@@ -2,68 +2,141 @@ import AppKit
 import XCTest
 @testable import MultiDock
 
-// MARK: - 多行次级条（2026-10-23 用户规格）
+// MARK: - 多行次级条（2026-10-23 用户规格，同日改版）
 //
-// 每条屏幕边一扇窗口，同桌面同边的栏各占一行（最多 3 行）：
-// 收起（半露在原生 Dock 后方）恒为 1 行；hover 显出 = 用户拖 handle 定的行数；
-// 拖拽中厚度跟手、松手吸附到整行并回存；拖拽期间不收回。
+// 每条屏幕边一扇窗口，同桌面同边的栏各算一行（最多 3 行）。条**只显示一行**，滚动切换：
+// 一次手势只翻一行、翻完有停顿；有多行时末端有指示点。去掉了抽屉（展开多行）与拖拽 handle。
 
 @MainActor
 final class MultiRowSecondaryDockLayoutTests: XCTestCase {
 
-    func testThicknessGrowsByOneRowPitchPerRow() {
-        XCTAssertEqual(SecondaryDockLayout.thickness(rows: 1, iconSize: 36), 56, "1 行 = 原来的条厚（icon + 20）")
-        XCTAssertEqual(SecondaryDockLayout.thickness(rows: 2, iconSize: 36), 102)
-        XCTAssertEqual(SecondaryDockLayout.thickness(rows: 3, iconSize: 36), 148)
+    func testSizeIsOneRowThickWithIndicatorRoomWhenMultiRow() {
+        let single = SecondaryDockLayout.barSize(itemCount: 4, iconSize: 36, isVertical: false)
         XCTAssertEqual(
-            SecondaryDockLayout.multiRowSize(maxItemCount: 4, thickness: 56, iconSize: 36, isVertical: false),
-            SecondaryDockLayout.barSize(itemCount: 4, iconSize: 36, isVertical: false),
+            SecondaryDockLayout.multiRowSize(maxItemCount: 4, rowCount: 1, iconSize: 36, isVertical: false),
+            single,
             "1 行时与旧的单行尺寸完全一致"
         )
+        let multi = SecondaryDockLayout.multiRowSize(maxItemCount: 4, rowCount: 3, iconSize: 36, isVertical: false)
+        XCTAssertEqual(multi.height, single.height, "多行也只有 1 行厚")
+        XCTAssertEqual(multi.width, single.width + SecondaryDockLayout.rowIndicatorLength, "末端留指示点")
+        let side = SecondaryDockLayout.multiRowSize(maxItemCount: 4, rowCount: 2, iconSize: 36, isVertical: true)
+        XCTAssertEqual(side.width, SecondaryDockLayout.barSize(itemCount: 4, iconSize: 36, isVertical: true).width)
+        XCTAssertEqual(side.height,
+                       SecondaryDockLayout.barSize(itemCount: 4, iconSize: 36, isVertical: true).height
+                           + SecondaryDockLayout.rowIndicatorLength)
     }
 
-    func testSnappedRowsRoundsToTheNearestRowAndClamps() {
-        XCTAssertEqual(SecondaryDockLayout.snappedRows(thickness: 56, iconSize: 36, maxRows: 3), 1)
-        XCTAssertEqual(SecondaryDockLayout.snappedRows(thickness: 80, iconSize: 36, maxRows: 3), 2, "过半行进位")
-        XCTAssertEqual(SecondaryDockLayout.snappedRows(thickness: 78, iconSize: 36, maxRows: 3), 1, "不到半行回落")
-        XCTAssertEqual(SecondaryDockLayout.snappedRows(thickness: 400, iconSize: 36, maxRows: 2), 2, "不超过可用行数")
-        XCTAssertEqual(SecondaryDockLayout.snappedRows(thickness: 10, iconSize: 36, maxRows: 3), 1)
-    }
-
-    func testResizeKeepsTheDockSideAnchored() {
-        let frame = CGRect(x: 100, y: 60, width: 300, height: 56)
-        XCTAssertEqual(
-            SecondaryDockLayout.resized(frame, toThickness: 102, position: .bottom),
-            CGRect(x: 100, y: 60, width: 300, height: 102),
-            "底部：下沿不动往上长"
-        )
-        let side = CGRect(x: 1800, y: 100, width: 56, height: 300)
-        XCTAssertEqual(
-            SecondaryDockLayout.resized(side, toThickness: 102, position: .right),
-            CGRect(x: 1754, y: 100, width: 102, height: 300),
-            "右侧：右沿不动往左长"
-        )
-        XCTAssertEqual(
-            SecondaryDockLayout.resized(CGRect(x: 0, y: 100, width: 56, height: 300), toThickness: 102, position: .left),
-            CGRect(x: 0, y: 100, width: 102, height: 300),
-            "左侧：左沿不动往右长"
-        )
-        XCTAssertEqual(SecondaryDockLayout.thickness(dragging: CGPoint(x: 0, y: 160), anchoredFrame: frame, position: .bottom), 100)
-        XCTAssertEqual(SecondaryDockLayout.thickness(dragging: CGPoint(x: 1700, y: 0), anchoredFrame: side, position: .right), 156)
-    }
-
-    func testSnapshotClampsRowsAndAnchor() {
+    func testSnapshotClampsAnchor() {
         let ids = [UUID(), UUID()]
         var snapshot = SecondaryDockContentSnapshot(items: [], iconSize: 36)
         snapshot.rows = ids.map { SecondaryDockRow(barID: $0, name: "", items: []) }
-        snapshot.visibleRows = 3
         snapshot.anchorBarID = UUID()
-        XCTAssertEqual(snapshot.effectiveVisibleRows, 2, "行数不超过栏数")
         XCTAssertEqual(snapshot.effectiveAnchorBarID, ids[0], "锚定行不在：回到第一行")
 
         let single = SecondaryDockContentSnapshot(items: [], iconSize: 36)
         XCTAssertEqual(single.displayRows.count, 1, "旧口径：没有 rows 就把 items 当唯一一行")
-        XCTAssertEqual(single.effectiveVisibleRows, 1)
+    }
+}
+
+// MARK: - 滚动切行
+
+final class SecondaryDockRowPagerTests: XCTestCase {
+    private typealias Pager = SecondaryDockRowPager
+
+    private func sample(_ delta: CGFloat, _ phase: Pager.Phase, momentum: Bool = false,
+                        precise: Bool = true, at time: TimeInterval) -> Pager.Sample {
+        Pager.Sample(delta: delta, phase: phase, isMomentum: momentum, isPrecise: precise, time: time)
+    }
+
+    func testOneTrackpadGestureFlipsOnlyOneRow() {
+        var pager = Pager()
+        XCTAssertEqual(pager.feed(sample(5, .began, at: 0)), 0)
+        XCTAssertEqual(pager.feed(sample(10, .changed, at: 0.02)), 0, "没过阈值不翻")
+        XCTAssertEqual(pager.feed(sample(15, .changed, at: 0.04)), 1, "过阈值翻一行")
+        XCTAssertEqual(pager.feed(sample(80, .changed, at: 0.5)), 0, "同一次手势不再翻")
+        XCTAssertEqual(pager.feed(sample(0, .ended, at: 0.6)), 0)
+        XCTAssertEqual(pager.feed(sample(60, .none, momentum: true, at: 0.7)), 0, "惯性不翻")
+        XCTAssertEqual(pager.feed(sample(-30, .began, at: 1.0)), -1, "新手势往回翻")
+    }
+
+    func testCooldownGivesAPause() {
+        var pager = Pager()
+        XCTAssertEqual(pager.feed(sample(30, .began, at: 0)), 1)
+        XCTAssertEqual(pager.feed(sample(0, .ended, at: 0.05)), 0)
+        XCTAssertEqual(pager.feed(sample(30, .began, at: 0.1)), 0, "冷却内的新手势不翻")
+        XCTAssertEqual(pager.feed(sample(0, .ended, at: 0.15)), 0)
+        XCTAssertEqual(pager.feed(sample(30, .began, at: 0.5)), 1, "冷却过了再翻")
+    }
+
+    func testMouseWheelNotchFlipsOneRowWithCooldown() {
+        var pager = Pager()
+        XCTAssertEqual(pager.feed(sample(1, .none, precise: false, at: 0)), 1)
+        XCTAssertEqual(pager.feed(sample(1, .none, precise: false, at: 0.1)), 0, "快速连转不连跳")
+        XCTAssertEqual(pager.feed(sample(-1, .none, precise: false, at: 0.5)), -1)
+    }
+
+    func testDirectionalDelta() {
+        XCTAssertNil(Pager.directionalDelta(dx: 20, dy: 3, position: .bottom), "底部条：横向留给系统")
+        XCTAssertEqual(Pager.directionalDelta(dx: 1, dy: 8, position: .bottom), 8)
+        XCTAssertEqual(Pager.directionalDelta(dx: -9, dy: 1, position: .left), 9, "左条：往内侧（右）推 = 下一行")
+        XCTAssertEqual(Pager.directionalDelta(dx: 9, dy: 1, position: .right), 9, "右条：往内侧（左）推 = 下一行")
+        XCTAssertEqual(Pager.directionalDelta(dx: 0, dy: -2, position: .left), -2, "鼠标滚轮在侧边条也能用")
+    }
+}
+
+@MainActor
+final class SecondaryDockRowsModelTests: XCTestCase {
+
+    func testStepMovesOneRowClampsAndReports() {
+        let model = SecondaryDockRowsModel()
+        let ids = [UUID(), UUID(), UUID()]
+        var reported: [UUID?] = []
+        model.onUserScrolled = { reported.append($0) }
+        model.show(ids[0])
+        XCTAssertFalse(model.step(-1, rowIDs: ids), "第一行再往回：不动")
+        XCTAssertTrue(model.step(1, rowIDs: ids))
+        XCTAssertEqual(model.currentRowID, ids[1])
+        XCTAssertTrue(model.step(1, rowIDs: ids))
+        XCTAssertFalse(model.step(1, rowIDs: ids), "最后一行不循环")
+        XCTAssertEqual(model.currentRowID, ids[2])
+        XCTAssertEqual(model.lastStepDirection, 1)
+        XCTAssertTrue(model.step(-1, rowIDs: ids))
+        XCTAssertEqual(model.lastStepDirection, -1)
+        XCTAssertEqual(reported, [ids[1], ids[2], ids[1]])
+        model.show(ids[0])
+        XCTAssertEqual(reported.count, 3, "程序化定位不回报")
+    }
+
+    private func item(running: Bool, path: String?) -> SecondaryDockItem {
+        SecondaryDockItem(id: "x", label: "X", icon: NSImage(size: NSSize(width: 8, height: 8)),
+                          launchPath: path, isInstalled: true, isRunning: running)
+    }
+
+    func testBounceUntilLaunchedThenStops() async throws {
+        let model = SecondaryDockRowsModel()
+        model.bounceRise = .milliseconds(5)
+        model.bounceFall = .milliseconds(5)
+        var launched = false
+        model.isLaunchFinished = { _ in launched }
+        model.bounce(item(running: false, path: "/Applications/X.app"), height: 18)
+        XCTAssertTrue(model.isBouncing("x"))
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertTrue(model.isBouncing("x"), "还没起来：继续弹")
+        launched = true
+        for _ in 0..<100 where model.isBouncing("x") {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(model.isBouncing("x"))
+        XCTAssertNil(model.bounceOffsets["x"])
+    }
+
+    func testRunningAppDoesNotBounce() {
+        let model = SecondaryDockRowsModel()
+        model.bounce(item(running: true, path: "/Applications/X.app"), height: 18)
+        XCTAssertFalse(model.isBouncing("x"), "已在运行：点了只是切过去，不弹（同原生）")
+        model.bounce(item(running: false, path: nil), height: 18)
+        XCTAssertFalse(model.isBouncing("x"), "不可点的条目不弹")
     }
 }
 
@@ -96,7 +169,6 @@ private final class RowsFaceProvider: DockFaceProviding {
 @MainActor
 private final class RowsBox {
     var snapshot: SecondaryDockContentSnapshot?
-    var committedRows: [Int] = []
     var anchors: [UUID?] = []
     var mouse = CGPoint(x: -9999, y: -9999)
 }
@@ -125,8 +197,8 @@ final class MultiRowSecondaryDockControllerTests: XCTestCase {
         )
     }
 
-    /// 3 行（各 2 / 4 / 3 个图标），展开 `visibleRows` 行。
-    private func threeRows(visibleRows: Int) -> (SecondaryDockContentSnapshot, [UUID]) {
+    /// 3 行（各 2 / 4 / 3 个图标）。
+    private func threeRows() -> (SecondaryDockContentSnapshot, [UUID]) {
         let ids = [UUID(), UUID(), UUID()]
         let counts = [2, 4, 3]
         let rows = zip(ids, counts).map { id, count in
@@ -135,7 +207,6 @@ final class MultiRowSecondaryDockControllerTests: XCTestCase {
         var snapshot = SecondaryDockContentSnapshot(items: rows[0].items, iconSize: 36, position: .bottom)
         snapshot.barID = ids[0]
         snapshot.rows = rows
-        snapshot.visibleRows = visibleRows
         return (snapshot, ids)
     }
 
@@ -150,7 +221,6 @@ final class MultiRowSecondaryDockControllerTests: XCTestCase {
             log: { _ in },
             tuckDebounce: .milliseconds(10),
             mouseLocation: { [weak box] in box?.mouse ?? .zero },
-            onVisibleRowsCommitted: { [weak box] _, rows in box?.committedRows.append(rows) },
             onAnchorRowChanged: { [weak box] _, id in box?.anchors.append(id) }
         ))
     }
@@ -161,121 +231,39 @@ final class MultiRowSecondaryDockControllerTests: XCTestCase {
         controller.spaceDidChange(FakeSpaceProvider.desktops(count: 1)[0])
     }
 
-    private func expectedFrames(rows: Int) -> (revealed: CGRect, tucked: CGRect) {
-        let revealed = SecondaryDockLayout.placement(
-            barSize: SecondaryDockLayout.multiRowSize(
-                maxItemCount: 4,
-                thickness: SecondaryDockLayout.thickness(rows: rows, iconSize: 36),
-                iconSize: 36,
-                isVertical: false
-            ),
-            face: bottomFace
-        ).revealed
-        let tucked = SecondaryDockLayout.placement(
-            barSize: SecondaryDockLayout.barSize(itemCount: 4, iconSize: 36, isVertical: false),
-            face: bottomFace
-        ).tucked
-        return (revealed, tucked)
+    private func expectedFrames() -> (revealed: CGRect, tucked: CGRect) {
+        let size = SecondaryDockLayout.multiRowSize(maxItemCount: 4, rowCount: 3, iconSize: 36, isVertical: false)
+        let placement = SecondaryDockLayout.placement(barSize: size, face: bottomFace)
+        return (placement.revealed, placement.tucked)
     }
 
-    func testTuckedIsOneRowAndRevealedIsTheUsersRowCount() async throws {
+    func testRevealedAndTuckedAreBothOneRow() async throws {
         let presenter = RowsFakePresenter()
         let provider = RowsFaceProvider()
         let box = RowsBox()
-        box.snapshot = threeRows(visibleRows: 2).0
+        box.snapshot = threeRows().0
         let controller = makeController(presenter, provider, box)
         show(controller, provider)
 
-        let expected = expectedFrames(rows: 2)
-        XCTAssertEqual(presenter.lastFrame, expected.tucked, "收起：1 行厚、长度按最长那一行")
+        let expected = expectedFrames()
+        XCTAssertEqual(presenter.lastFrame, expected.tucked, "收起：1 行厚、长度按最长那一行 + 指示点")
 
         controller.hoverChanged(true)
-        XCTAssertEqual(presenter.lastFrame, expected.revealed, "显出：展开到用户拖成的 2 行")
-        XCTAssertEqual(presenter.lastFrame?.minY, bottomFace.visible.minY + SecondaryDockLayout.faceGap,
-                       "显出锚定 Dock 内侧面，往屏幕内长")
+        XCTAssertEqual(presenter.lastFrame, expected.revealed, "显出也只有 1 行（没有抽屉）")
+        XCTAssertEqual(presenter.lastFrame?.height, expected.tucked.height)
         XCTAssertEqual(presenter.revealedStates.last, true)
 
         controller.hoverChanged(false)
         try await Task.sleep(for: .milliseconds(120))
         XCTAssertEqual(presenter.lastFrame, expected.tucked)
-        XCTAssertEqual(presenter.revealedStates.last, false, "收起时告诉窗口（handle 隐藏、滚回锚定行）")
-    }
-
-    func testDragFollowsTheCursorThenSnapsAndCommits() {
-        let presenter = RowsFakePresenter()
-        let provider = RowsFaceProvider()
-        let box = RowsBox()
-        box.snapshot = threeRows(visibleRows: 1).0
-        let controller = makeController(presenter, provider, box)
-        show(controller, provider)
-        controller.hoverChanged(true)
-        let start = expectedFrames(rows: 1).revealed
-
-        controller.resize(.began)
-        XCTAssertTrue(controller.isResizing)
-        controller.resize(.changed(CGPoint(x: start.midX, y: start.minY + 90)))
-        XCTAssertEqual(presenter.lastFrame?.height, 90, "拖拽中厚度跟手")
-        XCTAssertEqual(presenter.lastFrame?.minY, start.minY, "锚定侧不动")
-        XCTAssertEqual(presenter.lastAnimated, false)
-
-        controller.resize(.changed(CGPoint(x: start.midX, y: start.minY + 999)))
-        XCTAssertEqual(presenter.lastFrame?.height, SecondaryDockLayout.thickness(rows: 3, iconSize: 36), "最多 3 行")
-
-        controller.geometryTick()
-        controller.refresh()
-        XCTAssertEqual(presenter.lastFrame?.height, SecondaryDockLayout.thickness(rows: 3, iconSize: 36),
-                       "拖拽中轮询重摆不把高度打回已存的行数")
-
-        controller.resize(.changed(CGPoint(x: start.midX, y: start.minY + 110)))
-        box.mouse = CGPoint(x: start.midX, y: start.minY + 20)
-        controller.resize(.ended)
-        XCTAssertFalse(controller.isResizing)
-        XCTAssertEqual(box.committedRows, [2], "松手吸附到最近的整行（110 → 2 行）并回存")
-        XCTAssertEqual(presenter.lastFrame?.height, SecondaryDockLayout.thickness(rows: 2, iconSize: 36))
-        XCTAssertEqual(presenter.lastAnimated, true, "吸附走动画")
-    }
-
-    func testDraggingOutsideTheBarDoesNotTuck() async throws {
-        let presenter = RowsFakePresenter()
-        let provider = RowsFaceProvider()
-        let box = RowsBox()
-        box.snapshot = threeRows(visibleRows: 1).0
-        let controller = makeController(presenter, provider, box)
-        show(controller, provider)
-        controller.hoverChanged(true)
-        let revealed = expectedFrames(rows: 1).revealed
-
-        controller.resize(.began)
-        controller.resize(.changed(CGPoint(x: revealed.midX, y: revealed.minY + 130)))
-        controller.hoverChanged(false)   // 光标拖出了窗口
-        try await Task.sleep(for: .milliseconds(80))
-        XCTAssertEqual(presenter.lastFrame?.height, 130, "拖拽期间不收回")
-        XCTAssertEqual(presenter.revealedStates.last, true)
-    }
-
-    func testSingleRowEdgeIgnoresResize() {
-        let presenter = RowsFakePresenter()
-        let provider = RowsFaceProvider()
-        let box = RowsBox()
-        box.snapshot = SecondaryDockContentSnapshot(items: (0..<3).map(item), iconSize: 36, position: .bottom)
-        let controller = makeController(presenter, provider, box)
-        show(controller, provider)
-        controller.hoverChanged(true)
-        let before = presenter.frames.count
-
-        controller.resize(.began)
-        controller.resize(.changed(CGPoint(x: 900, y: 400)))
-        controller.resize(.ended)
-        XCTAssertFalse(controller.isResizing)
-        XCTAssertEqual(presenter.frames.count, before, "只有一行：没有 handle、拖拽无效")
-        XCTAssertEqual(box.committedRows, [])
+        XCTAssertEqual(presenter.revealedStates.last, false)
     }
 
     func testRowScrollIsForwardedWithTheSpace() {
         let presenter = RowsFakePresenter()
         let provider = RowsFaceProvider()
         let box = RowsBox()
-        let (snapshot, ids) = threeRows(visibleRows: 1)
+        let (snapshot, ids) = threeRows()
         box.snapshot = snapshot
         let controller = makeController(presenter, provider, box)
         show(controller, provider)
