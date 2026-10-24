@@ -537,7 +537,10 @@ final class SecondaryDockControllerTests: XCTestCase {
         showBar(controller, presenter: presenter, provider: provider, content: content)
 
         controller.spaceTransitionGestureDetected()
-        try await Task.sleep(for: .milliseconds(100))
+        // CI 机慢：轮询等超时触发（最多 2 s），别用固定 100 ms 赌调度（2026-10-24 偶发失败）
+        for _ in 0..<100 where presenter.fadeBackCount == 0 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
         XCTAssertEqual(presenter.fadeBackCount, 1, "打断横扫：超时后分步渐回（不升沉没位）")
         XCTAssertEqual(presenter.pullCount, 0, "没有空间翻转就不做沉没位升起")
 
