@@ -147,6 +147,15 @@ final class SecondaryDockMagnificationTests: XCTestCase {
         let overflow = SecondaryDockMagnification.barOverflow(start: -10, end: 230, barLength: barLength)
         XCTAssertEqual(overflow.leading, 16, "超出左端 10 + 留边 6")
         XCTAssertEqual(overflow.trailing, 16)
+        // 多行：末端有圆点指示，图标要在它之前停 —— 同样的图标范围多伸出圆点那 7 pt
+        let withDots = SecondaryDockMagnification.barOverflow(
+            start: -10, end: 230, barLength: barLength, trailingReserve: SecondaryDockStripView.indicatorReserve
+        )
+        XCTAssertEqual(withDots.leading, 16)
+        XCTAssertEqual(withDots.trailing, 23, "圆点不被放大的末尾图标盖住")
+        XCTAssertEqual(
+            SecondaryDockMagnification.barOverflow(start: 20, end: 205, barLength: barLength, trailingReserve: 7).trailing, 0
+        )
     }
 
     func testContainerRectGrowsAlongTheBarWithinEndRoom() {

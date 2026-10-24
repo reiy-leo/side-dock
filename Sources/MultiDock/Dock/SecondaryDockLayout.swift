@@ -342,13 +342,15 @@ enum SecondaryDockMagnification {
 
     /// 条底板两端要多伸出去的长度：图标边离条端不足 `margin` 的部分。
     /// `start` / `end` 是图标范围在条坐标里的位置，`barLength` 是条本体长度。
-    static func barOverflow(start: CGFloat, end: CGFloat, barLength: CGFloat, margin: CGFloat = 6)
-        -> SecondaryDockBarOverflow
-    {
+    /// `trailingReserve`：条末端被别的东西占着的长度（多行的行指示圆点），图标要在它之前停住，
+    /// 否则放大的末尾图标会盖住圆点（2026-10-24 glitch）。
+    static func barOverflow(
+        start: CGFloat, end: CGFloat, barLength: CGFloat, margin: CGFloat = 6, trailingReserve: CGFloat = 0
+    ) -> SecondaryDockBarOverflow {
         guard barLength > 0 else { return .zero }
         return SecondaryDockBarOverflow(
             leading: max(0, (margin - start).rounded(.up)),
-            trailing: max(0, (end - (barLength - margin)).rounded(.up))
+            trailing: max(0, (end - (barLength - margin - trailingReserve)).rounded(.up))
         )
     }
 }

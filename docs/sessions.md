@@ -24,6 +24,8 @@
 6. **「台前调度的那一边要灰掉，后面显示台前调度」**：右键菜单原来没设 `autoenablesItems = false`，AppKit 把 `isEnabled = false` 又点亮了（截图里三项全可点）——补上；
    `DockBarPosition.Choice` 加 `isStageManagerEdge` / `title`，那一项显示「左侧（台前调度）」，设置页下拉同口径；
    `StageManagerStatus.isActive()` 读前 `CFPreferencesAppSynchronize`，长驻进程不再读到台前调度开关的旧值。
+7. **glitch「多行条的圆点指示在悬停放大时不见了」**：放大的末尾图标伸到行区外、盖在圆点上（底板只按条端算伸出）。
+   `barOverflow` 加 `trailingReserve`（多行 = 圆点 7 pt），底板多伸出圆点那段；圆点 `.offset` 跟着伸出量挪到新末端。
 
 **未解决**：材质与描边需 Rei 真机对比原生 Dock 再调。
 

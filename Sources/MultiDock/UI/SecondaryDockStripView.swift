@@ -84,13 +84,17 @@ final class SecondaryDockRowsModel {
     private(set) var barOverflow: SecondaryDockBarOverflow = .zero
     /// 条本体沿条方向的长度（视图量出来写进来，算伸出量用）。
     @ObservationIgnored var barLength: CGFloat = 0
+    /// 条末端圆点指示占的长度（只有多行时非 0），放大伸出量要把它让出来。
+    @ObservationIgnored var trailingReserve: CGFloat = 0
     /// 伸出量变了（窗口据此改底板的 frame）。
     @ObservationIgnored var onBarOverflowChange: (SecondaryDockBarOverflow) -> Void = { _ in }
 
     /// 某一行的图标范围（条坐标）。只认当前行（切行动画里淡出的旧行不算）。
     func reportIconExtents(rowID: UUID?, start: CGFloat, end: CGFloat) {
         if let rowID, let currentRowID, rowID != currentRowID { return }
-        setBarOverflow(SecondaryDockMagnification.barOverflow(start: start, end: end, barLength: barLength))
+        setBarOverflow(SecondaryDockMagnification.barOverflow(
+            start: start, end: end, barLength: barLength, trailingReserve: trailingReserve
+        ))
     }
 
     func setBarOverflow(_ overflow: SecondaryDockBarOverflow) {
@@ -243,6 +247,9 @@ struct SecondaryDockStripView: View {
                 GeometryReader { proxy in
                     let length = isVertical ? proxy.size.height : proxy.size.width
                     Color.clear.onChange(of: length, initial: true) { _, value in model.barLength = value }
+                    Color.clear.onChange(of: rows.count, initial: true) { _, count in
+                        model.trailingReserve = count > 1 ? Self.indicatorReserve : 0
+                    }
                 }
             }
             .coordinateSpace(.named(Self.barSpace))
@@ -257,6 +264,9 @@ struct SecondaryDockStripView: View {
             .padding(innerEdge, headroom)
             .padding(isVertical ? .vertical : .horizontal, endRoom)
     }
+
+    /// 末端圆点指示沿条方向占的长度：点 5 + 与行区的间距 2。
+    static let indicatorReserve: CGFloat = 7
 
     /// 条本体的坐标空间（图标范围按它量）。
     static let barSpace = "secondaryDockBar"
@@ -370,6 +380,11 @@ struct SecondaryDockStripView: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: current)
+        // 放大时底板末端伸出去，圆点跟着挪到伸出后的末端，不被放大的末尾图标盖住（2026-10-24）。
+        .offset(
+            x: isVertical ? 0 : model.barOverflow.trailing,
+            y: isVertical ? model.barOverflow.trailing : 0
+        )
         .help(L("这条边有 \(rows.count) 行，滚动切换", "\(rows.count) rows on this edge — scroll to switch"))
     }
 }
