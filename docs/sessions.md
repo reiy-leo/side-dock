@@ -16,6 +16,10 @@
    （走 `dockBarEdited` 落盘/刷新/按开关应用）；不够远松手 = 拖影淡出放回。拖动期间压住 hover 离开，条不收起，松手补报。
 3. 测试：`SecondaryDockDragRemoveTests`（阈值、方向、占位行 ID、拖动状态）+ `AppStateDockTests` 移除用例。
 
+4. **同日真机反馈**：「根据 app 的多少长短要变化，两边很多空白」→ 条长度改按**当前显示那一行**的 App 数（原来按最长那一行），
+   滚到另一行时条随之变长/变短（`SecondaryDockController.displayedItemCount`，`activeRowID` 先于 AppState 回写生效、换桌面清空）；
+   「边框白色特别明显」→ 内圈高光白 0.45 → 0.12（深色 0.18 → 0.10），外圈暗边也略减。
+
 **未解决**：材质与描边需 Rei 真机对比原生 Dock 再调。
 
 ### 2026-10-23（第 72 次）— 悬停名称 / 台前调度避让 / 启动台页性能 / 改名 Side Dock

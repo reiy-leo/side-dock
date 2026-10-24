@@ -105,6 +105,7 @@ final class SecondaryDockController {
     /// observer.refreshNow()`）都会当拍走到这里，没有 300 ms 空窗。
     func spaceDidChange(_ space: DesktopSpace?) {
         let spaceChanged = space != lastSpace
+        if spaceChanged { activeRowID = nil }
         let wasShowing = isShowing
         lastSpace = space
         applyCurrentState()
@@ -255,18 +256,34 @@ final class SecondaryDockController {
 
     /// 用户切到了另一行（收起 / 下次显示时还是它）。
     func rowScrolled(_ barID: UUID?) {
+        activeRowID = barID
         deps.onAnchorRowChanged(lastSpace, barID)
+        // 长度跟着新行的 App 数变（2026-10-24）。
+        applyCurrentState()
     }
 
-    /// 显出 / 收起两个 frame 的尺寸：厚度恒为 1 行，长度按最长那一行（多行时末端留指示点）。
+    /// 用户最近滚到的行（AppState 回写锚定行之前先用它定长度）。
+    private var activeRowID: UUID?
+
+    /// 显出 / 收起两个 frame 的尺寸：厚度恒为 1 行，长度按**当前显示那一行**的 App 数
+    /// （2026-10-24 用户：「根据 app 的多少长短要变化」——原来按最长那一行，短行两边大片空白）；
+    /// 多行时末端留指示点。
     private func frameSizes(for content: SecondaryDockContentSnapshot) -> (revealed: CGSize, tucked: CGSize) {
         let size = SecondaryDockLayout.multiRowSize(
-            maxItemCount: content.maxRowItemCount,
+            maxItemCount: Self.displayedItemCount(content, activeRowID: activeRowID),
             rowCount: content.displayRows.count,
             iconSize: content.iconSize,
             isVertical: content.position.isBarVertical
         )
         return (size, size)
+    }
+
+    /// 当前显示那一行的条目数：用户刚滚到的行优先（仍在内容里时），否则锚定行。
+    static func displayedItemCount(_ content: SecondaryDockContentSnapshot, activeRowID: UUID?) -> Int {
+        let rows = content.displayRows
+        if let activeRowID, let row = rows.first(where: { $0.barID == activeRowID }) { return row.items.count }
+        let anchor = content.effectiveAnchorBarID
+        return rows.first(where: { $0.barID == anchor })?.items.count ?? content.items.count
     }
 
     // MARK: - 内部

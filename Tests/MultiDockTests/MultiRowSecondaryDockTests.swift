@@ -271,4 +271,21 @@ final class MultiRowSecondaryDockControllerTests: XCTestCase {
         controller.rowScrolled(ids[2])
         XCTAssertEqual(box.anchors, [ids[2]])
     }
+
+    // MARK: 长度跟当前行（2026-10-24 用户：「根据 app 的多少长短要变化」）
+
+    func testDisplayedItemCountFollowsCurrentRowNotLongest() {
+        func items(_ n: Int, _ p: String) -> [SecondaryDockItem] {
+            (0..<n).map { SecondaryDockItem(id: "\(p)\($0)", label: "", icon: NSImage(), launchPath: nil, isInstalled: true, isRunning: false) }
+        }
+        let a = UUID(), b = UUID()
+        var content = SecondaryDockContentSnapshot(items: items(2, "a"), iconSize: 36)
+        content.rows = [SecondaryDockRow(barID: a, name: "A", items: items(2, "a")),
+                        SecondaryDockRow(barID: b, name: "B", items: items(9, "b"))]
+        XCTAssertEqual(SecondaryDockController.displayedItemCount(content, activeRowID: nil), 2, "没滚过 = 第一行")
+        XCTAssertEqual(SecondaryDockController.displayedItemCount(content, activeRowID: b), 9, "滚到哪行按哪行")
+        content.anchorBarID = b
+        XCTAssertEqual(SecondaryDockController.displayedItemCount(content, activeRowID: nil), 9, "锚定行")
+        XCTAssertEqual(SecondaryDockController.displayedItemCount(content, activeRowID: UUID()), 9, "滚到的行已不在 → 锚定行")
+    }
 }

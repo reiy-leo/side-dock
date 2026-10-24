@@ -668,8 +668,8 @@ extension SecondaryDockWindow {
     fileprivate var panelWindow: NSWindow { window }
 }
 
-/// 原生 Dock 式双描边：外圈一道暗边把底板从浅色壁纸上撑出来，内圈一道细高光模拟玻璃边缘
-/// （2026-10-24「磨砂效果和原生不一样」）。动态色在 `draw` 里解析，换外观只需重绘。
+/// 原生 Dock 式双描边：外圈一道暗边把底板从浅色壁纸上撑出来，内圈一道极淡的高光模拟玻璃边缘
+/// （2026-10-24「磨砂效果和原生不一样」；同日「边框白色特别明显」→ 内圈白 0.45 降到 0.12）。动态色在 `draw` 里解析，换外观只需重绘。
 @MainActor
 final class DockGlassEdgeView: NSView {
     private let cornerRadius: CGFloat
@@ -690,14 +690,14 @@ final class DockGlassEdgeView: NSView {
 
     private static let outerColor = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor.black.withAlphaComponent(0.55)
-            : NSColor.black.withAlphaComponent(0.10)
+            ? NSColor.black.withAlphaComponent(0.45)
+            : NSColor.black.withAlphaComponent(0.08)
     }
 
     private static let innerColor = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor.white.withAlphaComponent(0.18)
-            : NSColor.white.withAlphaComponent(0.45)
+            ? NSColor.white.withAlphaComponent(0.10)
+            : NSColor.white.withAlphaComponent(0.12)
     }
 
     override func draw(_ dirtyRect: NSRect) {
