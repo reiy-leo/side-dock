@@ -389,6 +389,15 @@ final class AppState {
         secondaryDocks.forEach { $0.refresh() }
     }
 
+    /// 从侧边坞把一个 App 拖出条外松手（2026-10-24 用户规格）：从那根栏里移除，落盘 + 刷新条。
+    /// `appKey` = 条目 ID（`DockTile.normalizedKey`）。栏或条目已不在（快照滞后一拍）就静默忽略。
+    func removeAppFromDockBar(_ barID: UUID, appKey: String) {
+        guard var bar = dockBar(id: barID),
+            let index = bar.apps.firstIndex(where: { $0.normalizedKey == appKey }) else { return }
+        let removed = bar.apps.remove(at: index)
+        dockBarEdited(bar, reason: L("从侧边坞拖出，移除「\(removed.label)」", "dragged out of Side Dock, removed “\(removed.label)”"))
+    }
+
     /// 改栏名。归一化（≤10 字素簇）后与原值相同则不落盘。
     func renameDockBar(_ id: UUID, to raw: String) {
         guard var bar = dockBar(id: id) else { return }

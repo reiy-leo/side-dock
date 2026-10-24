@@ -100,6 +100,25 @@ final class SecondaryDockRowsModel {
     }
 
     @ObservationIgnored var onUserScrolled: (UUID?) -> Void = { _ in }
+
+    // MARK: 拖出移除（2026-10-24 用户规格：拖出条一定距离松手 = 从侧边坞移除，同原生 Dock）
+
+    /// 正在拖的条目（原位图标变淡）。
+    var draggingItemID: String?
+    /// 拖动中：条目、所在行、光标（屏幕坐标）。窗口据此挪拖影、判定够不够远。
+    @ObservationIgnored var onItemDragChanged: (SecondaryDockItem, UUID?) -> Void = { _, _ in }
+    /// 松手：窗口判定移除还是放回。
+    @ObservationIgnored var onItemDragEnded: (SecondaryDockItem, UUID?) -> Void = { _, _ in }
+
+    func itemDragChanged(_ item: SecondaryDockItem, rowID: UUID?) {
+        if draggingItemID != item.id { draggingItemID = item.id }
+        onItemDragChanged(item, rowID)
+    }
+
+    func itemDragEnded(_ item: SecondaryDockItem, rowID: UUID?) {
+        onItemDragEnded(item, rowID)
+        draggingItemID = nil
+    }
     @ObservationIgnored var pager = SecondaryDockRowPager()
     @ObservationIgnored private var bouncingIDs: Set<String> = []
     /// App 是否已启动完成（弹跳的停止条件；测试可替换）。
@@ -455,12 +474,19 @@ struct SecondaryDockSlotsView: View {
                 .offset(bounceOffset(item))
                 .frame(width: iconSize, height: iconSize, alignment: growAlignment)
                 .opacity(item.isInstalled ? 1 : 0.35)
+                .opacity(model?.draggingItemID == item.id ? 0.3 : 1)
             Circle()
                 .fill(item.isRunning ? Color.primary.opacity(0.75) : Color.clear)
                 .frame(width: 4, height: 4)
         }
         .frame(minWidth: iconSize + 4)
         .contentShape(Rectangle())
+        // 拖出移除：动了 6 pt 以上才算拖，原地点按仍走下面的点击启动。
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 6, coordinateSpace: .global)
+                .onChanged { _ in model?.itemDragChanged(item, rowID: rowID) }
+                .onEnded { _ in model?.itemDragEnded(item, rowID: rowID) }
+        )
         .onTapGesture {
             model?.bounce(item, height: SecondaryDockMagnification.bounceHeight(iconSize: iconSize))
             onActivate(item)

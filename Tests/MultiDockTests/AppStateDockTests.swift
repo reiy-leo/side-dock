@@ -1187,6 +1187,31 @@ final class AppStateDockTests: XCTestCase {
         XCTAssertTrue(state.log.contains { $0.message.contains("原生 Dock 位置变化") })
     }
 
+    // MARK: - 侧边坞拖出移除（2026-10-24）
+
+    func testRemoveAppFromDockBarRemovesOnlyThatAppAndPersists() throws {
+        let stores = makeStores("drag-remove")
+        let state = makeState(preferences: FakePreferences(domain: baseDomain()), stores: stores)
+        state.start()
+        defer { state.stop() }
+        state.updateSettings { $0.autoApplyOnEdit = false }
+
+        let barID = state.addDockBar()
+        let barApps = DockStripRules.barApps(apps(count: 3, prefix: "Drag"))
+        state.updateDockBarInMemory(DockBar(id: barID, name: "拖", position: .left, apps: barApps))
+        let target = barApps[1]
+
+        state.removeAppFromDockBar(barID, appKey: target.normalizedKey)
+        let kept = try XCTUnwrap(state.dockBar(id: barID)?.apps)
+        XCTAssertEqual(kept.map(\.normalizedKey), [barApps[0].normalizedKey, barApps[2].normalizedKey])
+        XCTAssertTrue(state.log.contains { $0.message.contains("从侧边坞拖出") })
+
+        // 快照滞后一拍：条目已不在 / 栏已不在 → 静默忽略。
+        state.removeAppFromDockBar(barID, appKey: target.normalizedKey)
+        state.removeAppFromDockBar(UUID(), appKey: barApps[0].normalizedKey)
+        XCTAssertEqual(state.dockBar(id: barID)?.apps.count, 2)
+    }
+
     // MARK: - 数据：导出 / 导入（数据 Tab，2026-10-06）
 
     func testExportThenImportRoundTripsTheWholeConfiguration() throws {

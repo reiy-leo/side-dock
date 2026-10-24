@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import SwiftUI
 
 /// 次级 Dock 条的呈现协议。调度逻辑（`SecondaryDockController`）只认它，
@@ -54,7 +55,8 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
 
     /// 低于 Dock（20）、高于一切普通窗口。toast 用 25（高于 Dock），本条必须**低于** Dock。
     private static let windowLevel = NSWindow.Level(rawValue: 19)
-    private static let cornerRadius: CGFloat = 14
+    /// 原生 Dock（Sequoia）底板圆角偏大，比 toast 圆一些（2026-10-24）。
+    private static let cornerRadius: CGFloat = 16
     /// 常态配方：窗口只属一个空间——切换瞬间留在旧空间（对新空间不可见，**不滑动**，实验 24）。
     private static let singleSpaceBehavior: NSWindow.CollectionBehavior =
         [.moveToActiveSpace, .stationary, .fullScreenAuxiliary, .ignoresCycle]
@@ -72,6 +74,18 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     /// 悬停放大开着时窗口朝屏幕内侧多出 `headroom` 的透明空间给放大的图标（2026-10-23）。
     private let rootView = NSView()
     private let container: NSVisualEffectView
+    /// 底板的双描边（外圈暗、内圈亮），跟底板同 frame。
+    private let edgeView: DockGlassEdgeView
+
+    /// 底板材质：默认 `.fullScreenUI`；`SecondaryDockMaterial` 偏好（rawValue）可覆盖，真机对比用。
+    static var dockMaterial: NSVisualEffectView.Material {
+        if let raw = UserDefaults.standard.object(forKey: "SecondaryDockMaterial") as? Int,
+            let material = NSVisualEffectView.Material(rawValue: raw)
+        {
+            return material
+        }
+        return .fullScreenUI
+    }
     /// 当前朝屏幕内侧预留的透明厚度（0 = 不放大）。
     private var headroom: CGFloat = 0
     /// 当前沿条方向两端各预留的透明长度（0 = 不放大）。
@@ -91,6 +105,14 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     var onActivate: (SecondaryDockItem) -> Void = { _ in }
     /// hover 进/出。由 `AppDelegate` 接到 `SecondaryDockController.hoverChanged(_:)`。
     var onHoverChange: (Bool) -> Void = { _ in }
+    /// 条目被拖出条外松手（条目, 所在栏 ID）。由 `AppDelegate` 接到 `AppState.removeAppFromDockBar`。
+    var onRemoveItem: (SecondaryDockItem, UUID) -> Void = { _, _ in }
+    /// 拖出移除的拖影（拖动期间存在）。
+    private var dragGhost: SecondaryDockDragGhost?
+    /// 拖动期间压住的「光标离开」——松手时再按真实位置补报。
+    private var pendingHoverExit = false
+    /// 最近一次内容的图标尺寸（拖影大小、移除距离都按它）。
+    private var currentIconSize: CGFloat = 36
     /// 右键菜单选中了新位置（栏 ID, 目标位置）。由 `AppDelegate` 接到
     /// `AppState.setDockBarPosition`（2026-10-06）。
     var onPositionSelected: (UUID?, DockBarPosition) -> Void = { _, _ in }
@@ -144,11 +166,15 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         // （2026-10-23「hover 图标没显示名称」）。
         window.allowsToolTipsWhenApplicationIsInactive = true
 
-        // 材质与 toast 同款：`.popover` 跟随亮/深色外观，`behindWindow` 能压在任意内容上。
+        // 材质（2026-10-24 用户反馈「磨砂效果和原生不一样」）：原来与 toast 同款 `.popover`，
+        // 偏厚、偏不透明，壁纸透不上来。原生 Dock 是私有 backdrop（更通透 + 一圈细高光边），
+        // 公开材质里最接近的是 `.fullScreenUI`；再叠一层双描边（外暗内亮）把边缘撑出来。
+        // 真机对比可临时改：`defaults write local.multidock SecondaryDockMaterial -int <rawValue>`（重启生效）。
         container = NSVisualEffectView()
-        container.material = .popover
+        container.material = Self.dockMaterial
         container.blendingMode = .behindWindow
         container.state = .active
+        edgeView = DockGlassEdgeView(cornerRadius: Self.cornerRadius)
 
         hosting = SecondaryDockHostingView(rootView: SecondaryDockStripView(
             rows: [],
@@ -163,6 +189,7 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         hosting.menuProvider = { [weak self] in self?.makeContextMenu() }
         // 条本体（材质）与内容并排挂在透明根视图上：内容要能画出条外（放大的图标）。
         rootView.addSubview(container)
+        rootView.addSubview(edgeView)
         hosting.frame = rootView.bounds
         rootView.addSubview(hosting)
         window.contentView = rootView
@@ -182,6 +209,8 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
             self.hoveredRowBarID = rowID
             self.onRowScrolled(rowID)
         }
+        rowsModel.onItemDragChanged = { [weak self] item, _ in self?.itemDragChanged(item) }
+        rowsModel.onItemDragEnded = { [weak self] item, rowID in self?.itemDragEnded(item, rowID: rowID) }
         // 多行条切行（2026-10-23 用户规格）：只显示一行，滚动一次手势切一行、切完停顿。
         // 落在本窗口上的滚动事件在这里吃掉；不是本窗口的、或这条边只有一行时原样放行。
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
@@ -222,6 +251,7 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     func updateContent(_ content: SecondaryDockContentSnapshot, isVertical: Bool) {
         currentPosition = content.position
         currentBarID = content.barID
+        currentIconSize = content.iconSize
         let rows = content.displayRows
         let rowIDs = rows.map(\.barID)
         let anchor = content.effectiveAnchorBarID
@@ -314,6 +344,7 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
         )
         guard rect != container.frame else { return }
         container.frame = rect
+        edgeView.frame = rect
         // NSVisualEffectView 没有 cornerRadius（那是 UIKit 的），圆角靠 maskImage 现画。
         container.maskImage = Self.maskImage(size: rect.size)
     }
@@ -488,9 +519,76 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
             magnifiedSize: magnifiedSize,
             model: rowsModel,
             onActivate: { [weak self] item in self?.onActivate(item) },
-            onHoverChange: { [weak self] inside in self?.onHoverChange(inside) },
+            onHoverChange: { [weak self] inside in self?.hoverChanged(inside) },
             onRowHover: { [weak self] barID in self?.hoveredRowBarID = barID }
         )
+    }
+
+    // MARK: 拖出移除（2026-10-24）
+
+    /// 拖动中光标离开条不收起（否则条缩回去、用户找不到放回的位置），松手再补报。
+    private func hoverChanged(_ inside: Bool) {
+        if dragGhost != nil, !inside {
+            pendingHoverExit = true
+            return
+        }
+        pendingHoverExit = false
+        onHoverChange(inside)
+    }
+
+    /// 底板在屏幕坐标里的范围（含放大伸出）。
+    private var barRectOnScreen: NSRect {
+        window.convertToScreen(container.frame)
+    }
+
+    private func itemDragChanged(_ item: SecondaryDockItem) {
+        let cursor = NSEvent.mouseLocation
+        let ghost = dragGhost ?? {
+            let ghost = SecondaryDockDragGhost(icon: item.icon, iconSize: currentIconSize, level: window.level)
+            dragGhost = ghost
+            return ghost
+        }()
+        let removing = Self.isOutForRemoval(
+            cursor: cursor, barRect: barRectOnScreen,
+            threshold: Self.removalDistance(iconSize: currentIconSize)
+        )
+        ghost.move(to: cursor, removing: removing)
+    }
+
+    private func itemDragEnded(_ item: SecondaryDockItem, rowID: UUID?) {
+        let cursor = NSEvent.mouseLocation
+        let removing = Self.isOutForRemoval(
+            cursor: cursor, barRect: barRectOnScreen,
+            threshold: Self.removalDistance(iconSize: currentIconSize)
+        )
+        dragGhost?.finish(removed: removing, at: cursor)
+        dragGhost = nil
+        if removing, let barID = Self.resolvedBarID(rowID: rowID, fallback: currentBarID) {
+            onRemoveItem(item, barID)
+        }
+        if pendingHoverExit {
+            pendingHoverExit = false
+            let inside = window.frame.contains(cursor)
+            onHoverChange(inside)
+        }
+    }
+
+    /// 拖出多远算移除：约 1.5 个图标，至少 48 pt（与原生 Dock 的手感相近：拖离条一段明显距离才出「移除」）。
+    static func removalDistance(iconSize: CGFloat) -> CGFloat {
+        max(48, (iconSize * 1.5).rounded())
+    }
+
+    /// 光标离底板（任意方向）超过阈值 = 松手就移除。
+    static func isOutForRemoval(cursor: CGPoint, barRect: CGRect, threshold: CGFloat) -> Bool {
+        let dx = max(barRect.minX - cursor.x, 0, cursor.x - barRect.maxX)
+        let dy = max(barRect.minY - cursor.y, 0, cursor.y - barRect.maxY)
+        return (dx * dx + dy * dy).squareRoot() >= threshold
+    }
+
+    /// 单行口径的占位行 ID 换回真实栏 ID。
+    static func resolvedBarID(rowID: UUID?, fallback: UUID?) -> UUID? {
+        guard let rowID, rowID != SecondaryDockContentSnapshot.placeholderRowID else { return fallback }
+        return rowID
     }
 
     /// 圆角遮罩：按当前尺寸现画一张 alpha 图（不做拉伸——拉伸会把圆角扯成椭圆）。
@@ -568,4 +666,141 @@ enum SecondaryDockWindowFactory {
 extension SecondaryDockWindow {
     /// 工厂读取底层 `NSWindow`（同文件内可访问 private 存储属性）。
     fileprivate var panelWindow: NSWindow { window }
+}
+
+/// 原生 Dock 式双描边：外圈一道暗边把底板从浅色壁纸上撑出来，内圈一道细高光模拟玻璃边缘
+/// （2026-10-24「磨砂效果和原生不一样」）。动态色在 `draw` 里解析，换外观只需重绘。
+@MainActor
+final class DockGlassEdgeView: NSView {
+    private let cornerRadius: CGFloat
+
+    init(cornerRadius: CGFloat) {
+        self.cornerRadius = cornerRadius
+        super.init(frame: .zero)
+        wantsLayer = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var isOpaque: Bool { false }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private static let outerColor = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor.black.withAlphaComponent(0.55)
+            : NSColor.black.withAlphaComponent(0.10)
+    }
+
+    private static let innerColor = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor.white.withAlphaComponent(0.18)
+            : NSColor.white.withAlphaComponent(0.45)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let outer = NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: cornerRadius, yRadius: cornerRadius
+        )
+        outer.lineWidth = 1
+        Self.outerColor.setStroke()
+        outer.stroke()
+        let inner = NSBezierPath(
+            roundedRect: bounds.insetBy(dx: 1.5, dy: 1.5), xRadius: cornerRadius - 1, yRadius: cornerRadius - 1
+        )
+        inner.lineWidth = 1
+        Self.innerColor.setStroke()
+        inner.stroke()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
+/// 拖出移除时跟着光标走的图标（独立的透明小窗：条窗口装不下拖到条外的图标）。
+/// 拖够远时图标上方出现「移除」标签；松手移除放一个系统「噗」的烟雾动画，放回则淡出。
+@MainActor
+final class SecondaryDockDragGhost {
+    private let panel: NSPanel
+    private let model = GhostModel()
+    private let size: NSSize
+
+    @MainActor
+    @Observable
+    final class GhostModel {
+        var removing = false
+    }
+
+    struct GhostView: View {
+        let icon: NSImage
+        let iconSize: CGFloat
+        let model: GhostModel
+
+        var body: some View {
+            VStack(spacing: 4) {
+                Text(L("移除", "Remove"))
+                    .font(.system(size: 12, weight: .medium))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(.regularMaterial, in: Capsule())
+                    .opacity(model.removing ? 1 : 0)
+                Image(nsImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: iconSize, height: iconSize)
+                    .opacity(model.removing ? 0.6 : 0.9)
+            }
+            .animation(.easeOut(duration: 0.12), value: model.removing)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        }
+    }
+
+    init(icon: NSImage, iconSize: CGFloat, level: NSWindow.Level) {
+        size = NSSize(width: max(iconSize, 80), height: iconSize + 28)
+        panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = true
+        panel.level = NSWindow.Level(rawValue: max(level.rawValue, NSWindow.Level.statusBar.rawValue) + 1)
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        panel.animationBehavior = .none
+        let hosting = NSHostingView(rootView: GhostView(icon: icon, iconSize: iconSize, model: model))
+        hosting.frame = NSRect(origin: .zero, size: size)
+        panel.contentView = hosting
+    }
+
+    /// 图标中心对准光标。
+    func move(to cursor: CGPoint, removing: Bool) {
+        let iconSide = size.height - 28
+        panel.setFrameOrigin(NSPoint(x: cursor.x - size.width / 2, y: cursor.y - iconSide / 2))
+        if model.removing != removing { model.removing = removing }
+        if !panel.isVisible { panel.orderFrontRegardless() }
+    }
+
+    func finish(removed: Bool, at cursor: CGPoint) {
+        let panel = self.panel
+        if removed {
+            panel.orderOut(nil)
+            NSAnimationEffect.disappearingItemDefault.show(centeredAt: cursor, size: .zero, completionHandler: {})
+            return
+        }
+        // 分步淡出（本 App 里 `animator().alphaValue` 有静默失效的前科，见 `fadeAlpha`）。
+        Task { @MainActor in
+            for step in 1...5 {
+                try? await Task.sleep(for: .milliseconds(25))
+                panel.alphaValue = 1 - CGFloat(step) / 5
+            }
+            panel.orderOut(nil)
+        }
+    }
 }

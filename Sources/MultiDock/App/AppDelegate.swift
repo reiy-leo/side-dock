@@ -118,6 +118,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let path = item.launchPath else { return }
                 NSWorkspace.shared.open(URL(fileURLWithPath: path))
             }
+            window.onRemoveItem = { [weak state] item, barID in
+                state?.removeAppFromDockBar(barID, appKey: item.id)
+            }
             window.onHoverChange = { [weak controller] inside in
                 controller?.hoverChanged(inside)
             }

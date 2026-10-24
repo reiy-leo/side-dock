@@ -3,6 +3,21 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-24 — 底板材质贴近原生 / 拖出移除
+
+**用户说**：「这个磨砂效果和原生不一样」（截图：底板偏厚偏不透明）；「支持拖拽出一定距离，把 app 从侧边坞中移除」。
+
+**做了什么**：
+
+1. **底板材质**：`.popover` → `.fullScreenUI`（更通透）；加 `DockGlassEdgeView` 双描边（外暗内亮，跟随亮/深色）；圆角 14 → 16。
+   真机对比可 `defaults write local.multidock SecondaryDockMaterial -int <rawValue>` 临时换材质（重启生效）。沙箱无法渲染，效果待真机确认。
+2. **拖出移除**：图标上 `DragGesture(minimumDistance: 6)`（高优先级，原地点按仍是启动）；拖动时独立透明小窗当拖影跟随光标，
+   原位图标变淡；离底板 ≥ `max(48, 1.5×图标)` pt 时拖影上方出现「移除」，松手 = 系统「噗」动画 + `AppState.removeAppFromDockBar`
+   （走 `dockBarEdited` 落盘/刷新/按开关应用）；不够远松手 = 拖影淡出放回。拖动期间压住 hover 离开，条不收起，松手补报。
+3. 测试：`SecondaryDockDragRemoveTests`（阈值、方向、占位行 ID、拖动状态）+ `AppStateDockTests` 移除用例。
+
+**未解决**：材质与描边需 Rei 真机对比原生 Dock 再调。
+
 ### 2026-10-23（第 72 次）— 悬停名称 / 台前调度避让 / 启动台页性能 / 改名 Side Dock
 
 **用户说**：「hover图标没显示名称，之前是显示的」「dock要避开台前调度所在的那一边」
