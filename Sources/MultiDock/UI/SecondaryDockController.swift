@@ -246,7 +246,20 @@ final class SecondaryDockController {
     private func tuckIfMouseOutside() {
         tuckTask = nil
         guard isRevealed, let tucked = tuckedFrame, let revealed = revealedFrame else { return }
-        guard !revealed.contains(deps.mouseLocation()) else { return }
+        let mouse = deps.mouseLocation()
+        guard !revealed.contains(mouse) else { return }
+        // 光标停在条与屏幕边之间那道缝里（独立贴边 6 pt / 附着 4 pt）：不收。
+        // 2026-10-24 Bug「鼠标放在最底部 side dock 一直弹跳」——显出后条离开屏幕边，光标落进缝里
+        // 算离开 → 收起 → 收起的条又盖住光标算进入 → 显出……来回抖。缝里不会再有 hover 事件，
+        // 所以自己隔一个防抖周期再查一次，光标真离开了才收。
+        if Self.holdRect(revealed: revealed, position: currentPosition).contains(mouse) {
+            tuckTask = Task { [debounce = deps.tuckDebounce] in
+                try? await Task.sleep(for: debounce)
+                guard !Task.isCancelled else { return }
+                self.tuckIfMouseOutside()
+            }
+            return
+        }
         isRevealed = false
         deps.presenter.setRevealed(false)
         deps.presenter.setFrame(tucked, animated: true)
@@ -276,6 +289,19 @@ final class SecondaryDockController {
             isVertical: content.position.isBarVertical
         )
         return (size, size)
+    }
+
+    /// 显出态「不收」的范围：条本体朝自己那条屏幕边 / Dock 一侧补上间隙那道缝。
+    static func holdRect(revealed: CGRect, position: DockBarPosition) -> CGRect {
+        let gap = SecondaryDockLayout.standaloneGap
+        switch position {
+        case .bottom:
+            return CGRect(x: revealed.minX, y: revealed.minY - gap, width: revealed.width, height: revealed.height + gap)
+        case .left:
+            return CGRect(x: revealed.minX - gap, y: revealed.minY, width: revealed.width + gap, height: revealed.height)
+        case .right:
+            return CGRect(x: revealed.minX, y: revealed.minY, width: revealed.width + gap, height: revealed.height)
+        }
     }
 
     /// 当前显示那一行的条目数：用户刚滚到的行优先（仍在内容里时），否则锚定行。

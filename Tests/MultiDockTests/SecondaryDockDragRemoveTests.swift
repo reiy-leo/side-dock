@@ -55,3 +55,21 @@ final class SecondaryDockDragRemoveTests: XCTestCase {
         XCTAssertEqual(ended?.1, row)
     }
 }
+
+/// 2026-10-24 Bug：光标停在屏幕最底部，条显出后离开屏幕边 6 pt，光标落进缝里 → 收 → 显 → 收……来回弹。
+@MainActor
+final class SecondaryDockHoldZoneTests: XCTestCase {
+    func testGapBetweenBarAndScreenEdgeKeepsBarRevealed() {
+        let revealed = CGRect(x: 100, y: 6, width: 300, height: 56)
+        let hold = SecondaryDockController.holdRect(revealed: revealed, position: .bottom)
+        XCTAssertTrue(hold.contains(CGPoint(x: 200, y: 0)), "屏幕最底一行像素")
+        XCTAssertTrue(hold.contains(CGPoint(x: 200, y: 3)))
+        XCTAssertFalse(hold.contains(CGPoint(x: 50, y: 3)), "条两端以外不算")
+        XCTAssertFalse(hold.contains(CGPoint(x: 200, y: 70)), "条上方不算")
+
+        let left = SecondaryDockController.holdRect(revealed: CGRect(x: 6, y: 100, width: 56, height: 300), position: .left)
+        XCTAssertTrue(left.contains(CGPoint(x: 0, y: 200)))
+        let right = SecondaryDockController.holdRect(revealed: CGRect(x: 1858, y: 100, width: 56, height: 300), position: .right)
+        XCTAssertTrue(right.contains(CGPoint(x: 1919, y: 200)))
+    }
+}
