@@ -39,8 +39,16 @@ jobs:
           xcodebuild -version
       # ⚠️ `--disable-sandbox` 与本地命令保持一致（本地是 SwiftPM 沙箱环境问题；
       # CI 上加不加都行，但保持一条命令口径，免得"本地能过 CI 不过"时多一个变量）。
+      # 失败的断言转成 ::error 注解（2026-10-24）：注解走公开 API 可读，远程开发拿不到日志时也能看到哪条测试挂了。
       - name: Run tests
-        run: swift test --disable-sandbox
+        run: |
+          set -o pipefail
+          swift test --disable-sandbox 2>&1 | tee test.log || {
+            grep -E "error: |failed \(|Test Case .* failed" test.log | head -30 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          }
 
   # 双架构构建：每个 runner 原生编译自己的架构。产物名带架构后缀，
   # 资产命名 SideDock-v<版本>-<架构>.zip / .dmg（2026-10-23 改名 Side Dock；v0.2.0-alpha.1 及更早叫 MultiDock-…）。
