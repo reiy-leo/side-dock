@@ -232,7 +232,8 @@ final class MultiRowSecondaryDockControllerTests: XCTestCase {
     }
 
     private func expectedFrames() -> (revealed: CGRect, tucked: CGRect) {
-        let size = SecondaryDockLayout.multiRowSize(maxItemCount: 4, rowCount: 3, iconSize: 36, isVertical: false)
+        // 2026-10-24 起长度按**当前显示行**（第一行 2 个）而不是最长行
+        let size = SecondaryDockLayout.multiRowSize(maxItemCount: 2, rowCount: 3, iconSize: 36, isVertical: false)
         let placement = SecondaryDockLayout.placement(barSize: size, face: bottomFace)
         return (placement.revealed, placement.tucked)
     }
@@ -246,7 +247,7 @@ final class MultiRowSecondaryDockControllerTests: XCTestCase {
         show(controller, provider)
 
         let expected = expectedFrames()
-        XCTAssertEqual(presenter.lastFrame, expected.tucked, "收起：1 行厚、长度按最长那一行 + 指示点")
+        XCTAssertEqual(presenter.lastFrame, expected.tucked, "收起：1 行厚、长度按当前行 + 指示点")
 
         controller.hoverChanged(true)
         XCTAssertEqual(presenter.lastFrame, expected.revealed, "显出也只有 1 行（没有抽屉）")
