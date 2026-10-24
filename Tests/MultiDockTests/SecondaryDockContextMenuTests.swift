@@ -93,6 +93,21 @@ final class SecondaryDockContextMenuTests: XCTestCase {
         )
     }
 
+    func testStageManagerEdgeIsGreyedAndLabelled() {
+        let window = SecondaryDockWindow()
+        window.availablePositionsProvider = { DockBarPosition.available(stageManagerActive: true) }
+        window.stageManagerEdgeProvider = { .left }
+        window.updateContent(
+            SecondaryDockContentSnapshot(items: [], iconSize: 36, position: .bottom, barID: UUID()),
+            isVertical: false
+        )
+        let menu = window.makeContextMenu()
+        XCTAssertFalse(menu.autoenablesItems, "不关自动启用，isEnabled = false 会被 AppKit 点亮")
+        XCTAssertEqual(menu.items.map(\.isEnabled), [true, false, true])
+        XCTAssertEqual(menu.items[1].title, "左侧（台前调度）")
+        XCTAssertEqual(menu.items[2].title, DockBarPosition.right.displayName)
+    }
+
     // MARK: - AppState 落点
 
     func testSetDockBarPositionUpdatesBarAndPersists() throws {

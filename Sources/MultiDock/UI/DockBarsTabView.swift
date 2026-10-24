@@ -221,10 +221,14 @@ struct DockBarsTab: View {
     /// 台前调度占左缘时「左侧」置灰；勾标在当前位置上 —— 即使它已不可用也如实展示
     /// （改走可以，改回来不行）。
     private func positionPicker(_ bar: DockBar) -> some View {
-        let choices = DockBarPosition.choices(current: bar.position, available: state.availableBarPositions(forBar: bar.id))
+        let choices = DockBarPosition.choices(
+            current: bar.position,
+            available: state.availableBarPositions(forBar: bar.id),
+            stageManagerEdge: state.stageManagerEdge
+        )
         return Menu {
             ForEach(choices, id: \.position) { choice in
-                Toggle(choice.position.displayName, isOn: positionBinding(for: bar, at: choice.position))
+                Toggle(choice.title, isOn: positionBinding(for: bar, at: choice.position))
                     .disabled(!choice.isEnabled)
             }
         } label: {

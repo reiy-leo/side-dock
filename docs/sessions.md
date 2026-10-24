@@ -21,6 +21,9 @@
    「边框白色特别明显」→ 内圈高光白 0.45 → 0.12（深色 0.18 → 0.10），外圈暗边也略减。
 5. **Bug「鼠标放在最底部 side dock 一直弹跳」**：独立贴边显出后离屏幕边 6 pt，光标停在缝里 → 判离开收起 → 收起的条盖住光标判进入 → 显出，死循环。
    修：`SecondaryDockController.holdRect`（显出框朝屏幕边补一道间隙）里不收，并每个防抖周期自查一次，光标真离开才收。
+6. **「台前调度的那一边要灰掉，后面显示台前调度」**：右键菜单原来没设 `autoenablesItems = false`，AppKit 把 `isEnabled = false` 又点亮了（截图里三项全可点）——补上；
+   `DockBarPosition.Choice` 加 `isStageManagerEdge` / `title`，那一项显示「左侧（台前调度）」，设置页下拉同口径；
+   `StageManagerStatus.isActive()` 读前 `CFPreferencesAppSynchronize`，长驻进程不再读到台前调度开关的旧值。
 
 **未解决**：材质与描边需 Rei 真机对比原生 Dock 再调。
 

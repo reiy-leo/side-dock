@@ -14,6 +14,9 @@ enum StageManagerStatus {
 
     /// `true` = 开启（避开左）；`false` = 关闭；`nil` = 读不到（视为未开启，三个位置都给）。
     static func isActive() -> Bool? {
+        // 先同步：长驻进程里 CFPreferences 会缓存别的域，用户在控制中心开关台前调度后
+        // 不同步就一直读到旧值（2026-10-24「台前调度那边没灰」排查）。
+        CFPreferencesAppSynchronize(domainName as CFString)
         guard let raw = CFPreferencesCopyAppValue(
             enabledKey as CFString,
             domainName as CFString

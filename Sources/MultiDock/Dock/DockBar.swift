@@ -49,13 +49,33 @@ enum DockBarPosition: String, Codable, Sendable, CaseIterable {
         let position: DockBarPosition
         let isCurrent: Bool
         let isEnabled: Bool
+        /// 这条边被台前调度占着（2026-10-24 用户规格：灰掉，并在后面标「台前调度」）。
+        var isStageManagerEdge: Bool = false
+
+        /// 菜单 / 下拉里显示的文字：台前调度那条边后面加标注，一眼看出为什么灰。
+        var title: String {
+            isStageManagerEdge
+                ? L("\(position.displayName)（台前调度）", "\(position.displayName) (Stage Manager)")
+                : position.displayName
+        }
     }
 
     /// 三条屏幕边**都列出**：`isEnabled = available.contains(position)`（台前调度占左缘时
     /// 「左侧」灰掉，而不是从列表里消失 —— 用户能看到它、也能看懂为什么不能选）；
     /// 勾标在当前位置上 —— 即使它已不可用也如实展示（改走可以，改回来不行）。
-    static func choices(current: DockBarPosition, available: [DockBarPosition]) -> [Choice] {
-        allCases.map { Choice(position: $0, isCurrent: $0 == current, isEnabled: available.contains($0)) }
+    static func choices(
+        current: DockBarPosition,
+        available: [DockBarPosition],
+        stageManagerEdge: DockBarPosition? = nil
+    ) -> [Choice] {
+        allCases.map {
+            Choice(
+                position: $0,
+                isCurrent: $0 == current,
+                isEnabled: available.contains($0) && $0 != stageManagerEdge,
+                isStageManagerEdge: $0 == stageManagerEdge
+            )
+        }
     }
 }
 

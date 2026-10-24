@@ -133,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.availablePositionsProvider = { [weak state] in
                 state?.availableBarPositions ?? DockBarPosition.available(stageManagerActive: false)
             }
+            window.stageManagerEdgeProvider = { [weak state] in state?.stageManagerEdge }
             window.availablePositionsForBar = { [weak state] barID in
                 state?.availableBarPositions(forBar: barID) ?? DockBarPosition.available(stageManagerActive: false)
             }

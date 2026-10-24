@@ -119,6 +119,8 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     /// 可选位置清单（台前调度开着避开左）。由 `AppDelegate` 接到 `AppState.availableBarPositions`
     /// （环境缓存，2 s 轮询保鲜；菜单每次右键现建，最多滞后一拍）。
     var availablePositionsProvider: () -> [DockBarPosition] = { DockBarPosition.allCases }
+    /// 台前调度占着的边（nil = 没开）。菜单里那一项灰掉并标「台前调度」（2026-10-24）。
+    var stageManagerEdgeProvider: () -> DockBarPosition? = { nil }
 
     /// 右键菜单的 target。NSMenuItem 对 target 是 assign（不保活），必须由窗口存储属性常驻持有。
     private let menuTarget = SecondaryDockMenuTarget()
@@ -466,14 +468,17 @@ final class SecondaryDockWindow: SecondaryDockPresenting {
     func makeContextMenu() -> NSMenu {
         let menu = NSMenu()
         menu.title = L("屏幕位置", "Screen Position")
+        // 关掉自动启用：否则 target 能响应的项一律被 AppKit 重新点亮，`isEnabled = false` 不生效。
+        menu.autoenablesItems = false
         let target = menuTargetBarID
         let available = availablePositionsForBar?(target) ?? availablePositionsProvider()
         for choice in DockBarPosition.choices(
             current: currentPosition,
-            available: available
+            available: available,
+            stageManagerEdge: stageManagerEdgeProvider()
         ) {
             let menuItem = NSMenuItem(
-                title: choice.position.displayName,
+                title: choice.title,
                 action: #selector(SecondaryDockMenuTarget.positionChosen(_:)),
                 keyEquivalent: ""
             )
