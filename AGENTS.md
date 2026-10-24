@@ -238,7 +238,7 @@ arm64 由 CI 构建）。「关于」页的更新检查走 `releases/latest`，�
 
 **新增（2026-10-23，第 70 次）多行次级条（一个桌面多根栏）**：同桌面同边最多 3 根栏，在那条边的
 一扇窗口里各算一行；**同日改版：条只显示一行、滚动一次手势切一行（有停顿），末端圆点提示行数，去掉抽屉与 handle**。规格见
-`docs/PLAN.md` §3.12.x。代码在分支 `feat/multi-row-dock`（Hark 远程改的，CI 全绿），已发预发布 **v0.2.0-alpha.1**（zip + dmg，双架构）。
+`docs/PLAN.md` §3.12.x。代码在分支 `feat/multi-row-dock`（Hark 远程改的，CI 全绿），已发预发布 v0.2.0-alpha.1 … alpha.6，**2026-10-24 合并 main 并发正式版 v0.2.0**（Info.plist 0.2.0 (8)，zip + dmg，双架构）。
 发版补充：标签带 `-` 自动发预发布；CI 同时产出 `SideDock-v<版本>-<架构>.dmg` 与 `.zip`（v0.2.0-alpha.1 及更早叫 `MultiDock-…`）。
 
 **改名（2026-10-23，第 72 次）**：对外名称统一为 **Side Dock**（**2026-10-24 中文名「侧边坞」**：界面中文文案走 `L("侧边坞…", "Side Dock…")`；Finder / 启动台显示名靠 `Support/<lang>.lproj/InfoPlist.strings` + `LSHasLocalizedDisplayName`，`build-app.sh` 拷进包里）（界面文案、`Side Dock.app` 包名、

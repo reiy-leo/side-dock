@@ -26,6 +26,7 @@
    `StageManagerStatus.isActive()` 读前 `CFPreferencesAppSynchronize`，长驻进程不再读到台前调度开关的旧值。
 7. **glitch「多行条的圆点指示在悬停放大时不见了」**：放大的末尾图标伸到行区外、盖在圆点上（底板只按条端算伸出）。
    `barOverflow` 加 `trailingReserve`（多行 = 圆点 7 pt），底板多伸出圆点那段；圆点 `.offset` 跟着伸出量挪到新末端。
+8. **README 更新 + 正式版 v0.2.0**（Rei：「发布一个正式版」「更新readme.md」）：README 补侧边坞中文名、多行条新交互、放大/弹跳/拖出移除、台前调度标注；Info.plist 0.2.0 (8)；feat/multi-row-dock 快进合并 main，标签 v0.2.0 打在 main 上（无 `-` → 正式 Release，更新检查会推给用户）。
 
 **未解决**：材质与描边需 Rei 真机对比原生 Dock 再调。
 
