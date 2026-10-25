@@ -3,6 +3,10 @@
 > **本文件是入口与当前状态**；细节按主题分流：
 > 设计与规格 → `docs/PLAN.md`；实验数据 → `docs/spikes.md`；环境事实 → `docs/facts.md`；
 > 工程约定与防回归 → `docs/rules.md`；会话史 → `docs/sessions.md`。
+> **中文文档写法（2026-10-25 起）**：README、Wiki、docs、提交说明里的中文按 zh-writing（去翻译腔）写：先说结论；少用被动，删「进行 / 作为 / 通过 / 对……进行 / 该 / 其」；
+> 一句超过 40 字或三个「的」连用就拆开；只改说法时不动事实、数字、代码、路径、链接和引号里的原话。
+> 排版交给 AutoCorrect：提交前跑 `pnpm lint:zh`（`pnpm fix:zh` 自动修）。它只查 Markdown，`Sources/` 里的界面文案 `L("中文","English")` 不自动改，界面文案要改先问 Rei。
+> 先不接 CI 失败门槛。沙箱是 Linux arm64，npm 包没有这个平台的二进制，沙箱里用 `/workspace/.tools/autocorrect`（官方 Rust CLI）。
 > 面向用户的说明在 Wiki，源文件是仓库 `wiki/`（英文在根目录、默认；中文在 `wiki/zh/`，两边同步改；`.github/workflows/wiki.yml` 自动同步，别在网页上改）；README 只留简介（英文 README.md + 中文 README.zh-CN.md）。
 > 旧文档里"见 §4 / §5 / §8"的引用分别指向 facts / rules / sessions（本文件保留对应编号小节作路标）。
 
@@ -116,7 +120,7 @@ v1/v2（废弃）→ **v3** 加无痕原则 → **v3.1** P0 三修正（无 noti
 
 **计划里的功能全部落地并实测通过**（P0–P5++ + 实验 17–27 的后续演进）。代码会真改用户 Dock；
 无痕原则由 `LifecycleController` 退出还原 + 会话标记兜底。**界面中英双语**（2026-10-06 第 60 次，
-跟随系统语言 / 系统设置里的按 App 语言，改语言要重启 App；新增文案必须过 `L("中文", "English")`）。**508 个测试全绿**（v4 重构 + 侧边栏/数据/关于 +26、手势预隐藏 +11、右键位置菜单 +8、拆五页+名称展示 +9、应用栏交互修订 +3、菜单栏图标 +4、名称面板布局/防截断 +5、合成切换路由/兜底 +10、菜单栏标题对齐 +3、拆菜单栏页 +0、双语 +10、原生固定 App 排除 +14、红绿灯对齐 +5、栏名输入框宽/位置下拉 +4、启动台 +34、名称展示背景效果 +12）；
+跟随系统语言 / 系统设置里的按 App 语言，改语言要重启 App；新增文案必须过 `L("中文", "English")`）。**508 个测试全绿**（v4 重构 + 侧边栏/数据/关于 +26、手势预隐藏 +11、右键位置菜单 +8、拆五页 + 名称展示 +9、应用栏交互修订 +3、菜单栏图标 +4、名称面板布局/防截断 +5、合成切换路由/兜底 +10、菜单栏标题对齐 +3、拆菜单栏页 +0、双语 +10、原生固定 App 排除 +14、红绿灯对齐 +5、栏名输入框宽/位置下拉 +4、启动台 +34、名称展示背景效果 +12）；
 真机 Dock 验收 9/9 绿（2026-10-04 基线；v4 的内容键口径待下次真机验收复核）。
 
 **发布（2026-10-06 第 68 次；第 69 次起改为 CI 双架构）**：首个 GitHub Release **v0.1.0**
@@ -183,7 +187,7 @@ arm64 由 CI 构建）。「关于」页的更新检查走 `releases/latest`，�
   **替换失败不清空目标栏**。**只在 macOS 26 以下可用**——26 起系统用「应用程序」取代启动台，
   本页显示说明并禁用（`LaunchpadSupport` 系统闸门）。真机手测归 A14。
 - **应用图标（2026-10-06）**：用户提供的方形 3D 图标 → `Support/MultiDock.icns`，
-  由 `scripts/make-app-icon.swift` 按苹果图标网格生成（**美术体 824/1024 居中 + σ10/29%/下移10
+  由 `scripts/make-app-icon.swift` 按苹果图标网格生成（**美术体 824/1024 居中 + σ10/29%/下移 10
   的剪影投影**——与系统图标逐点对齐；源图在 `Support/AppIcon-source.png`，重出图见脚本头注释）。
   `Info.plist` 的 `CFBundleIconFile` + `build-app.sh` 复制 Resources 接线；「关于」页自动跟上。
 - **次级条**：层级 19 半露 / hover 全出（半露滑入 `tuckRatio`=0.8 个条厚，2026-10-06 用户
@@ -227,7 +231,7 @@ arm64 由 CI 构建）。「关于」页的更新检查走 `releases/latest`，�
 | 次级 Dock 条 | `Dock/SecondaryDockLayout.swift`、`Dock/DockFaceProviding.swift`、`UI/SecondaryDock{StripView,Window,Controller}.swift` | 几何源 `visibleFrame` 内缩（**Dock 条不是独立 CG 窗口**）；层级 19 半露 / hover 全出；**条宽随本桌面内容撑开**（图标尺寸跟随系统实时 tilesize）；附着模式同步显隐（face + 显出带 + 400 ms 宽限，200 ms 轮询）；**位置 ≠ Dock 方位 → 独立贴边**（半露 = 滑出屏幕一半，与 Dock 显隐无关）；空间拉回 = 方案 ②（沉没位 + 0.12 s 升起，实验 25）；**手势预隐藏**（type 30 → α=0 + 600 ms 超时分步渐回 + 安全网兜底，实验 27；alpha 渐变一律分步直设——animator 随机静默失效）；**右键菜单**（`NSHostingView` 子类接管 rightMouseDown → 纯函数 builder 每次现建 → 选中带栏 ID 回 `AppState`，2026-10-06）；依赖全注入可单测 |
 | 桌面（Space） | `Spaces/SkyLightBridge.swift`、`SpaceProvider.swift`、`SpaceObserver.swift`、`SpaceSwitcher.swift`、`AnimatedSpaceSwitch.swift`、`SpaceTransitionGestureMonitor.swift`、`DesktopNaming.swift`、`ScreenNaming.swift` | dlopen 私有 API + 降级；300 ms 轮询 + 通知快速通道；循环切换（可选借系统过渡：相邻 ⌃←/⌃→、跨选/循环「切换到桌面 N」，按热键表原样修饰键合成，实验 28 复盘；单屏才用桌面 N；带超时兜底/防抢跑）；命名（≤10 字素簇）；显示器名解析；**切桌面前置手势监视**（listen-only CGEventTap 只听 type 30，零权限，实验 27） |
 | 持久化 | `Store/ConfigStore.swift`、`Store/BaselineStore.swift` | 原子写 `config.json`；基准快照 + 会话标记 + 备份轮转（20 份） |
-| 菜单栏 / 设置 UI | `UI/MenuBarController.swift`、`UI/MenuBarIcon.swift`、`UI/SettingsView.swift`、`UI/SettingsWindow.swift`、`UI/NameField.swift`、`UI/DockBarsTabView.swift`、`UI/DesktopsTabView.swift`、`UI/LaunchpadTabView.swift`、`UI/DockBarEditor.swift`、`UI/DataView.swift`、`UI/AboutView.swift`、`UI/SpaceThumbnail.swift`、`UI/DebugPanelView.swift` | **菜单栏状态项**（Lucide 图标 + 桌面序号；序号标题 `attributedTitle` + `baselineOffset -0.75` 保持与图标光学居中——**别退回 `button.title`**，见 `docs/rules.md`「菜单栏标题对齐的新坑」）；侧边栏七选项卡（通用/菜单栏/应用栏/桌面/启动台/数据/关于，`NavigationSplitView`；主 tabs 顶部一组、留 26 pt 顶部让位，**「关于」钉列底**——`safeAreaInset(edge:.bottom)` 内嵌单行原生 sidebar 小 List，与主 List 共用 selection 绑定，2026-10-06）；**无 titlebar**（`fullSizeContentView` + 隐藏标题 + 透明 titlebar，侧边栏贯通到窗口顶、红绿灯浮在侧边栏上；`.titled` 保留给红绿灯/顶部拖拽/「窗口」菜单）；**红绿灯重定位**（`SettingsWindow` 子类：布局拍子里把三个圆点贴到侧边栏图标列正上方——首个圆点中心 (26,26)、左=上=20 pt，标题栏视图与容器加长 12 pt 让圆点下半截可点；**缩放会打回系统基准，必须靠 `layoutIfNeeded` 重贴**，见 `docs/rules.md`「红绿灯对齐的新坑」）；顶部报警横幅；**通用页两节（Dock / 启动、退出与自愈，2026-10-06 第 7 轮并节、第 9 轮拆出菜单栏）**；**菜单栏 Tab**（`MenuBarTab`）= 点击行为（左键动作 + 右键/⌥/⇧ 说明）+ 图标（Lucide 五选一）；数据页 = 导出/导入（与加载同一套归一化）+ 备份还原；关于页 = 版本/GitHub 链接/更新检查（发布读取器可注入，未配置不碰网络）；**应用栏 Tab**（`DockBarsTab`，原「桌面」页拆出）= Dock 栏列表（`ScrollView` + 手绘行，**auto-grow**；标题行右上角「＋」添加；`NameField` 自绘输入框、宽 = 10 个中文字（`tenCharacterWidth`）；绑定下拉缩略图在控件外、位置**下拉**（三条边都列、不能用的置灰——与条上右键菜单共用 `DockBarPosition.choices`）、横向编辑器 8 槽滚动、垃圾桶在预览右侧正方形拖拽变红，0–15 个图标、无名称预览与计数；未绑定栏才显示删除按钮）；**名称输入**（`NameField`，AppKit 自绘：组字安全的超 10 字素簇即截、圆角描边 + 聚焦强调色）；**桌面 Tab**（`DesktopsTab`）= 桌面命名（缩略图 + 桌面N + `NameField` 单行同线，无前置圆点）+ 名称展示（开关 / 位置分段） |
+| 菜单栏 / 设置 UI | `UI/MenuBarController.swift`、`UI/MenuBarIcon.swift`、`UI/SettingsView.swift`、`UI/SettingsWindow.swift`、`UI/NameField.swift`、`UI/DockBarsTabView.swift`、`UI/DesktopsTabView.swift`、`UI/LaunchpadTabView.swift`、`UI/DockBarEditor.swift`、`UI/DataView.swift`、`UI/AboutView.swift`、`UI/SpaceThumbnail.swift`、`UI/DebugPanelView.swift` | **菜单栏状态项**（Lucide 图标 + 桌面序号；序号标题 `attributedTitle` + `baselineOffset -0.75` 保持与图标光学居中——**别退回 `button.title`**，见 `docs/rules.md`「菜单栏标题对齐的新坑」）；侧边栏七选项卡（通用/菜单栏/应用栏/桌面/启动台/数据/关于，`NavigationSplitView`；主 tabs 顶部一组、留 26 pt 顶部让位，**「关于」钉列底**——`safeAreaInset(edge:.bottom)` 内嵌单行原生 sidebar 小 List，与主 List 共用 selection 绑定，2026-10-06）；**无 titlebar**（`fullSizeContentView` + 隐藏标题 + 透明 titlebar，侧边栏贯通到窗口顶、红绿灯浮在侧边栏上；`.titled` 保留给红绿灯/顶部拖拽/「窗口」菜单）；**红绿灯重定位**（`SettingsWindow` 子类：布局拍子里把三个圆点贴到侧边栏图标列正上方——首个圆点中心 (26,26)、左=上=20 pt，标题栏视图与容器加长 12 pt 让圆点下半截可点；**缩放会打回系统基准，必须靠 `layoutIfNeeded` 重贴**，见 `docs/rules.md`「红绿灯对齐的新坑」）；顶部报警横幅；**通用页两节（Dock / 启动、退出与自愈，2026-10-06 第 7 轮并节、第 9 轮拆出菜单栏）**；**菜单栏 Tab**（`MenuBarTab`）= 点击行为（左键动作 + 右键/⌥/⇧ 说明）+ 图标（Lucide 五选一）；数据页 = 导出/导入（与加载同一套归一化）+ 备份还原；关于页 = 版本/GitHub 链接/更新检查（发布读取器可注入，未配置不碰网络）；**应用栏 Tab**（`DockBarsTab`，原「桌面」页拆出）= Dock 栏列表（`ScrollView` + 手绘行，**auto-grow**；标题行右上角「＋」添加；`NameField` 自绘输入框、宽 = 10 个中文字（`tenCharacterWidth`）；绑定下拉缩略图在控件外、位置**下拉**（三条边都列、不能用的置灰——与条上右键菜单共用 `DockBarPosition.choices`）、横向编辑器 8 槽滚动、垃圾桶在预览右侧正方形拖拽变红，0–15 个图标、无名称预览与计数；未绑定栏才显示删除按钮）；**名称输入**（`NameField`，AppKit 自绘：组字安全的超 10 字素簇即截、圆角描边 + 聚焦强调色）；**桌面 Tab**（`DesktopsTab`）= 桌面命名（缩略图 + 桌面 N + `NameField` 单行同线，无前置圆点）+ 名称展示（开关 / 位置分段） |
 | 桌面名称展示 | `UI/DesktopNameOverlay.swift`、`UI/DesktopNameEffectCanvas.swift`、`UI/ToastPresenter.swift`、`UI/DesktopNameToast.swift` | **双通路调度**：桌面名 → `DesktopNameOverlayWindow`（磨砂面板 + 64 pt 字重 800 大字；位置 顶部/中部/底部 纯几何 `frameOrigin` 可单测；**背景效果三档**：默认走原生磨砂面板、霓虹两档走 `DesktopNameEffectCanvas` 自绘背景（暗底 + 流动光带 + 霓虹描边，插在 label **之下**；文字恒可见），30 fps `Timer` 只在展示的 1 秒里跑，`presentation/apply` 纯值可单测，`bandCenterX` 扫动几何纯函数）；系统告知（自愈等）→ `HudToastWindow` 胶囊 HUD（原 `DesktopNameToastWindow` 更名，HUD 材质 + 描边，属性清单逐条是踩坑项）；接替时旧窗立即收、只收当前通路；跨空间、不抢焦点、零权限；`ScreenMatching` 共享显示器映射 |
 | 启动台 | `Launchpad/LaunchpadModels.swift`、`LaunchpadDatabase.swift`、`LaunchpadResolver.swift`、`LaunchpadImport.swift` | **只读**启动台 SQLite 库（`$DARWIN_USER_DIR/com.apple.dock.launchpad/db/db`，`confstr(_CS_DARWIN_USER_DIR)`）：递归 CTE 按每层 `ordering` 还原文件夹与 App 的屏幕顺序（含多页文件夹）；bookmark（`book.resolving`）解真实路径、bundle id 索引兜底；`LaunchpadImport` = 搬运纯规则（并入 / 替换 / 三道闸 + 逐项报数）；`LaunchpadLoader` 三闭包全可注入（测试与 UI 快照不碰真实库）。**macOS 26 起没有启动台**（系统闸门 `LaunchpadSupport`） |
 | 脚本 | `scripts/build-app.sh`、`make-app-icon.swift`、`measure-menubar-baseline.swift`、`check-toast-window.sh`、`check-fullscreen-filter.swift`、`preview-toast.swift`、`spike-*.swift`、`measure-*.swift`、`spike-secondary-dock-sync.swift` | 打包（含 `Support/MultiDock.icns`）；**图标生成**（源图 → 苹果图标网格对齐的 icns，网格/投影参数见 `docs/rules.md`）；**菜单栏标题对齐测量**（离屏墨心扫描，调 `titleBaselineOffset` 用）；零权限验收工具；各实验复现脚本 |
@@ -309,7 +313,7 @@ CFBundleName/DisplayName、Release 标题与资产名）。**刻意不改**：Sw
   若磨砂面板的观感要调，改 `DesktopNameOverlayWindow` 头部的常量（字号 64 / 字重 .heavy /
   内边距 / 圆角；宽度余量 `widthSlack` **别往小调**——实测 4 pt 余量就会被截成省略号）。
 
-- **A14（2026-10-06 「启动台」页，第 66 次）**：① 侧边栏点「启动台」——应列出本机启动台里
+- **A14（2026-10-06「启动台」页，第 66 次）**：① 侧边栏点「启动台」——应列出本机启动台里
   的全部文件夹（默认按启动台屏幕顺序，与启动台里人眼所见一致）；每行能看到名称、App 数、
   前 10 个图标；② 点某个文件夹的「添加到…」选一根栏 → 该文件夹的 App 应**接在栏末尾**
   （栏原有内容与顺序不动），行下方出现结果说明（含「跳过：N 个…」如果有）；

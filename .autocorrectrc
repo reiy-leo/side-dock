@@ -1,0 +1,24 @@
+# AutoCorrect 配置（2026-10-25）：只管 Markdown 文档里的中英文空格和标点。
+# 代码、界面文案字符串（Sources/ 里的 L("中文","English")）、Info.plist 都在 .autocorrectignore 里排除，不自动改。
+# 用法：pnpm lint:zh 检查，pnpm fix:zh 自动修。写法规范见 AGENTS.md「中文文档」一节。
+rules:
+  # 中英文之间加空格
+  space-word: 1
+  # 中文与标点之间不留空格
+  space-punctuation: 1
+  # 中文与括号之间
+  space-bracket: 1
+  # 中文与反引号代码之间加空格
+  space-backticks: 1
+  # 中文语境用全角标点
+  fullwidth: 1
+  # 全角标点前后不留空格
+  no-space-fullwidth: 1
+  # 拼写检查先关（专有名词多，误报多）
+  spellcheck: 0
+textRules:
+  # 这些词保持原样
+  "macOS": 0
+  "Side Dock": 0
+fileTypes:
+  md: markdown

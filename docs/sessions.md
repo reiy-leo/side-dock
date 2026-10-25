@@ -3,9 +3,16 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-25 — 中文文档去翻译腔 + AutoCorrect
+
+**用户说**：「side-dock项目也要装，也要运行一遍中文」（嫌中文文档「非常难懂，包括句式、用词、被动主动，非常不像人说的」）。
+**做了什么**：pnpm 装 `autocorrect-node`，加 `.autocorrectrc` / `.autocorrectignore`（只查 Markdown，`Sources/` 等代码和界面文案排除），`package.json` 加 `lint:zh` / `fix:zh`；先全仓 `--fix` 一遍空格标点。
+按 zh-writing 改写 README.zh-CN.md、wiki/zh/ 全部页面、docs/PLAN.md、spikes.md、rules.md、facts.md 的说法；每份都用守门脚本比对代码块、行内代码、链接、数字、「」原话、标题数，全部一致。
+本文件（会话史）只修排版不改写，留原样。界面文案没改，难懂的几条列给 Rei 定。CI 门槛未接，等 Rei 决定。
+
 ### 2026-10-25 — Wiki / README 双语，默认英文
 
-**用户说**：「wiki可以支持i18n么」→「加上英文，默认是英文」。
+**用户说**：「wiki 可以支持 i18n 么」→「加上英文，默认是英文」。
 **做了什么**：GitHub Wiki 无内置多语言，用并行页面：英文页放 `wiki/` 根（Home 为英文，ASCII 页名），中文页移到 `wiki/zh/`（`首页.md` + 自己的 `_Sidebar.md`），每页顶部「English | 中文」互链；
 README 改英文、另加 `README.zh-CN.md`；wiki.yml 同时渲染英文设置截图 `settings-en-*.png`。顺手更正中文页里「切桌面动画不做」「零系统权限」两处过时说法。
 
@@ -56,14 +63,14 @@ README 改英文、另加 `README.zh-CN.md`；wiki.yml 同时渲染英文设置�
    `StageManagerStatus.isActive()` 读前 `CFPreferencesAppSynchronize`，长驻进程不再读到台前调度开关的旧值。
 7. **glitch「多行条的圆点指示在悬停放大时不见了」**：放大的末尾图标伸到行区外、盖在圆点上（底板只按条端算伸出）。
    `barOverflow` 加 `trailingReserve`（多行 = 圆点 7 pt），底板多伸出圆点那段；圆点 `.offset` 跟着伸出量挪到新末端。
-8. **README 更新 + 正式版 v0.2.0**（Rei：「发布一个正式版」「更新readme.md」）：README 补侧边坞中文名、多行条新交互、放大/弹跳/拖出移除、台前调度标注；Info.plist 0.2.0 (8)；feat/multi-row-dock 快进合并 main，标签 v0.2.0 打在 main 上（无 `-` → 正式 Release，更新检查会推给用户）。
+8. **README 更新 + 正式版 v0.2.0**（Rei：「发布一个正式版」「更新 readme.md」）：README 补侧边坞中文名、多行条新交互、放大/弹跳/拖出移除、台前调度标注；Info.plist 0.2.0 (8)；feat/multi-row-dock 快进合并 main，标签 v0.2.0 打在 main 上（无 `-` → 正式 Release，更新检查会推给用户）。
 
 **未解决**：材质与描边需 Rei 真机对比原生 Dock 再调。
 
 ### 2026-10-23（第 72 次）— 悬停名称 / 台前调度避让 / 启动台页性能 / 改名 Side Dock
 
-**用户说**：「hover图标没显示名称，之前是显示的」「dock要避开台前调度所在的那一边」
-「每次打开设置-启动台都很卡，优化一下性能」「名称统一修改成Side Dock，包括软件界面，github发版等」。
+**用户说**：「hover 图标没显示名称，之前是显示的」「dock 要避开台前调度所在的那一边」
+「每次打开设置 - 启动台都很卡，优化一下性能」「名称统一修改成 Side Dock，包括软件界面，github 发版等」。
 
 **做了什么**：
 
@@ -109,7 +116,7 @@ README 改英文、另加 `README.zh-CN.md`；wiki.yml 同时渲染英文设置�
 
 ### 2026-10-23（第 71 次）— 发 v0.2.0-alpha.1（多行次级条）+ CI 出 DMG
 
-**用户说**：「发布一个alpha版本」「打包dmg」。
+**用户说**：「发布一个 alpha 版本」「打包 dmg」。
 
 **做了什么**：
 
@@ -229,7 +236,7 @@ show 时显示成用户 resize 成的高度」；随后拍板：左右两边对�
    第一版理解错、当天按用户澄清重做）：暗底竖向渐变 → 两条流动光带
    （"透明→彩色→透明"横向渐变柱，`.plusLighter` 叠加、轻微斜切）→ 霓虹描边（1.5 pt 内描
    + 小半径辉光），整体圆角裁剪。
-   - 配色/速度配方抽成 `DesktopNameEffectSpec`（`.neonFlow` 青+品红相向扫 2.2 s；
+   - 配色/速度配方抽成 `DesktopNameEffectSpec`（`.neonFlow` 青 + 品红相向扫 2.2 s；
      `.cyberPurple` 双紫同向慢扫 2.8 s + 呼吸），可单测；`bandAlpha ≤ 0.65` 与
      "底色亮度 < 0.25"分别守卫"光带别冲淡白字"与"白字可读性"。
    - 动画 = `Timer`（30 fps，RunLoop `.common`）驱动 `needsDisplay`，**只在展示的 1 秒里跑**：
@@ -317,8 +324,8 @@ apps），单独一个"启动台"tab｜每个文件夹都可以：添加到某�
 
 ### 2026-10-06（第 65 次）— 应用栏：栏名输入框宽 = 10 个中文字；位置改下拉（不可用置灰）
 
-**用户说**：「Dock名称input要更宽一点，默认10个中文字符宽度；位置换成下拉列表
-（不能用的option灰掉）」（附截图，红框标出两处）。
+**用户说**：「Dock 名称 input 要更宽一点，默认 10 个中文字符宽度；位置换成下拉列表
+（不能用的 option 灰掉）」（附截图，红框标出两处）。
 
 **做了什么**：
 
@@ -353,7 +360,7 @@ apps），单独一个"启动台"tab｜每个文件夹都可以：添加到某�
 
 ### 2026-10-06（第 64 次）— 设置窗口红绿灯：对齐侧边栏图标列、左/上 margin 相等
 
-**用户说**：「设置窗口中，红绿灯要和下方的图标对齐，距离左边、上边margin一样。」
+**用户说**：「设置窗口中，红绿灯要和下方的图标对齐，距离左边、上边 margin 一样。」
 
 **做了什么**：
 
@@ -391,9 +398,9 @@ apps），单独一个"启动台"tab｜每个文件夹都可以：添加到某�
 
 ### 2026-10-06（第 63 次）— 应用栏页六项布局修订
 
-**用户说**：「1. 这个content部分的顶部是白色的，感觉dock列表的延伸上去了。2. 添加Dock栏使用"+"按钮，
-放在右上角 3. Dock栏预览上方的文字和分割线去掉 4. 垃圾桶放在Dock栏预览右边，正方形，拖拽时显示红色背景
-5. Dock栏预览下方的*/15个图标去掉 6. Dock栏列表底部不要显示那么多空白，auto-grow height」（附截图）。
+**用户说**：「1. 这个 content 部分的顶部是白色的，感觉 dock 列表的延伸上去了。2. 添加 Dock 栏使用"+"按钮，
+放在右上角 3. Dock 栏预览上方的文字和分割线去掉 4. 垃圾桶放在 Dock 栏预览右边，正方形，拖拽时显示红色背景
+5. Dock 栏预览下方的*/15 个图标去掉 6. Dock 栏列表底部不要显示那么多空白，auto-grow height」（附截图）。
 
 **做了什么**（`UI/DockBarsTabView.swift` + `UI/DockBarEditor.swift`，纯 UI）：
 
@@ -429,7 +436,7 @@ apps），单独一个"启动台"tab｜每个文件夹都可以：添加到某�
 
 ### 2026-10-06（第 62 次）— 桌面名称行：去掉前置 radio、名称与标签同行
 
-**用户说**：「桌面名称，去掉前置的radio，名称同行」（附截图：每行左侧是 ◉/○ + 缩略图 + 「桌面 N」，
+**用户说**：「桌面名称，去掉前置的 radio，名称同行」（附截图：每行左侧是 ◉/○ + 缩略图 + 「桌面 N」，
 右侧输入框比标签低半行）。
 
 **做了什么**（`UI/DesktopsTabView.swift`，纯布局）：
@@ -453,7 +460,7 @@ apps），单独一个"启动台"tab｜每个文件夹都可以：添加到某�
 
 ### 2026-10-06（第 61 次）— 原生 Dock 里固定的 App 不进自定义栏
 
-**用户说**：「原生dock中固定的app，不要在custom dock中显示，添加时就要警告，并自动剔除这些app」。
+**用户说**：「原生 dock 中固定的 app，不要在 custom dock 中显示，添加时就要警告，并自动剔除这些 app」。
 
 **做了什么**：
 
@@ -557,7 +564,7 @@ apps），单独一个"启动台"tab｜每个文件夹都可以：添加到某�
 
 ### 2026-10-06（第 59 次）— 「菜单栏」拆出独立页：侧边栏六页
 
-**用户说**：「设置 侧边栏单独一个"菜单栏"tab，把通用中的菜单栏设置move here」。
+**用户说**：「设置 侧边栏单独一个"菜单栏"tab，把通用中的菜单栏设置 move here」。
 
 **做了什么**：
 
@@ -617,7 +624,7 @@ apps），单独一个"启动台"tab｜每个文件夹都可以：添加到某�
 
 ### 2026-10-06（第 57 次）— 通用页重排：三节合并、删「次级 Dock 条」节
 
-**用户说**：「通用设置中，"退出行为""启动和自愈"合并在一个section，删掉"次级Dock条"section，"应用""Dock应用""桌面行为"合并在一个section」。
+**用户说**：「通用设置中，"退出行为""启动和自愈"合并在一个 section，删掉"次级 Dock 条"section，"应用""Dock 应用""桌面行为"合并在一个 section」。
 
 **做了什么**（`Sources/MultiDock/UI/SettingsView.swift`，纯 UI 重排）：
 
@@ -649,7 +656,7 @@ apps），单独一个"启动台"tab｜每个文件夹都可以：添加到某�
 
 ### 2026-10-06（第 56 次）— 去掉「最近添加的应用」：原生 Dock 归用户
 
-**用户说**：「去掉默认获取Applications目录中最新app的功能，这块逻辑全部去掉」。
+**用户说**：「去掉默认获取 Applications 目录中最新 app 的功能，这块逻辑全部去掉」。
 
 **做了什么**（一次贯穿生产代码与测试的重构）：
 
@@ -733,8 +740,8 @@ apps），单独一个"启动台"tab｜每个文件夹都可以：添加到某�
 
 ### 2026-10-06（第 54 次）— 桌面名称显示不全修复：磨砂玻璃 + 字重 800 + 宽度按内容
 
-**用户说**：「现在桌面名称显示不全，一部分显示成ellipsis了。桌面名称显示根据内容设置宽度，
-背景是磨砂玻璃效果，字体更粗一点800」。
+**用户说**：「现在桌面名称显示不全，一部分显示成 ellipsis 了。桌面名称显示根据内容设置宽度，
+背景是磨砂玻璃效果，字体更粗一点 800」。
 
 **做了什么**：
 
@@ -768,8 +775,8 @@ apps），单独一个"启动台"tab｜每个文件夹都可以：添加到某�
 
 ### 2026-10-06（第 53 次）— 菜单栏图标五选一（Lucide）
 
-**用户说**：「通用中可以设置菜单栏中显示的图标，从lucide icons的中tree-deciduous、parasol、
-sparkles、app-window-mac、shell中选一个」。
+**用户说**：「通用中可以设置菜单栏中显示的图标，从 lucide icons 的中 tree-deciduous、parasol、
+sparkles、app-window-mac、shell 中选一个」。
 
 **做了什么**：
 
@@ -839,9 +846,9 @@ sparkles、app-window-mac、shell中选一个」。
 
 ### 2026-10-06（第 51 次）— 应用栏交互修订：不固定 App / 未绑定可删 / 输入框重做
 
-**用户说**：「设置-应用栏中需要调整部分设计：1. Dock栏预览不显示应用名称 2. Dock栏不再固定
-Finder和Launchpad，不固定任何app 3. Dock栏列表中，只有没绑定桌面的可以删除 4. 删除Dock栏名称
-下面的*/10小字，改为输入超过10个字符就删除，桌面名称也一样 5. Dock名称、桌面名称的input太丑陋了，
+**用户说**：「设置 - 应用栏中需要调整部分设计：1. Dock 栏预览不显示应用名称 2. Dock 栏不再固定
+Finder 和 Launchpad，不固定任何 app 3. Dock 栏列表中，只有没绑定桌面的可以删除 4. 删除 Dock 栏名称
+下面的*/10 小字，改为输入超过 10 个字符就删除，桌面名称也一样 5. Dock 名称、桌面名称的 input 太丑陋了，
 稍微优化一下」。
 
 **做了什么**：
@@ -862,7 +869,7 @@ Finder和Launchpad，不固定任何app 3. Dock栏列表中，只有没绑定桌
    并把模型接受值回写。栏名与桌面名都换用它，**`n/10` 计数小字删除**（原草稿机制一并删掉——
    NameField 自己就是草稿）。
 5. **测试**：`DockStripRulesTests` 的 editableApps 三例改为 `barApps` 四例；次级条内容两例
-   改为「栏里有什么就是什么」；新增绑定栏不可删（删→拦下+日志→解绑→删掉）；总数 **426 全绿**。
+   改为「栏里有什么就是什么」；新增绑定栏不可删（删→拦下 + 日志→解绑→删掉）；总数 **426 全绿**。
 6. **快照**：五页重出，应用栏页种子加一根未绑定空栏（验证 − / 锁形两种行态）；
    修了 `NSViewRepresentable` 默认吃满宽度导致名称框拉长的问题（`.fixedSize()`）。
 7. **文档**：AGENTS §3/模块地图/决策演变/测试数、PLAN §3.7 + 内容模型行、
@@ -909,8 +916,8 @@ Finder和Launchpad，不固定任何app 3. Dock栏列表中，只有没绑定桌
 
 ### 2026-10-06（第 49 次）— 「桌面」拆五页 + 桌面名称锁屏式展示 + 位置可选
 
-**用户说**：「multidock设置中，"桌面"拆分成"应用栏"和"桌面"，桌面只能设置桌面名称，
-选择桌面名称展示的位置，桌面名称采用类似iPhone锁屏那样的字体效果」。
+**用户说**：「multidock 设置中，"桌面"拆分成"应用栏"和"桌面"，桌面只能设置桌面名称，
+选择桌面名称展示的位置，桌面名称采用类似 iPhone 锁屏那样的字体效果」。
 
 **做了什么**：
 
@@ -947,7 +954,7 @@ Finder和Launchpad，不固定任何app 3. Dock栏列表中，只有没绑定桌
 
 ### 2026-10-06（第 48 次）— 侧边栏布局：「关于」钉列底 + 主 tabs 远离窗顶
 
-**用户说**：「“关于”显示在侧边栏底部，侧边栏的tabs距离顶部更远一点」。
+**用户说**：「“关于”显示在侧边栏底部，侧边栏的 tabs 距离顶部更远一点」。
 
 **做了什么**：
 
@@ -973,9 +980,9 @@ Finder和Launchpad，不固定任何app 3. Dock栏列表中，只有没绑定桌
 
 ---
 
-### 2026-10-06（第 47 次）— 设置-通用删「默认 Dock」节
+### 2026-10-06（第 47 次）— 设置 - 通用删「默认 Dock」节
 
-**用户说**：「删除MultiDock设置中，通用-默认Dock部分」。
+**用户说**：「删除 MultiDock 设置中，通用 - 默认 Dock 部分」。
 
 **做了什么**：
 
@@ -1005,7 +1012,7 @@ Finder和Launchpad，不固定任何app 3. Dock栏列表中，只有没绑定桌
 
 ### 2026-10-06（第 46 次）— 次级条右键菜单：屏幕位置快捷切换
 
-**用户说**：「secondary dock右键菜单显示：屏幕位置快捷toggle」。
+**用户说**：「secondary dock 右键菜单显示：屏幕位置快捷 toggle」。
 
 **做了什么**：
 
@@ -1037,13 +1044,13 @@ Finder和Launchpad，不固定任何app 3. Dock栏列表中，只有没绑定桌
 
 ### 2026-10-06（第 45 次）— 设置窗口去 titlebar：侧边栏贯通到窗口顶（系统设置同款）
 
-**用户说**：「侧边栏贯通titlebar，去掉titlebar」。
+**用户说**：「侧边栏贯通 titlebar，去掉 titlebar」。
 
 **做了什么**：
 
 1. **`SettingsWindowFactory`**（`UI/SettingsView.swift`）：styleMask 加 `.fullSizeContentView` +
    `titleVisibility = .hidden` + `titlebarAppearsTransparent = true`。**保留 `.titled`**——
-   红绿灯、顶部隐藏拖拽区、「窗口」菜单标题都靠它；`window.title` 只是UI上不再显示。
+   红绿灯、顶部隐藏拖拽区、「窗口」菜单标题都靠它；`window.title` 只是 UI 上不再显示。
    `NavigationSplitView` 左栏材质因此贯通到窗口顶，红绿灯浮在侧边栏上，无标题文字、
    无 titlebar 分隔线（系统设置同款）。
 2. **验证**：UI 快照亮/暗 8 张核对通过——侧边栏到顶、内容列按安全区自动内收
@@ -1062,7 +1069,7 @@ Finder和Launchpad，不固定任何app 3. Dock栏列表中，只有没绑定桌
 
 ### 2026-10-06（第 44 次）— 半露加深：附着模式滑入比 0.5 → 0.8（tuckRatio）
 
-**用户说**：「secondary dock和原生dock的重叠更高一点从0.5更换成0.8」。
+**用户说**：「secondary dock 和原生 dock 的重叠更高一点从 0.5 更换成 0.8」。
 
 **做了什么**：
 
@@ -1118,7 +1125,7 @@ Mission Control / 打断横扫 / 四指捏合 Launchpad 三场景 custom dock �
    α）+ **安全网**挂 200 ms `geometryTick`（条件模式无关：非预隐藏 &&（不在当前空间 ‖
    alpha < 0.99），独立贴边半露 frame 本来就在屏外、不能按「frame 出屏」判故障；静默窗
    250 ms、未愈退避翻倍）；`AppDelegate` 接线 monitor（退出时 stop）。
-3. **测试**：+11 用例（预隐藏+收回 / 超时渐回 / 连击续命 / 翻转取消超时 / 未显示不触发 /
+3. **测试**：+11 用例（预隐藏 + 收回 / 超时渐回 / 连击续命 / 翻转取消超时 / 未显示不触发 /
    hover 抑制 / 安全网愈卡半透明 / 愈孤儿 / 健康跳过 / 预隐藏豁免 / 退避），**406 全绿、
    release 零警告、已重打包**；后台 spike 进程已杀（避免与真机 App 双条同屏）。
 4. **文档**：spikes.md 实验 27 结案、facts.md 四条（listen-only tap 免授权边界 / type 30
@@ -1135,7 +1142,7 @@ Mission Control / 打断横扫 / 四指捏合 Launchpad 三场景 custom dock �
 
 ### 2026-10-06（第 42 次）— 设置窗口重构（v4 内容模型）：默认 Dock 自动生成 + Dock 栏实体
 
-**用户说**：「重构设置窗口，默认Dock栏是显示/Applications以及用户Applications最新添加的应用（修改时间）10个应用，这个数值范围1-15个用户可以自行调整。大小、放大、自动隐藏、特效、最小化到应用都跟随系统设置（这些选项都不能设置，都跟系统一样）桌面：Dock栏列表，默认可以有5个（每个Dock栏都可以设置位置，避开台前调度占用的那边，其他两边都可以用，button group，其他设置都跟随系统，用户不能设置｜Dock栏都是在此设置页面都是横向显示｜设置中的Dock栏默认显示8个图标的位置，如果用户设置可更多可以以滚动显示更多｜最多设置15个，最少设置1个），dock栏名称右侧可以选择桌面下拉列表（缩略图），可以选择位置下拉列表。」
+**用户说**：「重构设置窗口，默认 Dock 栏是显示/Applications 以及用户 Applications 最新添加的应用（修改时间）10 个应用，这个数值范围 1-15 个用户可以自行调整。大小、放大、自动隐藏、特效、最小化到应用都跟随系统设置（这些选项都不能设置，都跟系统一样）桌面：Dock 栏列表，默认可以有 5 个（每个 Dock 栏都可以设置位置，避开台前调度占用的那边，其他两边都可以用，button group，其他设置都跟随系统，用户不能设置｜Dock 栏都是在此设置页面都是横向显示｜设置中的 Dock 栏默认显示 8 个图标的位置，如果用户设置可更多可以以滚动显示更多｜最多设置 15 个，最少设置 1 个），dock 栏名称右侧可以选择桌面下拉列表（缩略图），可以选择位置下拉列表。」
 
 **做了什么**：
 
@@ -1143,7 +1150,7 @@ Mission Control / 打断横扫 / 四指捏合 Launchpad 三场景 custom dock �
 2. **模型层（v4）**：`DockConfig` 去外观化（`DockAppearance` 删除，指纹内容口径）；新 `DockBar`（name/position/spaceID/apps/otherItems，1–15 图标）+ `DockBarPosition`（底/左/右 + 台前调度避让）+ `DockBarCatalog`（旧 override 迁移成栏 + 补足 5 根）+ `RecentAppsScanner`（/Applications + ~/Applications 按 mtime 取前 N）+ `StageManagerStatus`。`AppSettings`：+`dockBars` / `defaultDockAppCount`（默认 10），−`defaultDock`（运行时生成，只存个数）；`DesktopBinding.override` 废弃（迁移后清空）。
 3. **流水线**：`DockController.apply` 只写内容键（`entries` 变 `nonisolated` 纯函数）；三明治显出参数改读域里实时 `autohide`；**还原路径新增 `extraEntries`**——基准里的外观键照写（无痕闭环，旧版本遗留收尾）；恢复历史备份只覆盖内容键。`AppState`：默认 Dock 运行时重建（归一化补启动台在首）、bar CRUD/绑定唯一性（一桌面一栏，后来者顶掉先到者）/孤儿栏只解绑不删、冻结对齐前重扫、回存落点=活动桌面绑定栏（冻结/未绑栏→如实记日志不回存）、`secondaryDockContent` 只出绑定栏内容 + 图标尺寸读系统实时 tilesize（28–48 钳制）。
 4. **次级条运行时**：快照带 `position`；**附着模式**（栏位置 == Dock 方位）行为不变；**独立贴边**（≠）= 贴自己那条屏幕边、半露 = 滑出屏幕一半（`standalonePlacement`）、与 Dock 自动隐藏显隐无关；face == nil 时用 `lastFaceOrientation` 兜底防附着条被误判成独立贴边（修了一个真 bug）；`DockFaceProviding` +`currentScreenFrame()`。
-5. **UI**：通用 Tab = 计数 Stepper（1–15）+ 只读最近应用预览 + 说明（外观跟随系统），删图标条编辑器/外观编辑器/「本机不支持」区；桌面 Tab 全新（`DesktopListView` 重写 + `DockBarEditor` 新建）：栏列表行 = 名称(≤10) + 桌面下拉（缩略图常显在控件外 + 纯文本菜单行）+ 位置分段按钮 + 删除，编辑器横向 8 槽可见滚动、1–15、拖拽排序/拖 .app/右键或垃圾桶移除；桌面命名保留在底部小节。删 `DockStripEditor` / `DockAppearanceEditor` 两个文件。
+5. **UI**：通用 Tab = 计数 Stepper（1–15）+ 只读最近应用预览 + 说明（外观跟随系统），删图标条编辑器/外观编辑器/「本机不支持」区；桌面 Tab 全新（`DesktopListView` 重写 + `DockBarEditor` 新建）：栏列表行 = 名称 (≤10) + 桌面下拉（缩略图常显在控件外 + 纯文本菜单行）+ 位置分段按钮 + 删除，编辑器横向 8 槽可见滚动、1–15、拖拽排序/拖 .app/右键或垃圾桶移除；桌面命名保留在底部小节。删 `DockStripEditor` / `DockAppearanceEditor` 两个文件。
 6. **测试**：369 → **384 个全绿**（+15）。重写 AppStateDockTests / SecondaryDockTests 冻结组 / BindingHistoryTests（孤儿栏 + 栏撤销）/ DockControllerTests（内容键 + extraEntries 还原）/ DockAcceptanceTests（P3 换内容差异、P4 弄脏换内容、回存外部改动改 `defaults import` 写内容键、未绑栏场景改「不回存」断言）/ 各小文件；新增 `DockBarModelTests`（位置可用性 / 解码兼容 / 迁移 / 独立贴边几何 / 扫描器排序与钳制）。UI 快照验收通过（缩略图、编辑器、暗色全部正常；顺手修了 menu Picker 自定义行渲染成色块的坑——缩略图移到控件外）。
 7. **打包**：`./scripts/build-app.sh` 已重跑（release 零警告）。文档同步：PLAN §3.7 顶部重构记录 + §3.12 位置附录、facts 两条、rules 新坑 7 条、spikes 实验 26、AGENTS 全节。
 
@@ -1173,11 +1180,11 @@ Mission Control / 打断横扫 / 四指捏合 Launchpad 三场景 custom dock �
 
 ### 2026-10-05（第 41 次）— 实验 25：「随幅度渐进沉入」（v3.7）证伪；采纳残余：拉回出场改「沉没位 + 0.12 s 升起」
 
-**用户说**：「可以做到整个secondary dock检测到左右滑动桌面时，根据滑动幅度的大小，幅度最大（1/4桌面宽度）时全部隐藏到原生dock后方」「把上面的实现方式总结成prompt，让我审核」「好的，按这个方案来」；spike 第一轮：「手势滑动紫条随桌面滑动没动画、切换完成后看不到、⌃→ 也只有第一个桌面有」；第二轮（先被误读后纠正）：「左右滑动过程中并没有看到淡出的效果，但滑动结束后，看到淡入从底部上来的效果了」；随后给出新规格：「桌面滑动时 secondary dock 不随桌面滑动，幅度超过 0.15 倍桌面宽度时自动隐藏，滑动结束后 0.15 秒内从原生 dock 栏底部淡出」并要求检查现行实现。
+**用户说**：「可以做到整个 secondary dock 检测到左右滑动桌面时，根据滑动幅度的大小，幅度最大（1/4 桌面宽度）时全部隐藏到原生 dock 后方」「把上面的实现方式总结成 prompt，让我审核」「好的，按这个方案来」；spike 第一轮：「手势滑动紫条随桌面滑动没动画、切换完成后看不到、⌃→ 也只有第一个桌面有」；第二轮（先被误读后纠正）：「左右滑动过程中并没有看到淡出的效果，但滑动结束后，看到淡入从底部上来的效果了」；随后给出新规格：「桌面滑动时 secondary dock 不随桌面滑动，幅度超过 0.15 倍桌面宽度时自动隐藏，滑动结束后 0.15 秒内从原生 dock 栏底部淡出」并要求检查现行实现。
 
 **做了什么**：
 
-1. **v3.7 prompt 获准 → 实验 25 spike A**（`scripts/spike-sink-during-transition.swift`：复刻生产配方——层级 19、单空间配方、半露几何；16 ms SkyLight 轮询 + NSWorkspace 通知先到先触发；编排 = 下沉 0.25 s → 拉回(alpha=1, 沉没位) → 升起 0.25 s）。
+1. **v3.7 prompt 获准 → 实验 25 spike A**（`scripts/spike-sink-during-transition.swift`：复刻生产配方——层级 19、单空间配方、半露几何；16 ms SkyLight 轮询 + NSWorkspace 通知先到先触发；编排 = 下沉 0.25 s → 拉回 (alpha=1, 沉没位) → 升起 0.25 s）。
 2. **两轮真机手测**：第一轮零触发——spike bug：**`DispatchSourceTimer(queue: .main)` 在 `RunLoop.main.run()` 下一次都不 fire**（新坑入 rules.md/facts.md；改 `Timer.scheduledTimer` 修复），顺带实证无人编排时窗口留在旧空间随桌面滑走。第二轮编排全通（轮询先到 13–25 ms、每轮拉回成功）——用户澄清后的事实：**滑动过程中无下沉效果**（条随过渡渐隐，≈0.25 倍屏宽时归零），**滑动结束后「从底部升上来」真实可感知**。
 3. **结案结论**：① 过渡合成期间窗口呈现由 WindowServer 接管，AppKit frame 动画不参与——「渐进沉入」无视觉效果；② `CGSGetActiveSpace` 翻转只比通知早 13–25 ms 且都在过渡结束后——零权限无「过渡进行中」事件窗口，Layer 2（幅度预判）同判不可行；用户规格第 ① ② 项（严格不滑、0.15 倍主动隐藏）是物理边界，渐隐时机由系统决定（≈0.25 倍屏宽）。
 4. **采纳残余落生产**（用户规格第 ③ 项）：`SecondaryDockWindow.pullToActiveSpace()` 从「0.18 s 原地 alpha 淡入」改为「记录原位 → 置透明 + frame 跳沉没位（`visibleFrame` 底边以下，跳变无视觉）→ 拉回 → 16 ms 复位配方 → **0.12 s easeInEaseOut 升回原位 + 同步淡显**」——alpha 与 frame 同一动画组（Dock 在左/右侧沉没位不被遮挡时退化为无方向淡入，不破相）；切换后总感知 ≈ 0.14 s ≤ 0.15 s。闸门与 Controller 不动。**369 测试全绿、release 零警告、已重打包**。
@@ -1231,7 +1238,7 @@ Mission Control / 打断横扫 / 四指捏合 Launchpad 三场景 custom dock �
 
 ### 2026-10-04（第 38 次）— 实验 23 修法被真人手测推翻 → 实验 24 全路证伪：「不滑动」零权限无解，`.moveToActiveSpace` 是唯一折中
 
-**用户说**：「现在的secondary dock还是会随桌面滑动，更改为滑动桌面时secondary dock不滑动，保持sticky在原生dock原位置」（对第 37 次修法的真机反馈，之后多轮试错、逐色观察）
+**用户说**：「现在的 secondary dock 还是会随桌面滑动，更改为滑动桌面时 secondary dock 不滑动，保持 sticky 在原生 dock 原位置」（对第 37 次修法的真机反馈，之后多轮试错、逐色观察）
 
 **做了什么**（11 个 spike，全零权限、有色测试窗、真人触控板滑动观察；结论 = 实验 24）：
 
@@ -1246,7 +1253,7 @@ Mission Control / 打断横扫 / 四指捏合 Launchpad 三场景 custom dock �
 
 ### 2026-10-04（第 37 次）— 次级条随桌面滑动：去掉 `.canJoinAllSpaces` 改纯 `.stationary`（实验 23）
 
-**用户说**：「现在的secondary dock还是会随桌面滑动，更改为滑动桌面时secondary dock不滑动，保持sticky在原生dock原位置」
+**用户说**：「现在的 secondary dock 还是会随桌面滑动，更改为滑动桌面时 secondary dock 不滑动，保持 sticky 在原生 dock 原位置」
 
 **做了什么**：
 
@@ -1258,7 +1265,7 @@ Mission Control / 打断横扫 / 四指捏合 Launchpad 三场景 custom dock �
 
 ### 2026-10-04（第 36 次）— 交接：全量会话史归档 + 文档收敛到当前形态
 
-**用户说**：「交接项目，把当前项目的所有session总结后写入文档，更新旧的文档，删除旧的需求和实现，更新到最新。」
+**用户说**：「交接项目，把当前项目的所有 session 总结后写入文档，更新旧的文档，删除旧的需求和实现，更新到最新。」
 
 **做了什么**（纯文档，零代码改动）：
 
@@ -1365,12 +1372,12 @@ Mission Control / 打断横扫 / 四指捏合 Launchpad 三场景 custom dock �
 
 ### 2026-10-04（第 28 次）— UI 对齐 Apple 原生设计（工具栏标签页 / 菜单副标题 / 桌面页 Form 化）
 
-**用户说**：「读取apple原生应用的design，让符合此设计」。
+**用户说**：「读取 apple 原生应用的 design，让符合此设计」。
 
 **做了什么**（纯视觉与文案，不改任何行为与接线）：
 
 1. **逐文件盘点 6 个 UI 文件**。已有的原生底子保留不动：Form + `.formStyle(.grouped)`、语义色、SF Symbols、NSMenu、toast 原生 HUD（P2.5 规格钉死，未碰）。
-2. **设置窗口**：SwiftUI `TabView`（macOS 上渲染成浏览器式标签——没有任何 Apple 设置窗口长那样）→ **System Preferences 式工具栏标签页**：`NSToolbar` + delegate 的 `toolbarSelectableItemIdentifiers` + `window.toolbarStyle = .preference`，图标+文字居中、选中高亮。页状态放 `SettingsTabModel`（`@Observable`），AppKit 写、SwiftUI 读。窗口装配抽成 `SettingsWindowFactory`，AppDelegate 与快照测试**共用** —— 快照若复制一份装配，验出来的就不是真窗口。⚠️ 两个可用性坑：`NSToolbar(identifier:selectableItemsIdentifiers:)` 在部署目标 macOS 14.0 上不可用（报 "extra argument"），用经典 delegate 方法 + `selectedItemIdentifier`；`NSMenuItem.subtitle` 是 **14.4+**。
+2. **设置窗口**：SwiftUI `TabView`（macOS 上渲染成浏览器式标签——没有任何 Apple 设置窗口长那样）→ **System Preferences 式工具栏标签页**：`NSToolbar` + delegate 的 `toolbarSelectableItemIdentifiers` + `window.toolbarStyle = .preference`，图标 + 文字居中、选中高亮。页状态放 `SettingsTabModel`（`@Observable`），AppKit 写、SwiftUI 读。窗口装配抽成 `SettingsWindowFactory`，AppDelegate 与快照测试**共用** —— 快照若复制一份装配，验出来的就不是真窗口。⚠️ 两个可用性坑：`NSToolbar(identifier:selectableItemsIdentifiers:)` 在部署目标 macOS 14.0 上不可用（报 "extra argument"），用经典 delegate 方法 + `selectedItemIdentifier`；`NSMenuItem.subtitle` 是 **14.4+**。
 3. **菜单栏**：禁用假菜单项「（⇧+左键…同效）」→ `previous.subtitle`；「⚠︎ 桌面功能不可用」的文字字形 → SF Symbol `exclamationmark.triangle` + 副标题。
 4. **桌面 Tab 右侧详情**：自绘 `VStack` + `Divider` → 与通用页同一套 `Form` + `.formStyle(.grouped)`（此桌面 / Dock 来源 / 图标条 / 外观 / 应用 五个 Section）；绑定与 `dockEdited` 接线一字未动。
 5. **文案更正**：设置页「P0 实测结论：Dock 没有热重载」→ 实验 17 后的准确表述（私有实时通道存在、外观键已验证，条目未打通前不启用）。
@@ -1877,7 +1884,7 @@ B5（多显示器真机）、A1–A3 / A5（真人手测）、B9 / B10（注销�
 
 ### 2026-09-19（第 15 次）— 修掉「每次右键退出都卡住几分钟」：退出复用了完整降级链 + **两条"有上限的等待"其实没有上限**
 
-**做了什么**（用户：「每次菜单栏右键点击退出时都会卡住（没有dock、桌面背景也不显示、触控板也不能用）」）：
+**做了什么**（用户：「每次菜单栏右键点击退出时都会卡住（没有 dock、桌面背景也不显示、触控板也不能用）」）：
 
 **先说诊断的起点**：这和实验 9 是**同一个故障**，只是触发点从"切桌面"换到"退出"。而且必须先纠正一条记录 ——
 用户 2026-09-19 早先"复验过 A6"其实**没有发生**：他跑的 `build/MultiDock.app` 打包于 01:07，而实验 9 的修复
@@ -1946,7 +1953,7 @@ commit `47defb5` 是 02:11 —— **修复从未在真机上跑过**。所以本
 
 ### 2026-09-19（第 14 次）— 修掉「切一次桌面黑屏几分钟」：主线程被 `launchctl` 冻住 + 三级自激
 
-**做了什么**（用户：「问题：从桌面1切换到桌面2会黑屏几分钟（没有dock、桌面背景也不显示、触控板也不能用）」）：
+**做了什么**（用户：「问题：从桌面 1 切换到桌面 2 会黑屏几分钟（没有 dock、桌面背景也不显示、触控板也不能用）」）：
 
 按 `systematic-debugging` 走，先定根因再动手。**"黑屏"不是显示问题，是 Dock 进程死了 60–126 秒**
 —— Dock 负责画壁纸、也实现触控板的三指左右切换空间，所以"没 Dock / 没壁纸 / 手势失效"是同一条症状。
@@ -2169,7 +2176,7 @@ A4 一直挂在"只能手测"里，理由是"真人拖拽要辅助功能权限�
 
 ### 2026-09-18（第 10 次）— `⇧+左键` 切上一个桌面；查清"切桌面动画"为什么做不到
 
-**做了什么**（用户：「更新计划：点击菜单栏图标需要有左右滑动的动画，当前没有动画效果。shift+点击菜单栏图标，执行上一页。」）：
+**做了什么**（用户：「更新计划：点击菜单栏图标需要有左右滑动的动画，当前没有动画效果。shift+ 点击菜单栏图标，执行上一页。」）：
 
 **① ⇧+左键 = 切上一个桌面（已实现）**
 
@@ -2410,7 +2417,7 @@ A4 一直挂在"只能手测"里，理由是"真人拖拽要辅助功能权限�
 
 ### 2026-09-18（第 3 次）— 计划新增：桌面命名 + 切换 toast
 
-**做了什么**（用户需求：设置-桌面里给每个桌面起名，最长 10 字符；切换桌面后在屏幕中上部弹 toast 显示名字，1 秒自动消失）：
+**做了什么**（用户需求：设置 - 桌面里给每个桌面起名，最长 10 字符；切换桌面后在屏幕中上部弹 toast 显示名字，1 秒自动消失）：
 
 - **只改文档，没写业务代码**（用户说"更新计划"）。
 - `docs/PLAN.md`：§0 目标加两条；§1 环境事实表加两行实测；§2 文件树加 4 个新文件；**新增 §3.10「桌面命名与切换提示」**（含命名规则、toast 触发点、窗口属性表、零权限说明、验收方法）；§3.7 桌面 Tab 与菜单栏下拉同步；§4 阶段表**新增 P2.5**（不写 Dock、可插队）；§5 风险表加 7 行；§6 从"一处"扩成"四处"待确认理解；§7 加第 7 条差异。
@@ -2425,7 +2432,7 @@ A4 一直挂在"只能手测"里，理由是"真人拖拽要辅助功能权限�
 
 **做了什么**：
 - 把"每次对话后更新文档 + `git commit`"固化成 §0 的强制约定。
-- 把原来的"待确认问题"扩成 §6：6.1 等用户回答（会阻塞）、6.2 已解决（留档）、6.3 未解决的技术项（6 条）。
+- 把原来的"待确认问题"扩成 §6:6.1 等用户回答（会阻塞）、6.2 已解决（留档）、6.3 未解决的技术项（6 条）。
 - 新增 §8 会话记录区（append-only，最新在最上面）。
 - **`git init -b main` 并提交首个 commit**（`e3e359a`，34 个文件 / 4107 行）。`.gitignore` 已排除 `.build/`（170 MB）与 `build/`。
 - 记录了一个坑：本机 `commit.gpgsign = true` 且签名走 1Password 的 `op-ssh-sign`，**1Password 没运行时 commit 会失败**（见 §0）。

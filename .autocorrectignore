@@ -1,0 +1,15 @@
+node_modules/
+.build/
+build/
+Sources/
+Tests/
+Support/
+scripts/
+.github/
+*.swift
+*.json
+*.yaml
+*.yml
+*.plist
+*.strings
+*.sh

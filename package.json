@@ -1,0 +1,12 @@
+{
+  "name": "side-dock-docs",
+  "private": true,
+  "description": "只用来跑中文文档排版检查（AutoCorrect）；App 本身是 Swift Package，不依赖 Node。",
+  "scripts": {
+    "lint:zh": "autocorrect --lint",
+    "fix:zh": "autocorrect --fix"
+  },
+  "devDependencies": {
+    "autocorrect-node": "^2.14.0"
+  }
+}
