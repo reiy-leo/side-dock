@@ -54,7 +54,7 @@ macOS 多桌面（Space）工具：**原生 Dock 全桌面保持一致，每个�
 还没做的：
 
 - **多显示器未真机验证**（本机只有一台屏；代码已就绪，需插一台外接屏实测）
-- **切桌面没有过渡动画** —— 程序化切空间是瞬时硬切，且零权限下无解，**已定性为不做**（证据见 [docs/spikes.md](docs/spikes.md) 实验 7）
+- **切桌面动画（可选，待真机验证）**：设置 → 菜单栏 →「用系统滑动动画切换桌面」，需辅助功能权限；借系统 Mission Control 快捷键（相邻 ⌃←/⌃→，跨桌面用「切换到桌面 N」，需在 键盘快捷键 → 调度中心 里打开）
 - **次级条材质**与原生 Dock 是否完全一致尚待真机对比（可用 `defaults write local.multidock SecondaryDockMaterial -int <n>` 换材质试，重启 App 生效；`defaults delete` 回默认）
 
 ---

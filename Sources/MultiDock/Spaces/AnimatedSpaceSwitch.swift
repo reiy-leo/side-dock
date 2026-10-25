@@ -2,46 +2,154 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
-/// 相邻桌面的「带动画切换」：借系统快捷键（⌃← / ⌃→）的过渡动画。
+/// 「带动画切换桌面」：借系统 Mission Control 快捷键的过渡动画（2026-10-25 用户规格，设置里可选开启）。
 ///
-/// ## ⚠️ 2026-10-06 实测结论：**本机这条通道是关着的**（实验 28）
+/// ## 两种快捷键
 ///
-/// 完整探针（`scripts/spike-animated-switch.swift`）测出的事实，比实验 7.6 更精确：
+/// | 情形 | 快捷键（`com.apple.symbolichotkeys` id） | 说明 |
+/// | --- | --- | --- |
+/// | 相邻一步（左/右一个桌面） | 79 = 向左一个空间（⌃←）、81 = 向右（⌃→） | 系统默认开启 |
+/// | 跨桌面 / 首尾循环 | 118…133 = 切换到桌面 1…16 | 1–9 默认 ⌃1–⌃9 但**默认关**；10–16 需用户自己设键 |
 ///
-/// | 观测 | 结果 |
-/// | --- | --- |
-/// | `AXIsProcessTrusted()` | **true**（辅助功能已授权） |
-/// | `CGPreflightPostEventAccess()` | **true** |
-/// | `CGEventSource(stateID: .hidSystemState)` | 创建成功 |
-/// | 合成 ⌃→ | **空间不切**（1.5 s 无变化） |
-/// | **阳性对照**：合成 Cmd+Tab | **前台 App 不变** |
-/// | 替代路：AppleScript `key code 124 using control down` | `-1743` 未授权 Apple Events |
+/// 「切换到桌面 N」**一次直接滑过去**、只播一段动画 —— 所以从桌面 10 回桌面 1 不用连按 9 次。
+/// 对应的快捷键没开 → 不合成，直接回硬切。**只读** `com.apple.symbolichotkeys`，从不写（无痕）。
 ///
-/// → **不是权限、不是 tap、不是参数**：事件在**投递层**被系统拦下（与实验 7.6 同源），
-/// 且这条闸门在 macOS 15.8.1 上依旧存在。实验 7.6 把它归因于"权限"是**不准确的** ——
-/// 授权后仍然不通。**加动画的需求在可预见的路径上无解**，除非走 `SLSWillSwitchSpaces`
-/// 那类内部通道（实验 7 已判定：段错误风险，不做）。
+/// ## ⚠️ 实验 28 失败的真正原因（2026-10-25 复盘，待真机确认）
 ///
-/// ## 那这份实现为什么还在
+/// 实验 28 读到 79/81 的参数是 `[65535, 123/124, 8650752]`：`8650752 = 0x840000`
+/// = **Control（0x40000）+ SecondaryFn（0x800000）**。方向键在实体键盘上天生带 fn 标志，
+/// 系统热键表也按这个组合登记；而当时合成的事件**只带了 `.maskControl`** → 热键匹配不上 →
+/// 「事件投递了但空间不动」。阳性对照 Cmd+Tab 本身就不响应合成事件，不能当对照。
+/// 现在按热键表登记的**原样修饰键**合成（并先后补发修饰键按下/抬起），不再自己拼。
 ///
-/// 因为它是**唯一正确的那条路**（如果哪天系统的投递闸门放开，合成 ⌃←/⌃→ 就是与用户按键盘
-/// 完全等价的入口，过渡动画由 WindowServer 给）。所以：
-/// - **默认关闭**（`SpaceStepSynthesisSettings.isEnabled`，config 里的用户开关）；
-/// - 打开后仍然**带超时兜底**：合成没生效就回硬切，**绝不会卡住不切**（`SpaceSwitcher`）；
-/// - 用户开关的价值是"等我换台机器/等系统放开之后不用改代码"。
-///
-/// **语义边界**：合成只能表达「系统顺序上的相邻一步」。跨桌面点选（菜单里直接选某个桌面）
-/// 与两端循环（系统键盘在首/尾不循环）仍走硬切 —— 见 `SpaceSwitcher`。
+/// 任何一步没生效都有**超时兜底硬切**（`SpaceSwitcher`），绝不会卡住不切。
 @MainActor
 protocol SpaceStepSynthesizing: AnyObject {
     /// 辅助功能权限是否已授予（未授予时合成不会有任何效果）。
     var isPermitted: Bool { get }
-    /// 合成一次相邻切换。返回「事件已投递」，**不代表**系统真的切了（由调用方确认）。
+    /// 合成一次相邻切换（⌃← / ⌃→）。返回「事件已投递」，**不代表**系统真的切了（由调用方确认）；
+    /// 对应快捷键在系统里关着时返回 false（调用方直接硬切，不白等超时）。
     @discardableResult
     func synthesizeStep(previous: Bool) -> Bool
+    /// 「切换到桌面 N」快捷键是否可用（N 从 1 起，≤16）。
+    func canJump(toDesktop number: Int) -> Bool
+    /// 合成「切换到桌面 N」。语义同 `synthesizeStep`。
+    @discardableResult
+    func synthesizeJump(toDesktop number: Int) -> Bool
 }
 
-/// 真实实现：`CGEventPost` 合成 ⌃← / ⌃→。
+extension SpaceStepSynthesizing {
+    func canJump(toDesktop number: Int) -> Bool { false }
+    @discardableResult
+    func synthesizeJump(toDesktop number: Int) -> Bool { false }
+}
+
+// MARK: - 系统快捷键表（只读）
+
+/// 系统热键表里的一条快捷键。
+struct SymbolicHotKey: Equatable, Sendable {
+    let keyCode: CGKeyCode
+    /// 热键表登记的修饰键位（与 `CGEventFlags.rawValue` 同位布局）。
+    let modifiers: UInt64
+
+    var eventFlags: CGEventFlags {
+        // 只保留设备无关的修饰位（高 16 位）。
+        CGEventFlags(rawValue: modifiers & 0xFFFF_0000)
+    }
+}
+
+/// 桌面切换相关的系统快捷键。
+enum SpaceShortcut: Equatable, Sendable {
+    case step(previous: Bool)
+    case desktop(Int)
+
+    /// 「切换到桌面 N」的上限（Mission Control 每块屏最多 16 个桌面）。
+    static let maxDesktopNumber = 16
+
+    /// `com.apple.symbolichotkeys` 里的 id。
+    var hotKeyID: Int? {
+        switch self {
+        case .step(let previous):
+            return previous ? 79 : 81
+        case .desktop(let number):
+            guard (1...Self.maxDesktopNumber).contains(number) else { return nil }
+            return 117 + number
+        }
+    }
+}
+
+enum SymbolicHotKeys {
+    static let domain = "com.apple.symbolichotkeys"
+    static let tableKey = "AppleSymbolicHotKeys"
+
+    /// 从热键表里解析一条：**必须 enabled、且有真实键码**（65535 = 没设键）。纯函数，便于测试。
+    static func parse(_ table: [String: Any], id: Int) -> SymbolicHotKey? {
+        guard let entry = table[String(id)] as? [String: Any] else { return nil }
+        guard boolValue(entry["enabled"]) == true else { return nil }
+        guard
+            let value = entry["value"] as? [String: Any],
+            let parameters = value["parameters"] as? [Any],
+            parameters.count >= 3,
+            let keyCode = intValue(parameters[1]),
+            let modifiers = intValue(parameters[2]),
+            keyCode >= 0, keyCode != 65535, modifiers >= 0
+        else { return nil }
+        return SymbolicHotKey(keyCode: CGKeyCode(keyCode), modifiers: UInt64(modifiers))
+    }
+
+    /// 读当前系统热键表（每次现读：用户可能刚在系统设置里改过）。
+    static func currentTable() -> [String: Any] {
+        CFPreferencesAppSynchronize(domain as CFString)
+        return CFPreferencesCopyAppValue(tableKey as CFString, domain as CFString) as? [String: Any] ?? [:]
+    }
+
+    static func hotKey(for shortcut: SpaceShortcut, table: [String: Any]? = nil) -> SymbolicHotKey? {
+        guard let id = shortcut.hotKeyID else { return nil }
+        return parse(table ?? currentTable(), id: id)
+    }
+
+    private static func boolValue(_ any: Any?) -> Bool? {
+        if let bool = any as? Bool { return bool }
+        if let number = any as? NSNumber { return number.boolValue }
+        return nil
+    }
+
+    private static func intValue(_ any: Any) -> Int? {
+        if let int = any as? Int { return int }
+        if let number = any as? NSNumber { return number.intValue }
+        return nil
+    }
+}
+
+/// 设置页用的就绪状态：权限 + 快捷键开没开。
+struct AnimatedSwitchReadiness: Equatable {
+    var accessibilityGranted: Bool
+    /// ⌃← 与 ⌃→ 都开着。
+    var stepKeysEnabled: Bool
+    /// 现有桌面里（最多 16 个）已开「切换到桌面 N」的个数。
+    var jumpKeysEnabled: Int
+    /// 参与统计的桌面数（`min(桌面数, 16)`）。
+    var jumpKeysNeeded: Int
+
+    static func current(desktopCount: Int) -> AnimatedSwitchReadiness {
+        let table = SymbolicHotKeys.currentTable()
+        let needed = min(desktopCount, SpaceShortcut.maxDesktopNumber)
+        let enabled = needed > 0
+            ? (1...needed).filter { SymbolicHotKeys.hotKey(for: .desktop($0), table: table) != nil }.count
+            : 0
+        return AnimatedSwitchReadiness(
+            accessibilityGranted: AccessibilityPermission.isGranted,
+            stepKeysEnabled: SymbolicHotKeys.hotKey(for: .step(previous: true), table: table) != nil
+                && SymbolicHotKeys.hotKey(for: .step(previous: false), table: table) != nil,
+            jumpKeysEnabled: enabled,
+            jumpKeysNeeded: needed
+        )
+    }
+}
+
+// MARK: - 真实合成器
+
+/// 真实实现：按系统热键表登记的键与修饰键 `CGEventPost` 合成。
 @MainActor
 final class HotKeySpaceStepSynthesizer: SpaceStepSynthesizing {
 
@@ -49,18 +157,52 @@ final class HotKeySpaceStepSynthesizer: SpaceStepSynthesizing {
 
     @discardableResult
     func synthesizeStep(previous: Bool) -> Bool {
-        guard isPermitted else { return false }
-        // 与系统热键表对齐：79 = ⌃←（keycode 123），81 = ⌃→（keycode 124）。
-        let key: CGKeyCode = previous ? 123 : 124
+        post(.step(previous: previous))
+    }
+
+    func canJump(toDesktop number: Int) -> Bool {
+        SymbolicHotKeys.hotKey(for: .desktop(number)) != nil
+    }
+
+    @discardableResult
+    func synthesizeJump(toDesktop number: Int) -> Bool {
+        post(.desktop(number))
+    }
+
+    /// 修饰键 → 左侧实体键的键码（补发按下/抬起，让热键匹配与真按一致）。
+    private static let modifierKeys: [(CGEventFlags, CGKeyCode)] = [
+        (.maskControl, 59), (.maskAlternate, 58), (.maskShift, 56), (.maskCommand, 55),
+    ]
+
+    private func post(_ shortcut: SpaceShortcut) -> Bool {
+        guard isPermitted, let hotKey = SymbolicHotKeys.hotKey(for: shortcut) else { return false }
+        guard let source = CGEventSource(stateID: .hidSystemState) else { return false }
+        let flags = hotKey.eventFlags
+        let modifiers = Self.modifierKeys.filter { flags.contains($0.0) }
+
+        var events: [CGEvent] = []
+        var held: CGEventFlags = []
+        for (flag, code) in modifiers {
+            held.insert(flag)
+            guard let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true) else { return false }
+            event.flags = held
+            events.append(event)
+        }
         guard
-            let source = CGEventSource(stateID: .hidSystemState),
-            let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true),
-            let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false)
+            let down = CGEvent(keyboardEventSource: source, virtualKey: hotKey.keyCode, keyDown: true),
+            let up = CGEvent(keyboardEventSource: source, virtualKey: hotKey.keyCode, keyDown: false)
         else { return false }
-        down.flags = .maskControl
-        up.flags = .maskControl
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+        down.flags = flags
+        up.flags = flags
+        events.append(down)
+        events.append(up)
+        for (flag, code) in modifiers.reversed() {
+            held.remove(flag)
+            guard let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else { return false }
+            event.flags = held
+            events.append(event)
+        }
+        events.forEach { $0.post(tap: .cghidEventTap) }
         return true
     }
 }
@@ -79,4 +221,9 @@ enum AccessibilityPermission {
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
     }
+
+    /// 系统设置 → 隐私与安全性 → 辅助功能。
+    static let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+    /// 系统设置 → 键盘（快捷键 → 调度中心在里面）。
+    static let keyboardSettingsURL = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!
 }

@@ -10,8 +10,9 @@ import Foundation
 /// 合成只保证"事件已投递"，所以**异步确认**：`synthesisTimeout` 内空间没翻转 → 硬切兜底。
 /// **绝不会卡住不切**；主线程也不被阻塞（确认在后台 Task 里等）。
 ///
-/// 边界（有意为之）：菜单里**跨桌面点选**与**两端循环**仍走硬切 —— 合成按键只能表达
-/// "系统顺序上的相邻一步"，跨选要连打好几拍、动画叠在一起，体验更差。
+/// **跨桌面与两端循环（2026-10-25）**：不连打多拍（从桌面 10 回 1 不按 9 次 ⌃←），
+/// 而是合成系统的「切换到桌面 N」快捷键，一次直接滑过去；那条快捷键没开 → 硬切。
+/// 「桌面 N」按 Mission Control 的编号，只在**单显示器**下用（多屏编号规则未实测，见 `jumpNumber`）。
 @MainActor
 final class SpaceSwitcher {
 
@@ -54,7 +55,10 @@ final class SpaceSwitcher {
     /// 切换风格：相邻一步可走合成（带动画），其余走硬切。
     enum SwitchStyle: Equatable {
         case hard
+        /// 菜单栏点击的下一个/上一个：相邻走 ⌃←/⌃→，循环跳走「切换到桌面 N」。
         case animatedStep(Direction)
+        /// 任意目标（菜单里点选）：相邻走 ⌃←/⌃→，否则「切换到桌面 N」。
+        case animated
 
         var direction: Direction? {
             if case .animatedStep(let direction) = self { return direction }
@@ -103,6 +107,29 @@ final class SpaceSwitcher {
         return targetIndex == currentIndex + offset
     }
 
+    /// 「切换到桌面 N」用的 N：目标在该显示器上的序号。
+    ///
+    /// ⚠️ 只在**所有用户桌面都在同一块屏**时给出：多屏下 Mission Control 的桌面编号
+    /// 是按屏各自从 1 起还是全局连续，尚未实测；猜错会滑到别的桌面，所以多屏一律硬切。
+    func jumpNumber(for target: DesktopSpace) -> Int? {
+        let displays = Set(observer.desktops.map(\.displayUUID))
+        guard displays.count == 1 else { return nil }
+        let number = target.ordinal
+        guard (1...SpaceShortcut.maxDesktopNumber).contains(number) else { return nil }
+        return number
+    }
+
+    /// 相邻一步的方向（不相邻返回 nil）。`.animatedStep` 只看给定方向，`.animated` 两个方向都试。
+    private func adjacentDirection(to target: DesktopSpace, style: SwitchStyle) -> Direction? {
+        let candidates: [Direction]
+        switch style {
+        case .hard: return nil
+        case .animatedStep(let direction): candidates = [direction]
+        case .animated: candidates = [.next, .previous]
+        }
+        return candidates.first { isAdjacentStep(to: target, direction: $0) }
+    }
+
     /// 切到指定桌面。切换后立刻刷新观察器，不等下一个轮询周期。
     ///
     /// - Parameter style: `.hard` 直接硬切；`.animatedStep` 先试合成（异步确认 + 超时兜底）。
@@ -110,19 +137,28 @@ final class SpaceSwitcher {
     func switchTo(_ space: DesktopSpace, style: SwitchStyle = .hard) -> DesktopSpace? {
         guard observer.provider.isAvailable else { return nil }
 
-        if let direction = style.direction,
-           let synthesizer,
-           isAdjacentStep(to: space, direction: direction) {
+        if style != .hard, let synthesizer, observer.activeSpace?.id != space.id {
             if synthesizer.isPermitted {
-                let posted = synthesizer.synthesizeStep(previous: direction == .previous)
-                if posted {
+                let origin = observer.activeSpace
+                if let direction = adjacentDirection(to: space, style: style),
+                   synthesizer.synthesizeStep(previous: direction == .previous) {
                     let key = direction == .previous ? "⌃←" : "⌃→"
                     log(L("合成 \(key)：走系统过渡动画切到相邻桌面",
                           "Synthesizing \(key): switching to the adjacent desktop with the system transition"))
-                    confirmAnimatedStep(to: space, from: observer.activeSpace)
+                    confirmAnimatedStep(to: space, from: origin, timeout: synthesisTimeout)
                     return space
                 }
-                log(L("合成键盘事件失败（会话不可用），回落到硬切", "Failed to synthesize keyboard events (session unavailable); falling back to a hard switch"))
+                if let number = jumpNumber(for: space),
+                   synthesizer.canJump(toDesktop: number),
+                   synthesizer.synthesizeJump(toDesktop: number) {
+                    log(L("合成「切换到桌面 \(number)」：一次滑到目标桌面",
+                          "Synthesizing “Switch to Desktop \(number)”: sliding straight to the target"))
+                    // 跨多个桌面的过渡可能更长，兜底窗口放宽一倍。
+                    confirmAnimatedStep(to: space, from: origin, timeout: synthesisTimeout * 2)
+                    return space
+                }
+                log(L("没有可用的系统快捷键（⌃←/⌃→ 或「切换到桌面 N」未开），本次硬切",
+                      "No usable system shortcut (⌃←/⌃→ or “Switch to Desktop N” is off); hard-switching this time"))
             } else {
                 log(L("没有辅助功能权限，无法借系统过渡动画（退化为硬切）", "No Accessibility permission, so the system transition can't be used (falling back to a hard switch)"))
             }
@@ -141,10 +177,10 @@ final class SpaceSwitcher {
     ///
     /// ⚠️ 兜底前还要**防抢跑**：若超时时空间已经不在起点了（系统过渡迟到、正在途中），
     /// 就不要再硬切 —— 那会和系统自己的过渡打架（多跳一拍/闪回）。
-    private func confirmAnimatedStep(to target: DesktopSpace, from origin: DesktopSpace?) {
+    private func confirmAnimatedStep(to target: DesktopSpace, from origin: DesktopSpace?, timeout: Duration) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let deadline = ContinuousClock.now + self.synthesisTimeout
+            let deadline = ContinuousClock.now + timeout
             while ContinuousClock.now < deadline {
                 self.observer.refreshNow()
                 if self.observer.activeSpace?.id == target.id {
@@ -159,7 +195,7 @@ final class SpaceSwitcher {
                 self.log(L("合成切换超时，但空间已不在起点（系统过渡迟到），不再兜底硬切", "Synthesized switch timed out, but the space already left the start point (the transition arrived late); skipping the hard-switch fallback"))
                 return
             }
-            self.log(L("合成切换未在 \(self.synthesisTimeout) 内生效，改用硬切", "Synthesized switch didn't take effect within \(self.synthesisTimeout); using a hard switch"))
+            self.log(L("合成切换未在 \(timeout) 内生效，改用硬切", "Synthesized switch didn't take effect within \(timeout); using a hard switch"))
             if self.observer.provider.setCurrentSpace(target) {
                 self.observer.refreshNow()
             }

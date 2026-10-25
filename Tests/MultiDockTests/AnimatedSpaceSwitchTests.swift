@@ -252,4 +252,142 @@ final class AnimatedSpaceSwitchTests: XCTestCase {
             "空间已不在起点时不该兜底硬切——会和迟到的系统过渡打架"
         )
     }
+
+    // MARK: - 「切换到桌面 N」（2026-10-25）
+
+    /// 可配置的合成器替身：相邻快捷键开没开、哪些「桌面 N」可用。
+    private final class JumpSynthesizer: SpaceStepSynthesizing {
+        var isPermitted = true
+        var stepKeysEnabled = true
+        var jumpable: Set<Int> = []
+        private(set) var steps: [Bool] = []
+        private(set) var jumps: [Int] = []
+
+        func synthesizeStep(previous: Bool) -> Bool {
+            guard stepKeysEnabled else { return false }
+            steps.append(previous)
+            return true
+        }
+        func canJump(toDesktop number: Int) -> Bool { jumpable.contains(number) }
+        func synthesizeJump(toDesktop number: Int) -> Bool {
+            guard jumpable.contains(number) else { return false }
+            jumps.append(number)
+            return true
+        }
+    }
+
+    func testWrapAroundUsesSwitchToDesktopNInsteadOfManySteps() {
+        // 从最后一个（第 10 个）循环回第 1 个：一次「切换到桌面 1」，不连按 9 次 ⌃←。
+        let spaces = FakeSpaceProvider.desktops(count: 10)
+        let provider = FakeSpaceProvider(desktops: spaces, activeSpaceID: spaces[9].id64)
+        let synthesizer = JumpSynthesizer()
+        synthesizer.jumpable = Set(1...9)
+        let switcher = makeSwitcher(provider, synthesizer: synthesizer)
+
+        switcher.switchTo(spaces[0], style: .animatedStep(.next))
+
+        XCTAssertTrue(synthesizer.steps.isEmpty, "循环跳不连打相邻步")
+        XCTAssertEqual(synthesizer.jumps, [1], "一次直接跳到桌面 1")
+        XCTAssertTrue(provider.switchTargets.isEmpty, "投递后先等系统动画，不立刻硬切")
+    }
+
+    func testMenuSelectionJumpsDirectly() {
+        let spaces = FakeSpaceProvider.desktops(count: 5)
+        let provider = FakeSpaceProvider(desktops: spaces, activeSpaceID: spaces[0].id64)
+        let synthesizer = JumpSynthesizer()
+        synthesizer.jumpable = [4]
+        let switcher = makeSwitcher(provider, synthesizer: synthesizer)
+
+        switcher.switchTo(spaces[3], style: .animated)
+
+        XCTAssertEqual(synthesizer.jumps, [4])
+        XCTAssertTrue(synthesizer.steps.isEmpty)
+    }
+
+    func testMenuSelectionOfNeighbourUsesStep() {
+        let spaces = FakeSpaceProvider.desktops(count: 5)
+        let provider = FakeSpaceProvider(desktops: spaces, activeSpaceID: spaces[2].id64)
+        let synthesizer = JumpSynthesizer()
+        synthesizer.jumpable = Set(1...5)
+        let switcher = makeSwitcher(provider, synthesizer: synthesizer)
+
+        switcher.switchTo(spaces[1], style: .animated)
+
+        XCTAssertEqual(synthesizer.steps, [true], "菜单点相邻桌面走 ⌃←")
+        XCTAssertTrue(synthesizer.jumps.isEmpty)
+    }
+
+    func testJumpShortcutOffHardSwitchesImmediately() {
+        let spaces = FakeSpaceProvider.desktops(count: 4)
+        let provider = FakeSpaceProvider(desktops: spaces, activeSpaceID: spaces[3].id64)
+        let synthesizer = JumpSynthesizer()   // 没开任何「桌面 N」
+        let switcher = makeSwitcher(provider, synthesizer: synthesizer)
+
+        switcher.switchTo(spaces[0], style: .animatedStep(.next))
+
+        XCTAssertTrue(synthesizer.jumps.isEmpty)
+        XCTAssertEqual(provider.switchTargets, [spaces[0].id64], "快捷键没开：当场硬切，不白等超时")
+    }
+
+    func testStepShortcutOffFallsBackToJumpThenHard() {
+        let spaces = FakeSpaceProvider.desktops(count: 3)
+        let provider = FakeSpaceProvider(desktops: spaces, activeSpaceID: spaces[0].id64)
+        let synthesizer = JumpSynthesizer()
+        synthesizer.stepKeysEnabled = false
+        synthesizer.jumpable = [2]
+        let switcher = makeSwitcher(provider, synthesizer: synthesizer)
+
+        switcher.switchTo(spaces[1], style: .animatedStep(.next))
+        XCTAssertEqual(synthesizer.jumps, [2], "⌃→ 关着时用「切换到桌面 2」")
+
+        let provider2 = FakeSpaceProvider(desktops: spaces, activeSpaceID: spaces[0].id64)
+        let synthesizer2 = JumpSynthesizer()
+        synthesizer2.stepKeysEnabled = false
+        let switcher2 = makeSwitcher(provider2, synthesizer: synthesizer2)
+        switcher2.switchTo(spaces[1], style: .animatedStep(.next))
+        XCTAssertEqual(provider2.switchTargets, [spaces[1].id64], "两种快捷键都关：硬切")
+    }
+
+    func testMultipleDisplaysNeverJump() {
+        let left = FakeSpaceProvider.desktops(count: 3, displayUUID: "DISP-1")
+        let right = FakeSpaceProvider.desktops(count: 3, displayUUID: "DISP-2", baseID: 200)
+        let provider = FakeSpaceProvider(desktops: left + right, activeSpaceID: left[2].id64)
+        let synthesizer = JumpSynthesizer()
+        synthesizer.jumpable = Set(1...16)
+        let switcher = makeSwitcher(provider, synthesizer: synthesizer)
+
+        XCTAssertNil(switcher.jumpNumber(for: left[0]), "多屏编号规则未验证，不给 N")
+        switcher.switchTo(left[0], style: .animatedStep(.next))
+        XCTAssertTrue(synthesizer.jumps.isEmpty)
+        XCTAssertEqual(provider.switchTargets, [left[0].id64])
+    }
+
+    // MARK: - 系统热键表解析
+
+    func testHotKeyIDs() {
+        XCTAssertEqual(SpaceShortcut.step(previous: true).hotKeyID, 79)
+        XCTAssertEqual(SpaceShortcut.step(previous: false).hotKeyID, 81)
+        XCTAssertEqual(SpaceShortcut.desktop(1).hotKeyID, 118)
+        XCTAssertEqual(SpaceShortcut.desktop(16).hotKeyID, 133)
+        XCTAssertNil(SpaceShortcut.desktop(17).hotKeyID)
+        XCTAssertNil(SpaceShortcut.desktop(0).hotKeyID)
+    }
+
+    func testParseKeepsRegisteredModifiersIncludingFn() {
+        // 实验 28 实测的 ⌃→ 登记：[65535, 124, 8650752] = Control + SecondaryFn。
+        let table: [String: Any] = [
+            "81": ["enabled": true, "value": ["parameters": [65535, 124, 8_650_752], "type": "standard"]],
+            "118": ["enabled": false, "value": ["parameters": [49, 18, 262_144], "type": "standard"]],
+            "119": ["enabled": NSNumber(value: 1), "value": ["parameters": [NSNumber(value: 50), NSNumber(value: 19), NSNumber(value: 262_144)], "type": "standard"]],
+            "120": ["enabled": true, "value": ["parameters": [65535, 65535, 0], "type": "standard"]],
+        ]
+        let right = SymbolicHotKeys.parse(table, id: 81)
+        XCTAssertEqual(right?.keyCode, 124)
+        XCTAssertTrue(right?.eventFlags.contains(.maskControl) ?? false)
+        XCTAssertTrue(right?.eventFlags.contains(.maskSecondaryFn) ?? false, "方向键热键带 fn 位，合成必须原样带上")
+        XCTAssertNil(SymbolicHotKeys.parse(table, id: 118), "关着的不算")
+        XCTAssertEqual(SymbolicHotKeys.parse(table, id: 119)?.keyCode, 19, "NSNumber 形式也能读")
+        XCTAssertNil(SymbolicHotKeys.parse(table, id: 120), "没设键（65535）不算")
+        XCTAssertNil(SymbolicHotKeys.parse(table, id: 121), "表里没有不算")
+    }
 }

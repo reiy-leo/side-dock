@@ -220,15 +220,59 @@ private struct MenuBarTab: View {
                     }
                 }
                 .pickerStyle(.radioGroup)
-                // 切桌面的系统滑动过渡**不做开关**（2026-10-06 实验 28：合成事件在本机被
-                // 系统拦在投递层，阳性对照 Cmd+Tab 也不生效——开关能开也无效就是假开关）。
-                // 研究留档：docs/spikes.md 实验 28；config 里有 `animatedDesktopSwitch` 供
-                // 换机器/系统放开后手工开启。
                 Text(L("右键或 ⌥+左键始终打开菜单。⇧+左键切上一个桌面；左键若设为「打开菜单」，⇧+左键也一并打开菜单。",
                        "Right-click or ⌥-click always opens the menu. ⇧-click switches to the previous desktop; if Left Click is set to “Open Menu”, ⇧-click opens the menu too."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section(L("切换动画", "Switch Animation")) {
+                Toggle(L("用系统滑动动画切换桌面", "Use the System Slide Animation When Switching"), isOn: animatedSwitchBinding)
+                Text(L("开启后借系统 Mission Control 的快捷键切换，和用触控板滑动一样有左右滑动的过渡。相邻桌面用 ⌃← / ⌃→；跨桌面和首尾循环用「切换到桌面 N」，一次直接滑过去。对应快捷键没开时这一次直接切换，不会卡住。",
+                       "Switches through the system Mission Control shortcuts, so you get the same slide as a trackpad swipe. Adjacent desktops use ⌃← / ⌃→; jumps and wrap-arounds use “Switch to Desktop N” and slide straight there. If the needed shortcut is off, that switch simply happens instantly."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if state.settings.animatedDesktopSwitch {
+                    readinessRow(
+                        ok: readiness.accessibilityGranted,
+                        title: L("辅助功能权限", "Accessibility Permission"),
+                        detail: readiness.accessibilityGranted
+                            ? L("已授权", "Granted")
+                            : L("未授权：在列表里勾选 Side Dock（更新 App 后若失效，先删掉再重新添加）", "Not granted: tick Side Dock in the list (after an update, remove it and add it again if it stops working)"),
+                        action: readiness.accessibilityGranted ? nil : L("打开设置…", "Open Settings…"),
+                        url: AccessibilityPermission.settingsURL
+                    )
+                    readinessRow(
+                        ok: readiness.stepKeysEnabled,
+                        title: L("向左 / 向右一个空间（⌃← / ⌃→）", "Move Left / Right a Space (⌃← / ⌃→)"),
+                        detail: readiness.stepKeysEnabled ? L("已开启", "On") : L("未开启：相邻切换会直接切", "Off: adjacent switches happen instantly"),
+                        action: readiness.stepKeysEnabled ? nil : L("键盘快捷键…", "Keyboard Shortcuts…"),
+                        url: AccessibilityPermission.keyboardSettingsURL
+                    )
+                    let allJumps = readiness.jumpKeysEnabled >= readiness.jumpKeysNeeded
+                    readinessRow(
+                        ok: allJumps,
+                        title: L("切换到桌面 N", "Switch to Desktop N"),
+                        detail: L("已开 \(readiness.jumpKeysEnabled) / \(readiness.jumpKeysNeeded) 个（键盘快捷键 → 调度中心；1–9 默认 ⌃1–⌃9 但默认关，10–16 需自己设键）",
+                                  "\(readiness.jumpKeysEnabled) of \(readiness.jumpKeysNeeded) on (Keyboard Shortcuts → Mission Control; 1–9 default to ⌃1–⌃9 but start off, 10–16 need your own keys)"),
+                        action: allJumps ? nil : L("键盘快捷键…", "Keyboard Shortcuts…"),
+                        url: AccessibilityPermission.keyboardSettingsURL
+                    )
+                    if Set(state.desktops.map(\.displayUUID)).count > 1 {
+                        Text(L("多显示器下跨桌面切换暂不走动画（桌面编号规则未验证），相邻切换不受影响。",
+                               "With several displays, jumps skip the animation for now (desktop numbering is unverified); adjacent switches still animate."))
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Button(L("重新检测", "Check Again")) { refreshReadiness() }
+                }
+            }
+            .onAppear { refreshReadiness() }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                refreshReadiness()
             }
 
             Section(L("图标", "Icon")) {
@@ -245,6 +289,49 @@ private struct MenuBarTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    @State private var readiness = AnimatedSwitchReadiness(
+        accessibilityGranted: false, stepKeysEnabled: false, jumpKeysEnabled: 0, jumpKeysNeeded: 0
+    )
+
+    private func refreshReadiness() {
+        readiness = AnimatedSwitchReadiness.current(desktopCount: state.desktops.count)
+    }
+
+    @ViewBuilder
+    private func readinessRow(ok: Bool, title: String, detail: String, action: String?, url: URL) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(ok ? "✓" : "!")
+                .font(.body.weight(.bold))
+                .foregroundStyle(ok ? Color.green : Color.orange)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            if let action {
+                Button(action) { NSWorkspace.shared.open(url) }
+            }
+        }
+    }
+
+    private var animatedSwitchBinding: Binding<Bool> {
+        Binding(
+            get: { state.settings.animatedDesktopSwitch },
+            set: { value in
+                state.updateSettings { $0.animatedDesktopSwitch = value }
+                if value, !AccessibilityPermission.isGranted {
+                    // 首次开启时弹系统引导，把本 App 列进「辅助功能」。
+                    AccessibilityPermission.requestPrompt()
+                }
+                refreshReadiness()
+            }
+        )
     }
 
     private var clickActionBinding: Binding<ClickAction> {

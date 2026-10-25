@@ -372,9 +372,8 @@ struct AppSettings: Codable, Hashable, Sendable {
     /// 菜单栏图标（Lucide 五选一，2026-10-06 用户规格）。换图标立即生效，不重启 Dock。
     var menuBarIcon: MenuBarIcon = .default
     /// 切相邻桌面时合成 ⌃←/⌃→ 以借系统过渡动画（2026-10-06 实验 28）。
-    /// **默认关**：本机实测事件投递被系统拦下（阳性对照 Cmd+Tab 也不生效），开了也没动画，
-    /// 只会让每次切换多等一次超时。留在 config 里是因为**换机器/系统放开后不用改代码**。
-    /// ⚠️ 刻意**不做设置 UI**：能开也无效的开关就是假开关（项目规矩，见 D1/C7）。
+    /// **默认关**；2026-10-25 起设置 → 菜单栏「切换动画」里可开（需辅助功能权限）。
+    /// 实验 28 的「投递被拦」复盘为合成时漏了方向键的 fn 修饰位，见 `AnimatedSpaceSwitch`。
     var animatedDesktopSwitch = false
     /// 次级条每个「桌面 × 边」的行状态（展开行数 + 上次滚到的行），键见
     /// `SecondaryDockRowPref.key`。2026-10-23 用户规格：拖成的高度按桌面各存各的。

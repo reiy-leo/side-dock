@@ -932,8 +932,8 @@ final class AppState {
             return
         }
         applyForDesktopSwitch(target, reason: L("预应用：切到 \(displayName(for: target))", "pre-apply: switch to \(displayName(for: target))"))
-        // 相邻一步可合成（借系统过渡动画）——**由配置开关控制，默认关**（实验 28：
-        // 本机事件投递被拦，开了也没动画）。权限/相邻条件不满足时 SpaceSwitcher 内部回落硬切。
+        // 开了「用系统动画切换桌面」（菜单栏页，默认关）时借系统快捷键的过渡动画：
+        // 相邻走 ⌃→，循环跳走「切换到桌面 N」。权限/快捷键不满足时 SpaceSwitcher 内部回落硬切。
         let style: SpaceSwitcher.SwitchStyle =
             settings.animatedDesktopSwitch ? .animatedStep(.next) : .hard
         guard switcher.switchTo(target, style: style) != nil else {
@@ -969,7 +969,8 @@ final class AppState {
             return
         }
         applyForDesktopSwitch(space, reason: L("预应用：切到 \(displayName(for: space))", "pre-apply: switch to \(displayName(for: space))"))
-        guard switcher.switchTo(space) != nil else {
+        let style: SpaceSwitcher.SwitchStyle = settings.animatedDesktopSwitch ? .animated : .hard
+        guard switcher.switchTo(space, style: style) != nil else {
             append(.warning, L("切换到 \(displayName(for: space)) 失败", "Failed to switch to \(displayName(for: space))"))
             return
         }
