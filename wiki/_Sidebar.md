@@ -1,25 +1,25 @@
-**[[首页|Home]]**
+**[[Home]]** · [[中文|首页]]
 
-**入门**
-- [[下载与安装]]
-- [[功能一览]]
+**Getting started**
+- [[Download and Install|Download-and-Install]]
+- [[Features]]
 
-**使用指南**
-- [[使用指南]]
-  - [[设置：通用|设置-通用]]
-  - [[设置：桌面|设置-桌面]]
-  - [[设置：启动台|设置-启动台]]
-  - [[切换动画]]
+**User guide**
+- [[User Guide|User-Guide]]
+  - [[Settings: General|Settings-General]]
+  - [[Settings: Desktops|Settings-Desktops]]
+  - [[Settings: Launchpad|Settings-Launchpad]]
+  - [[Switch Animation|Switch-Animation]]
 
-**原理与数据**
-- [[无痕原则]]
-- [[工作原理与注意事项]]
-- [[文件位置]]
+**How it works**
+- [[No-Trace Principle|No-Trace-Principle]]
+- [[How It Works|How-It-Works]]
+- [[File Locations|File-Locations]]
 
-**维护**
-- [[卸载与还原]]
-- [[故障排查]]
-- [[已知限制]]
+**Maintenance**
+- [[Uninstall and Restore|Uninstall-and-Restore]]
+- [[Troubleshooting]]
+- [[Known Limitations|Known-Limitations]]
 
-**开发**
-- [[构建与开发]]
+**Development**
+- [[Building and Development|Building-and-Development]]

@@ -1,7 +1,9 @@
-# Side Dock（侧边坞）
+**English** | [[中文|首页]]
 
-macOS 多桌面工具：原生 Dock 全桌面保持一致，每个桌面的差异由贴在屏幕边的「侧边坞」呈现。
+# Side Dock
 
-从左侧边栏开始：先看 [[下载与安装]]，再看 [[使用指南]]。
+A macOS multi-desktop (Spaces) tool: **the native Dock stays the same on every desktop, and what differs per desktop lives in a "side dock" pinned to the screen edge.**
 
-设计、实验与开发约定在仓库 [docs/](https://github.com/reiy-leo/side-dock/tree/main/docs) 与 [AGENTS.md](https://github.com/reiy-leo/side-dock/blob/main/AGENTS.md)。
+Start from the sidebar: read [[Download and Install|Download-and-Install]] first, then the [[User Guide|User-Guide]].
+
+Design notes, experiments and development conventions live in the repo's [docs/](https://github.com/reiy-leo/side-dock/tree/main/docs) and [AGENTS.md](https://github.com/reiy-leo/side-dock/blob/main/AGENTS.md).

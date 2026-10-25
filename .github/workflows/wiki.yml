@@ -4,6 +4,7 @@
 # <repo>.wiki.git（沙箱的部署密钥推不了 Wiki 仓库，GITHUB_TOKEN 可以）。
 # 同时在 macOS runner 上离屏渲染设置窗口（UISnapshotTests），把截图放进 Wiki 的 images/，
 # README 与 Wiki 页面都引用 https://raw.githubusercontent.com/wiki/<repo>/images/*.png。
+# 双语（2026-10-25）：英文页在 wiki/ 根目录（默认，Home 为英文），中文页在 wiki/zh/（含自己的 _Sidebar）；截图英文 settings-en-*.png、中文 settings-*-light.png。
 # ⚠️ 不要直接在网页上改 Wiki：下次同步会被 wiki/ 目录覆盖。
 name: Wiki
 
@@ -34,10 +35,11 @@ jobs:
         env:
           MULTIDOCK_UI_SNAPSHOT: "1"
         run: |
-          swift test --disable-sandbox --filter 'UISnapshotTests/testSnapshotSettingsTabsInLightAndDark'
+          swift test --disable-sandbox --filter 'UISnapshotTests/testSnapshotSettingsTabs'
           mkdir -p wiki/images
           cp "${TMPDIR:-/tmp}"/multidock-ui-snapshot/settings-*-light.png wiki/images/ || true
           cp "${TMPDIR:-/tmp}"/multidock-ui-snapshot/settings-*-dark.png wiki/images/ || true
+          cp "${TMPDIR:-/tmp}"/multidock-ui-snapshot/settings-en-*.png wiki/images/ || true
           ls -la wiki/images || true
       - name: Push to wiki repo
         env:

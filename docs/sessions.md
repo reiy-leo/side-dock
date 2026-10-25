@@ -3,6 +3,12 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-25 — Wiki / README 双语，默认英文
+
+**用户说**：「wiki可以支持i18n么」→「加上英文，默认是英文」。
+**做了什么**：GitHub Wiki 无内置多语言，用并行页面：英文页放 `wiki/` 根（Home 为英文，ASCII 页名），中文页移到 `wiki/zh/`（`首页.md` + 自己的 `_Sidebar.md`），每页顶部「English | 中文」互链；
+README 改英文、另加 `README.zh-CN.md`；wiki.yml 同时渲染英文设置截图 `settings-en-*.png`。顺手更正中文页里「切桌面动画不做」「零系统权限」两处过时说法。
+
 ### 2026-10-25 — README 拆成 Wiki
 
 **用户说**：「readme.md 文件太大了…拆成 wiki 多个有层级的页面，readme.md 中只保留简单的功能介绍和一部分截图」。
