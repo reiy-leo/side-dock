@@ -1,266 +1,29 @@
 # Side Dock（侧边坞）
 
-> 2026-10-23 起由 MultiDock 改名为 **Side Dock**，中文名「**侧边坞**」（Finder / 启动台按系统语言显示）。
-> 配置目录、bundle id 不变，升级后设置原样保留。
+macOS 多桌面（Space）菜单栏工具：**原生 Dock 全桌面保持一致，每个桌面的差异由贴在屏幕边的「侧边坞」呈现**。
+不替换原生 Dock、不改它的偏好，切桌面零写入零重启；退出即还原，无痕。
 
-macOS 多桌面（Space）工具：**原生 Dock 全桌面保持一致，每个桌面的差异由贴在原生 Dock 内侧的「次级 Dock 条」呈现**；
-也可以关掉冻结开关，回到「每个桌面一套原生 Dock、切换时自动换」的老模式。菜单栏常驻，单击图标切到下一个桌面，⇧+单击切上一个。
+- **每个桌面一套自己的 App 栏**：贴在 Dock 内侧或独立贴在屏幕左 / 右 / 下边，半露、悬停滑出
+- **一个桌面多根栏**：同一条边最多 3 根，双指滚动切行，末端圆点指示当前行
+- **像原生 Dock 的手感**：悬停放大、显示名称、点击未运行的 App 弹跳、拖出条外即移除
+- **菜单栏一键切桌面**：单击下一个、⇧+单击上一个，切完大字提示桌面名；可选系统滑动动画
+- **启动台导入**（macOS 26 以下）：把启动台文件夹一键加到某根栏
+- **零系统权限、无痕**：退出自动还原，强杀后下次启动自愈
 
-不替换原生 Dock、不改写它的偏好。默认形态下切桌面**零写入零重启**；次级条是纯 App UI（零权限、无痕，退出即消失）。
-
-- 详细设计与实施计划：[docs/PLAN.md](docs/PLAN.md)
-- 实验结论（**22 个实验，含对计划的多处修正**）：[docs/spikes.md](docs/spikes.md)
-- 项目进度、开发约定与交接信息：[AGENTS.md](AGENTS.md)
-
----
+<p>
+  <img src="https://raw.githubusercontent.com/wiki/reiy-leo/side-dock/images/settings-app-bars-light.png" width="49%" alt="设置 · 应用栏">
+  <img src="https://raw.githubusercontent.com/wiki/reiy-leo/side-dock/images/settings-desktop-light.png" width="49%" alt="设置 · 桌面">
+</p>
 
 ## 下载
 
-最新发布版在 [GitHub Releases](https://github.com/reiy-leo/side-dock/releases/latest)：
-按你的机器下载对应的包（每个版本两个原生架构，DMG 与 zip 二选一）：打开 DMG 把 `Side Dock.app` 拖进「应用程序」，或解压 zip 后拖进去。
+[GitHub Releases](https://github.com/reiy-leo/side-dock/releases/latest) 里按机器选：Apple Silicon 用 `arm64`，Intel 用 `x86_64`（DMG 或 zip 都行）。
+App 只做 ad-hoc 签名，首次打开请右键 →「打开」。详见 [下载与安装](https://github.com/reiy-leo/side-dock/wiki/下载与安装)。
 
-- **Apple Silicon（M 系列）**：`SideDock-vX.Y.Z-arm64.dmg`（或 `.zip`）
-- **Intel**：`SideDock-vX.Y.Z-x86_64.dmg`（或 `.zip`）
+## 文档
 
-> 从 MultiDock 升级：删掉旧的 `MultiDock.app` 再装 `Side Dock.app`；若开过「登录时启动」，在设置里关一次再开一次。
+完整说明在 **[Wiki](https://github.com/reiy-leo/side-dock/wiki)**：[使用指南](https://github.com/reiy-leo/side-dock/wiki/使用指南) · [切换动画](https://github.com/reiy-leo/side-dock/wiki/切换动画) · [无痕原则](https://github.com/reiy-leo/side-dock/wiki/无痕原则) ·
+[卸载与还原](https://github.com/reiy-leo/side-dock/wiki/卸载与还原) · [故障排查](https://github.com/reiy-leo/side-dock/wiki/故障排查) · [构建与开发](https://github.com/reiy-leo/side-dock/wiki/构建与开发) · [已知限制](https://github.com/reiy-leo/side-dock/wiki/已知限制)。
 
-> 两个包由 GitHub Actions 在两个原生 runner 上构建并校验架构（见 [.github/workflows/ci.yml](.github/workflows/ci.yml)）。
-
-> 本 App 按个人自用标准只做 **ad-hoc 签名、不公证**，首次打开会被 Gatekeeper 拦下：
-> 右键点 App →「打开」→ 弹窗里再点「打开」；或终端执行
-> `xattr -dr com.apple.quarantine "/Applications/Side Dock.app"`。
-
-## 当前状态
-
-**v0.2.0（2026-10-24）**：计划里的功能全部完成，**540+ 个单元测试全绿**、真机 Dock 验收 **9/9 绿**。
-
-现在能做的：
-
-- 识别所有桌面、菜单栏单击循环切换（⇧+单击往回切）、切完弹 1 秒的桌面名提示（背景效果可选**默认 / 流动霓虹 / 赛博紫韵**）
-- **冻结模式（默认）**：原生 Dock 固定为「默认 Dock」，切桌面不写偏好、不重启 Dock；每个桌面的
-  差异由次级条呈现（随桌面秒换图标、固定尺寸钉在原生 Dock 旁、显隐与原生 Dock 同步）
-- 想要老模式时关掉「冻结原生 Dock 的逐桌面切换」：每个桌面配一套自己的原生 Dock，切换时自动应用
-  （走 SIGHUP + 自动隐藏三明治，**重启不可见、无黑屏闪烁**）
-- **一个桌面多根栏**：同一条边最多 3 根，合在一扇次级条里各占一行；条**始终只显示一行**，
-  双指滚动一次切一行（末端小圆点指示共几行、当前第几行），条长度跟着当前行的 App 数量变化
-- **像原生 Dock 的手感**：悬停放大（跟随系统「放大」设置，底板随两端图标变长）、悬停显示 App 名称、
-  点击未运行的 App 弹跳到启动完成、**把图标拖出条外松手即移除**（拖得不够远会放回）；
-  独立贴边时离屏幕边留 6 pt 浮着，底板用与原生 Dock 相近的毛玻璃材质
-- **避开台前调度**：台前调度占着的那条边在位置选项里灰掉并标「（台前调度）」，已在那条边上的栏临时显示到底部
-- 设置页可视化编辑图标条（拖入 / 拖出 / 排序 / 从访达拖 `.app` 进来）
-- **启动台页（macOS 26 以下）**：读取 Launchpad 的所有文件夹，一键「添加到某根 Dock 栏」或「替换某根 Dock 栏」
-- **无痕**：退出自动还原、强杀后下次启动自愈、每次写 Dock 前自动备份
-
-还没做的：
-
-- **多显示器未真机验证**（本机只有一台屏；代码已就绪，需插一台外接屏实测）
-- **切桌面动画（可选，待真机验证）**：设置 → 菜单栏 →「用系统滑动动画切换桌面」，需辅助功能权限；借系统 Mission Control 快捷键（相邻 ⌃←/⌃→，跨桌面用「切换到桌面 N」，需在 键盘快捷键 → 调度中心 里打开）
-- **次级条材质**与原生 Dock 是否完全一致尚待真机对比（可用 `defaults write local.multidock SecondaryDockMaterial -int <n>` 换材质试，重启 App 生效；`defaults delete` 回默认）
-
----
-
-## 构建与运行
-
-```bash
-swift build -c release --disable-sandbox   # 编译（--disable-sandbox 在本机是必须的，见下）
-swift test --disable-sandbox               # 全部单元测试
-./scripts/build-app.sh                     # 组装 build/Side Dock.app（ad-hoc 签名）
-open "build/Side Dock.app"                 # 运行
-```
-
-必须打包成 `.app` 再运行：直接执行 `.build/release/MultiDock` 没有 bundle，菜单栏图标与登录项都会异常。
-
-> **`--disable-sandbox` 不是可选项。** SwiftPM 自带的 `sandbox-exec` 在本机报 `sandbox_apply: Operation not permitted`，
-> manifest 编译直接失败，错误信息是 `error: 'multi-dock': Invalid manifest` —— 看着像 `Package.swift` 坏了，其实是环境问题。
-
-需要登录启动时，在 **设置 → 通用 → 启动与自愈** 里打开开关（默认关）。
-
----
-
-## 怎么用
-
-菜单栏出现一个 Dock 形状的图标，标题是当前桌面序号。
-
-| 操作 | 行为 |
-| --- | --- |
-| **左键单击** | 切到下一个桌面（循环）。可在设置里改成"打开菜单" |
-| **⇧+左键单击** | 切到上一个桌面（循环）。左键若设为"打开菜单"，这个也一并打开菜单 |
-| **右键 / ⌥+左键** | 打开下拉菜单 |
-
-下拉菜单：桌面列表（当前项打勾，点选即切）→ 下一个桌面 → 上一个桌面 → 用当前 Dock 重置本桌面配置 → 刷新桌面列表 → 立即还原到原始 Dock → 调试面板 / 设置 → **退出并还原 Dock**。
-
-> 图标看不见？本机若开了「自动隐藏菜单栏」，把鼠标移到屏幕顶端即可。App 是 `LSUIElement`，不会出现在 Dock 里，也没有窗口。
-
-### 设置 → 通用
-
-- **默认 Dock**：图标条编辑区。访达与启动台固定在最前（访达在 plist 里根本没有条目，删不掉也无需处理）。可拖入/拖出/排序，或从访达拖 `.app` 进来
-- **其他项（文件夹 / 堆栈）**：真实 Dock 上的文件夹（例如「下载」）会列在下面一条里，可拖拽排序、右键或拖到垃圾桶移除。**不能在这里新建** —— 实测 Dock 不认领 App 自己拼的目录条目（证据见「已知未做」）。要加文件夹，请在访达里把它直接拖到 Dock 上，App 会自动记进当前桌面的配置
-- **外观**：位置（下/左/右）、大小、放大、自动隐藏、最小化特效、最小化到应用图标、运行指示点。本机不支持的键会被禁用并说明原因，不做"能改但没反应"的假开关
-- **次级 Dock 条**（「次级 Dock 条」一节；每根栏的位置在「应用栏」页或条上右键菜单里改）：
-  - **显示次级 Dock 条**（默认开）：贴在原生 Dock 内侧的自绘图标条，默认只露一半，鼠标移上去滑出全条；
-    内容跟随当前桌面、切换瞬间换图标；显隐与原生 Dock 同步（原生隐藏它就藏，碰边显出它同步出来）
-  - **冻结原生 Dock 的逐桌面切换**（默认开）：原生 Dock 保持一套固定配置、切桌面不再重启；
-    每个桌面的差异由次级条呈现。关掉它回到"每桌面一套原生 Dock"的老模式
-- **应用**：立即应用 / 立即还原到原始 Dock / 把当前 Dock 设为新基准
-- 另有：菜单栏交互、桌面切换提示、退出行为、启动与自愈、桌面行为（`mru-spaces`）、备份与还原、Dock 应用方式
-
-### 设置 → 桌面
-
-左侧是**按显示器分组**的桌面列表（可就地改名，**最长 10 个字符**，仅存本地 —— macOS 15 没有桌面命名接口；分组标题就是显示器名，插拔外接屏后会自动刷新）。另有「名称展示」开关、位置（顶部/中部/底部）与效果（**默认 / 流动霓虹 / 赛博紫韵**）—— 切换桌面时按这里设置显示 1 秒的大字；「默认」是磨砂玻璃面板，「流动霓虹」「赛博紫韵」是两种动态背景（光带扫过 + 霓虹描边，文字不变），只在展示的那 1 秒里播动画。
-
-### 设置 → 启动台（macOS 26 以下可用）
-
-**只读**读 Launchpad 的文件夹（名称 + 内含的 App，按启动台里的顺序），每个文件夹一行：
-
-- **「添加到…」** —— 把这个文件夹的 App 接到某根 Dock 栏的末尾（栏里原有的图标不动）
-- **「替换…」** —— 清空某根 Dock 栏，换成这个文件夹的内容
-
-操作只写目标 Dock 栏；已固定在原生 Dock 的 App 不会重复加入；定位不到的 App（磁盘上已删）会跳过并在结果里说明。在启动台里改过文件夹后点「刷新」重新读取。
-
-> macOS 26 起系统用「应用程序」取代了启动台，本页会显示说明并禁用。
-
----
-
-## 无痕原则（硬约束）
-
-App 绝不永久改变你的 Dock。
-
-1. **首次运行**把当时的 `com.apple.dock` 全量存为基准快照（`baseline.plist`），此后不覆盖
-2. **正常退出**自动还原到基准（可在设置里关掉）
-3. **被强杀 / 崩溃 / 断电**，下次启动检测到残留的 `session.state` 就会自动还原，并弹一条提示
-4. **每次真正写 Dock 之前**都留一份全量备份（`backups/`，保留最近 20 份），可在设置页挑一份恢复
-
-刚装完什么都不配置时，Dock 与安装前完全一致 —— 这条有实测：App 运行前后 `defaults export com.apple.dock` 逐键相同。
-
----
-
-## 需要知道的几点
-
-- **默认（冻结）模式下切桌面完全不碰原生 Dock**：不写偏好、不重启、不闪。原生 Dock 固定为「默认 Dock」那套配置；
-  启动时如果它和基线不一致（无痕还原后正常如此），会对齐一次（约 0.4 秒、走自动隐藏三明治所以看不到），内容一致时自动跳过
-- **未冻结（老模式）切换桌面时 Dock 会重启约 0.1 秒**（SIGHUP 实测 45–90 ms 不可用），
-  但重启默认包在**自动隐藏三明治**里（滑走 → 隐形重启 → 滑回），所以**看不到黑屏闪烁**。
-  两个桌面共用同一份 Dock 时会被短路，完全不重启
-- 一次应用的总耗时约 1 秒，其中大部分是主动错开 launchd 重启节流的等待 —— 等待期间 Dock 是**可用**的
-- 识别与切换桌面依赖 **SkyLight 私有 API**（`CGSCopyManagedDisplaySpaces` / `CGSManagedDisplaySetCurrentSpace`），运行时 `dlopen` 加载、不链接私有框架。macOS 升级可能失效，失效时 App 会降级并在调试面板明确报警
-- **零系统权限**：不需要辅助功能、屏幕录制、root。桌面名提示与次级条就是本 App 自己的无边框窗口
-- **本机 `mru-spaces` 默认是开的**（系统按最近使用重排桌面顺序），会打乱"下一个桌面"的直觉。设置页给了显式开关，**只有你主动点才会改**
-- 程序化切桌面不触发系统的空间变化通知，所以 App 用 300 ms 轮询识别桌面变化 —— 你自己用触控板/快捷键切桌面一样能识别、一样会弹提示（手势切换的通知通道实测有效，跟随延迟 ≈0）
-
----
-
-## 文件位置
-
-全部在 `~/Library/Application Support/MultiDock/`：
-
-| 文件 | 用途 |
-| --- | --- |
-| `baseline.plist` | 首次运行时对 `com.apple.dock` 全量域的只读备份，**此后不覆盖** |
-| `config.json` | 桌面绑定与设置（原子写） |
-| `session.state` | 会话标记；正常退出会删除，**残留即代表上次被强杀** |
-| `multidock.log` | 运行日志（上限 512 KB），反馈问题时直接附上 |
-| `backups/` | 写 Dock 前的全量域备份，保留最近 20 份 |
-
-登录项若走了 LaunchAgent 兜底，还有一份 `~/Library/LaunchAgents/local.multidock.loginitem.plist`。
-
-**调试面板**（菜单栏 → 调试面板…）显示当前 `spaceUUID` / `id64` / `type`、识别到的桌面列表、实时日志，以及上述文件的路径。
-
----
-
-## 完全卸载与还原 Dock
-
-### 第一步：让 App 把 Dock 还原回去
-
-菜单栏 → **「退出并还原 Dock」**（或设置 → 通用 → 「立即还原到原始 Dock」）。这一步只写 Dock 的图标与外观键，不动热角、启动台网格等设置。
-
-如果 App 已经不在运行、或你想**连同后来改过的其他 Dock 设置一起**回到最初状态，用基准快照整域还原：
-
-```bash
-defaults import com.apple.dock ~/Library/Application\ Support/MultiDock/baseline.plist
-kill -HUP $(pgrep -x Dock)          # 信号致死才会被 launchd 拉回；不要 killall Dock
-```
-
-> `defaults import` 是**整域替换**，会把从装 App 到现在这段时间内你对 Dock 的所有改动（包括热角）一起回退。
-> 这正是"完全还原"想要的；如果你只想还原图标和外观，用设置页那个按钮。
-
-### 第二步：关掉登录启动
-
-设置 → 通用 → 启动与自愈 → 关掉「登录时自动启动」。若 App 已经打不开：
-
-```bash
-rm -f ~/Library/LaunchAgents/local.multidock.loginitem.plist
-```
-
-### 第三步：删干净
-
-```bash
-rm -rf ~/Library/Application\ Support/MultiDock
-rm -rf "/path/to/Side Dock.app"      # 默认在仓库的 build/Side Dock.app
-```
-
-三步走完，系统里没有任何残留：Dock 回到安装前的状态，登录项与数据目录都不在了。
-
----
-
-## 故障排查
-
-| 现象 | 先看这里 |
-| --- | --- |
-| 切了桌面 Dock 没变 | **默认冻结模式下这是预期**：原生 Dock 固定，差异看次级条。次级条没出现则确认「显示次级 Dock 条」开着、该桌面配置非空 |
-| 次级条不显示 / 不跟着原来那样动 | 确认开关开着；全屏 App 空间里它和原生 Dock 一样隐藏；自动隐藏时它随原生 Dock 同步显隐 |
-| hover 不滑出 | 鼠标移到 Dock 上沿探出的半条上；若点击/悬浮都不行，记下并反馈（备选是升层级） |
-| 某个位置选项是灰的 | 那条边被台前调度占着（选项后标「台前调度」），或同一桌面同一条边已满 3 根栏 |
-| 「立即应用」是灰的 | 默认 Dock 为空，先点「从当前 Dock 抓取」 |
-| 菜单栏没有图标 | 本机可能开了自动隐藏菜单栏，把鼠标移到屏幕顶端 |
-| 桌面名提示不弹 | 设置 → 通用 → 桌面切换 → 「切换桌面时显示桌面名称」是否开着；启动时首次采样和从全屏 App 退回桌面**故意不弹** |
-| 启动后弹「已自动还原上次未还原的 Dock」 | 上次是强杀/崩溃退出的，App 已自动把 Dock 还原为基准。这是预期行为 |
-| 桌面功能不可用 | SkyLight 私有 API 失效（通常发生在系统大版本升级后）。App 会降级为"只能手动改 Dock、不能自动跟随与切换"，调试面板会写明原因 |
-| 别的都对不上 | 看 `~/Library/Application Support/MultiDock/multidock.log`，里面每条应用/还原都带了耗时与结果 |
-
----
-
-## 开发
-
-```bash
-swift build -c release --disable-sandbox
-swift test --disable-sandbox
-```
-
-**动 Dock 的改动必须跑真实验收**（会真的改 `com.apple.dock` 并重启 Dock 几十次，跑完自动还原）：
-
-```bash
-defaults export com.apple.dock /tmp/dock-backup.plist     # 先手工备份一次
-MULTIDOCK_DOCK_ACCEPTANCE=1 swift test --disable-sandbox --filter DockAcceptanceTests
-```
-
-跑的时候**别手动改 Dock**，否则会报假失败。
-
-其他约定（`--disable-sandbox`、1Password 签名的 git 提交、零警告构建、文档同步）都写在 [AGENTS.md](AGENTS.md)。
-
----
-
-## 已知未做 / 待实测
-
-- **切桌面没有过渡动画**（**已定性为不做**）：程序化切空间是瞬时硬切（实测 0–6 ms），
-  SkyLight 没有暴露"带过渡地切到某空间"的入口；唯一像入口的会话级开关**写后读不回**（改了就还原不回去，违反无痕原则）；
-  `SLSWillSwitchSpaces` 签名未知、猜错会直接段错误。零权限下无解，完整证据见 [docs/spikes.md](docs/spikes.md) 实验 7。
-- **多显示器与热插拔**（唯一剩下的实测项）：映射键用了 `(displayUUID, spaceUUID)`，提示窗也按 `displayUUID` 定位到对应屏幕并有回落，
-  插拔外接显示器后会自动重读桌面列表，但**只在一台显示器上开发，没有实测过插拔外接屏**。
-  插上屏后开调试面板核对两件事就行：「显示器数量」对不对、每个桌面 `displayUUID` 前 8 位有没有串；
-  **顺带看一眼设置 → 桌面页的列表是不是按显示器分组、组名对不对**。
-- **注销/关机时的还原**：系统不给等待时间，只能尽力（先留债务标记、下次启动自愈），未实测。
-- **文件夹 / 堆栈（其他项）不能在 App 里新建**：实测 Dock **不认领** App 自己拼的目录条目
-  （不补 `GUID` / `book`，连自己生成书签也不行），而**字段不全的形状会让 Dock 直接崩**
-  （launchd 反复拉起 → 崩溃循环，用户当场失去 Dock）。所以在编辑器里**只能排序 / 移除**已有条目；
-  要加文件夹，请在**访达里把它直接拖到 Dock 上**，App 会自动把它记进当前桌面的配置。证据：`docs/spikes.md` 实验 8。
-- **Dock 重启偶发慢（26–31 秒）的根因未定**：已装取证仪表、修法"不等，催"把代价压到 ~1–3.5 秒；
-  七个假说已证伪。默认冻结形态下切桌面不再重启，实际暴露面已很小。复现时按 `docs/spikes.md` 实验 15/16.4 的规则读日志。
-- **反复杀 Dock 会让 launchd 进入递增退避**：连续重启几十次后，Dock 可能几十秒不回来（静置等待比反复 `kickstart` 更快）。
-  这会影响验收脚本的节奏；**App 正常使用曾经也会踩到**（2026-09-19 实验 9 的"黑屏几分钟"就是这么滚起来的），
-  修法是"kickstart 非阻塞 + 不叠发 + 监视器放慢"，已落地并有真机日志覆盖。
-
-已实测过的（不用担心）：全屏 App 空间的过滤（真机回归通过）、编辑条竖排、孤儿绑定提示、回存撤销、
-其他项排序 / 移除（真机验收：Dock 自己的 `GUID` / `book` 一个不丢）、设置页顶部报警横幅、
-无闪烁重启（自动隐藏三明治）、冻结模式切桌面零重启、次级条固定几何与同步显隐。
-
-详见 [AGENTS.md](AGENTS.md) §3「未完成」与 §6.3。
+设计与实验记录：[docs/PLAN.md](docs/PLAN.md)、[docs/spikes.md](docs/spikes.md)；开发交接：[AGENTS.md](AGENTS.md)。
+Wiki 源文件在仓库 [`wiki/`](wiki/) 目录，推送后由 Actions 自动同步。

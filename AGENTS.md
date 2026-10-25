@@ -3,6 +3,7 @@
 > **本文件是入口与当前状态**；细节按主题分流：
 > 设计与规格 → `docs/PLAN.md`；实验数据 → `docs/spikes.md`；环境事实 → `docs/facts.md`；
 > 工程约定与防回归 → `docs/rules.md`；会话史 → `docs/sessions.md`。
+> 面向用户的说明在 Wiki，源文件是仓库 `wiki/`（`.github/workflows/wiki.yml` 自动同步，别在网页上改）；README 只留简介。
 > 旧文档里"见 §4 / §5 / §8"的引用分别指向 facts / rules / sessions（本文件保留对应编号小节作路标）。
 
 ---

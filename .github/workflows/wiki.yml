@@ -1,0 +1,56 @@
+# Wiki 同步（2026-10-25 用户规格：README 拆成 Wiki 多个有层级的页面）。
+#
+# 仓库里的 wiki/ 目录是 Wiki 的唯一来源：改 wiki/*.md 推上来，这里把它整体同步到
+# <repo>.wiki.git（沙箱的部署密钥推不了 Wiki 仓库，GITHUB_TOKEN 可以）。
+# 同时在 macOS runner 上离屏渲染设置窗口（UISnapshotTests），把截图放进 Wiki 的 images/，
+# README 与 Wiki 页面都引用 https://raw.githubusercontent.com/wiki/<repo>/images/*.png。
+# ⚠️ 不要直接在网页上改 Wiki：下次同步会被 wiki/ 目录覆盖。
+name: Wiki
+
+on:
+  push:
+    branches: [main, "feat/**"]
+    paths:
+      - "wiki/**"
+      - ".github/workflows/wiki.yml"
+      - "Sources/MultiDock/UI/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wiki
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync wiki
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render settings screenshots
+        continue-on-error: true
+        env:
+          MULTIDOCK_UI_SNAPSHOT: "1"
+        run: |
+          swift test --disable-sandbox --filter 'UISnapshotTests/testSnapshotSettingsTabsInLightAndDark'
+          mkdir -p wiki/images
+          cp "${TMPDIR:-/tmp}"/multidock-ui-snapshot/settings-*-light.png wiki/images/ || true
+          cp "${TMPDIR:-/tmp}"/multidock-ui-snapshot/settings-*-dark.png wiki/images/ || true
+          ls -la wiki/images || true
+      - name: Push to wiki repo
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" "$RUNNER_TEMP/wiki"
+          # images/ 里保留上次的截图（这次渲染失败时不至于全丢）。
+          rsync -a --delete --exclude .git --exclude images wiki/ "$RUNNER_TEMP/wiki/"
+          if [ -d wiki/images ]; then mkdir -p "$RUNNER_TEMP/wiki/images" && rsync -a wiki/images/ "$RUNNER_TEMP/wiki/images/"; fi
+          cd "$RUNNER_TEMP/wiki"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then echo "Wiki 无变化"; exit 0; fi
+          git commit -m "Sync wiki from ${GITHUB_SHA::7}"
+          git push origin HEAD

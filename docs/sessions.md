@@ -3,6 +3,15 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-25 — README 拆成 Wiki
+
+**用户说**：「readme.md 文件太大了…拆成 wiki 多个有层级的页面，readme.md 中只保留简单的功能介绍和一部分截图」。
+
+**做了什么**：README 缩到功能介绍 + 两张设置截图 + 下载 + Wiki 入口；原内容拆进仓库 `wiki/`（Home、_Sidebar 分组层级、15 页）。
+新增 `.github/workflows/wiki.yml`：推 `wiki/**` 时在 macOS runner 渲染设置窗口快照放进 Wiki `images/`，再用 GITHUB_TOKEN 同步到 `side-dock.wiki.git`
+（部署密钥与沙箱的 GitHub connector 都推不了 Wiki；沙箱代理会把 github.com 的认证换成 connector 令牌，用户给的 PAT 也用不上）。
+**约定**：Wiki 只改仓库 `wiki/`，网页上直接改会被下次同步覆盖。**未解决**：侧边坞桌面实景截图待 Rei 提供。
+
 ### 2026-10-25 — 切桌面动画（可选，借系统快捷键）
 
 **用户说**：「设置中让用户开启辅助功能，模拟切换」；跨多个桌面难道要模拟滑动多次？
