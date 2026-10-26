@@ -1111,6 +1111,67 @@ M 个已固定在原生 Dock…"）。
 去重 / 定位不到；搬运规则 9 例；`AppState` 状态和两个动作 13 例）；真机只读验收
 `MULTIDOCK_LAUNCHPAD_ACCEPTANCE=1`（27 个文件夹、160 个 App、定位 160/160、读完字节没变）。
 
+
+### 3.14 配置同步到云盘文件夹（2026-10-26 新增，用户规格）
+
+**用户原话**：「添加同步到 google-drive webdav 的支持」；「每台电脑有一个单独的同步，互不干扰。不同设备有单独的同步，而不是共用一个」。
+
+**结论**：Google Drive 没有官方 WebDAV，所以不接任何云服务 API。App 只在用户选的文件夹里读写文件，上传下载交给云盘客户端。
+Google Drive 桌面版（`~/Library/CloudStorage/GoogleDrive-…/我的云端硬盘`）、iCloud Drive、Dropbox、访达挂载的 WebDAV 卷都能用。
+
+**文件布局**：每台 Mac 只写自己那份 `<同步文件夹>/SideDock/<设备 ID>.json`，永远不写、不删别的设备的文件。
+
+- 设备 ID = 硬件 UUID（IOKit `IOPlatformUUID`）；读不到时用配置目录里的 `device-id`（随机生成一次）。文件名只留字母、数字、`-`、`_`（`ConfigSync.fileName`）。
+- 文件内容（`SyncSnapshot`）：`format`、`deviceID`、`deviceName`（`SCDynamicStoreCopyComputerName`）、`appVersion`、`writtenAt`、`spaceOrdinals`、`config`。
+- `config` 就是 `ConfigStore.Payload`，和 config.json 同构，编码格式也一样（缩进、键排序、ISO8601 日期）。
+- `spaceOrdinals` 是附加字段：写出时每个桌面的「第几块屏 · 第几个桌面」。config.json 格式不变。
+- 原子写：同目录下点开头的临时文件，再 `replaceItemAt`（目标还没有时 `moveItem`）。
+
+**不同步的东西**：基准快照、备份、会话标记、`mru-spaces`、登录启动项本来就不在 Payload 里。
+`secondaryDockRowPrefs`（按本机桌面 UUID 记的「上次滚到哪一行」）写出时去掉，导入时保留本机值。
+同步设置（文件夹路径、自动同步开关、上次同步时间）存在本机 `sync-settings.json`，不进 config.json，也不进同步文件，所以「导入配置」也不会改它。
+
+**什么时候写**：
+
+1. 开着「自动同步」（选了文件夹后默认开）时，每次 `persistConfiguration` 落盘后防抖约 2 秒写一次。
+2. 启动后写一次；打开自动同步时写一次；点「立即同步」时写一次。
+3. 写之前先读现有文件，比较除 `writtenAt` 以外的内容（`ConfigSync.contentKey`）。一样就不写，不惊动云盘客户端。
+4. 磁盘读写放在后台线程（`Task.detached`），云盘目录偶尔卡一下也不会卡住界面。
+5. 文件夹不在（云盘没开、卷没挂载）就报「找不到同步文件夹」，这次不写，也不替用户建出这个文件夹（只会在里面建 `SideDock/`）。
+
+**导入**（`AppState.importSyncSnapshot`）：本机那份叫「从云端恢复」，别的设备那份叫「导入到本机」，都先弹确认。
+两者都整份替换本机设置，和「导入配置」走同一条 `replaceConfiguration`（同一套归一化、原生固定 App 清洗、冻结开关处理，不自动应用原生 Dock）。
+
+桌面绑定的映射（`ConfigSync.mapSpaces`）：
+
+1. 本机有这个桌面 ID → 不动（多半是本机自己的快照）；
+2. 没有 → 按快照里的序号找本机同序号的桌面。屏的顺序：主屏第一，其余按桌面列表里出现的先后；SkyLight 把屏叫 `Main` 时也算主屏；
+3. 还找不到 → 保留原 ID，成孤儿栏（应用栏页已有孤儿提示和一键解绑）。
+
+桌面命名用同一规则，一个桌面只留第一条名字。结果行写清几根栏对上了、几根成了孤儿。
+
+**缺 App**（`AppLocator`）：配置从别的 Mac 来，栏里难免有本机没装的 App。
+
+- 存的路径还在 → 照用；不在 → 按 bundle ID 用 `NSWorkspace.urlForApplication(withBundleIdentifier:)` 再找；还找不到 → 算缺失。
+- 次级条不画缺失的 App，也不能点；全缺时那一行不占位。找到新位置的按新路径取图标、启动。
+- 写原生 Dock（未冻结模式、「立即应用」）时跳过缺失的 App，免得出问号图标；换了位置的用 `DockTile.makeFileTile` 按新路径重建（和编辑器「添加」同一形状，不造新形状）。
+- 配置里一律不删；编辑器照旧按原路径标灰。
+
+**注入点**：`AppState` 的 `appLocator` 默认 nil（不过滤，旧行为），`syncEnvironment` 默认 `.inert`（设置只在内存、假设备、没有文件夹）。
+真机由 `AppDelegate` 传 `.live`。测试进程因此绝不会往用户的云盘文件夹写东西。
+
+**UI**（数据页「同步」节，在「配置文件」和「备份与还原」之间）：同步文件夹（选择 / 更换，`NSOpenPanel` 选目录）、找不到时的橙色提示、
+「自动同步」开关、「立即同步」「刷新列表」「停止同步」（只忘掉文件夹，不删云端文件）、一句话结果或上次同步时间、
+各设备快照列表（设备名、「本机」标签、写入时间、版本，本机那份「从云端恢复」、别的设备「导入到本机」）。
+
+**已知取舍**：
+
+- 未冻结模式下，原生 Dock 写的是过滤后的内容。之后用户手改原生 Dock 触发回存时，回存的是 Dock 里的实际内容，缺失的 App 会从那根栏里掉出去。
+- 同步只是「各写各的」，没有合并，也没有自动拉取。别的设备的改动要手动「导入到本机」才生效。
+
+**验收**：单测 `ConfigSyncTests`（文件名、剔除本机字段、序号与映射、只写自己那份、内容没变不重写、文件夹不在、列表跳过隐藏和坏文件、缺 App 三种情况与次级条过滤）
+与 `ConfigSyncStateTests`（默认环境不同步、立即同步的内容、落盘后自动同步、跨机导入映射并保留本机字段、写原生 Dock 跳过缺失 App）。真机手测见 AGENTS.md A17。
+
 ---
 
 ## 4. 分阶段实施和验收（全部做完）

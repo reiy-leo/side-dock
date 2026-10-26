@@ -32,7 +32,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         //（需要辅助功能权限；未授权时 SpaceSwitcher 内部自动回落硬切）。
         // **不能把合成器做成 AppState 的默认值**——测试进程里 AXIsProcessTrusted() 可能为真，
         // 那样 `swift test` 会真的合成按键切用户桌面（实测踩过）。
-        let state = AppState(synthesizer: HotKeySpaceStepSynthesizer())
+        //
+        // 缺 App 过滤与配置同步同理（2026-10-26）：默认值是「不过滤 / 只在内存」，
+        // 真机在这里显式接上真实磁盘与硬件身份，测试进程不会往用户的云盘文件夹写东西。
+        let state = AppState(
+            synthesizer: HotKeySpaceStepSynthesizer(),
+            appLocator: .live,
+            syncEnvironment: .live
+        )
         self.state = state
         // 关于页的更新检查走 GitHub Releases（零权限）；测试与快照不配置就不会碰网络。
         state.configureUpdateChecking(AppAbout.standardReleaseFetcher())

@@ -198,25 +198,45 @@ final class SecondaryDockRowsModel {
 /// 只取 `pinnedApps`——`otherItems`（文件夹/堆栈）的展开视图是另一套交互，v1 不做。
 enum SecondaryDockContentBuilder {
     /// 没有可显示的条目时返回 nil（调用方应把条隐藏）。空判看 `pinnedApps` 本身。
+    ///
+    /// `locator` 非 nil 时（真机）：这台 Mac 上找不到的 App **不画、不可点**（配置里照留）；
+    /// 换了位置的按 bundle ID 找到的新路径取图标、启动（2026-10-26 配置同步配套）。
+    /// nil = 旧行为（测试与快照）。全部条目都找不到时返回 nil（条隐藏）。
     static func snapshot(
         from config: DockConfig,
         runningBundleIDs: Set<String>,
-        iconSize: CGFloat
+        iconSize: CGFloat,
+        locator: AppLocator? = nil
     ) -> SecondaryDockContentSnapshot? {
         let apps = DockStripRules.barApps(config.pinnedApps)
         guard !apps.isEmpty else { return nil }
 
         var items: [SecondaryDockItem] = []
         for tile in apps {
+            var launchPath = DockStripRules.filePath(of: tile)
+            var isInstalled = DockStripRules.isInstalled(tile)
+            if let locator {
+                switch locator.presence(of: tile) {
+                case .missing:
+                    continue
+                case .atOriginalPath(let path), .relocated(let path):
+                    launchPath = path
+                    isInstalled = true
+                case .notAFile:
+                    break
+                }
+            }
             items.append(SecondaryDockItem(
                 id: tile.normalizedKey,
                 label: tile.label.isEmpty ? (tile.bundleIdentifier ?? L("应用", "App")) : tile.label,
-                icon: DockStripRules.icon(for: tile, size: iconSize),
-                launchPath: DockStripRules.filePath(of: tile),
-                isInstalled: DockStripRules.isInstalled(tile),
+                icon: launchPath.map { DockStripRules.icon(forPath: $0, size: iconSize) }
+                    ?? DockStripRules.icon(for: tile, size: iconSize),
+                launchPath: launchPath,
+                isInstalled: isInstalled,
                 isRunning: runningBundleIDs.contains(tile.bundleIdentifier ?? "")
             ))
         }
+        guard !items.isEmpty else { return nil }
         return SecondaryDockContentSnapshot(items: items, iconSize: iconSize)
     }
 }

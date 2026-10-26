@@ -176,6 +176,29 @@ final class AppState {
     /// 在飞的检查任务句柄：连点「检查更新」时取消旧的，只保留最后一发。
     private var updateCheckTask: Task<Void, Never>?
 
+    // MARK: - 缺 App 过滤 与 配置同步（2026-10-26）
+
+    /// 栏里的 App 在这台 Mac 上找不找得到。nil = 不过滤（测试默认，旧行为）；
+    /// 真机由 `AppDelegate` 传 `.live`。见 `AppLocator`。
+    let appLocator: AppLocator?
+    /// 同步依赖（设置读写、设备身份、版本号、防抖时长）。默认 `.inert`：只在内存，
+    /// 测试进程绝不会往真实云盘文件夹写东西；真机由 `AppDelegate` 传 `.live`。
+    let syncEnvironment: SyncEnvironment
+    /// 这台 Mac 的身份（同步文件名 + 设备名）。
+    let deviceIdentity: DeviceIdentity
+    /// 同步设置（只存本机）。下面这几项只由 `AppState+Sync.swift` 改。
+    var syncSettings = SyncSettings()
+    /// 同步区的一句话结果。
+    var syncStatusMessage: String?
+    var syncStatusFailed = false
+    /// 同步文件夹里各设备的快照（最新在前）。
+    var syncSnapshots: [ConfigSyncFolder.Entry] = []
+    /// 同步文件夹里读不懂的文件数。
+    var syncUnreadableCount = 0
+    @ObservationIgnored var syncDebounceTask: Task<Void, Never>?
+    @ObservationIgnored var syncWriteTask: Task<Void, Never>?
+    @ObservationIgnored var syncListTask: Task<Void, Never>?
+
     /// 依赖全部可注入：`DockController`、两个 Store、以及空间提供者都能换成测试替身，
     /// 这样「立即应用 / 还原 / 切桌面预应用」这几条路径不必真的动用户的 Dock 也能测。
     ///
@@ -194,6 +217,8 @@ final class AppState {
         presenceMonitor: DockPresenceMonitor? = nil,
         fileLog: FileLogSink = FileLogSink(),
         launchpadLoader: LaunchpadLoader = .live,
+        appLocator: AppLocator? = nil,
+        syncEnvironment: SyncEnvironment = .inert,
         environmentReader: @escaping () -> EnvironmentReading = {
             EnvironmentReading(
                 stageManagerActive: StageManagerStatus.isActive(),
@@ -223,6 +248,10 @@ final class AppState {
         self.fileLog = fileLog
         self.launchpadLoader = launchpadLoader
         self.environmentReader = environmentReader
+        self.appLocator = appLocator
+        self.syncEnvironment = syncEnvironment
+        self.deviceIdentity = syncEnvironment.identity()
+        self.syncSettings = syncEnvironment.settingsStore.load()
         observer.onActiveSpaceChanged = { [weak self] space in
             guard let self else { return }
             if let space {
@@ -630,7 +659,21 @@ final class AppState {
             append(.warning, L("\(displayName(for: space)) 的 Dock 栏是空的，跳过应用 —— 先给它配图标", "\(displayName(for: space))'s Dock bar is empty; skipping apply — add icons first"))
             return
         }
-        dockController.request(config, reason: reason, strategy: settings.reloadStrategy)
+        var written = config
+        if let appLocator {
+            // 这台 Mac 上找不到的 App 不写进原生 Dock（免得出问号图标），配置里照留（2026-10-26）。
+            let filtered = appLocator.writableApps(config.pinnedApps)
+            written.pinnedApps = filtered.apps
+            if !filtered.skipped.isEmpty {
+                append(.info, L("这台 Mac 上找不到 \(filtered.skipped.count) 个 App，写原生 Dock 时跳过（配置里保留）：\(filtered.skipped.map(\.label).joined(separator: "、"))",
+                                "\(filtered.skipped.count) app(s) aren't on this Mac; skipped when writing the native Dock (kept in config): \(filtered.skipped.map(\.label).joined(separator: ", "))"))
+            }
+            guard !written.pinnedApps.isEmpty else {
+                append(.warning, L("\(displayName(for: space)) 的 Dock 栏里的 App 这台 Mac 上都找不到，跳过应用", "None of the apps in \(displayName(for: space))'s Dock bar are on this Mac; skipping apply"))
+                return
+            }
+        }
+        dockController.request(written, reason: reason, strategy: settings.reloadStrategy)
     }
 
     /// **桌面切换路径**的统一入口（被动回调 + 三条预应用都走它）。
@@ -790,6 +833,8 @@ final class AppState {
         scheduleSelfHealIfNeeded()
         // **不再有启动对齐**（2026-10-06）：没有「默认 Dock」要对齐了 ——
         // 冻结模式本 App 就不写原生 Dock，未冻结模式由观察器首个采样驱动逐桌面应用。
+        // 配置同步（2026-10-26）：开着自动同步就在启动后写一次自己那份（内容没变不重写）。
+        scheduleAutoSync()
     }
 
     func stop() {
@@ -799,6 +844,8 @@ final class AppState {
         secondaryDocks.forEach { $0.stop() }
         environmentTask?.cancel()
         environmentTask = nil
+        syncDebounceTask?.cancel()
+        syncDebounceTask = nil
         append(.info, L("桌面观察已停止", "Desktop observation stopped"))
     }
 
@@ -915,7 +962,10 @@ final class AppState {
             try configStore.save(.init(bindings: bindings, settings: settings))
         } catch {
             append(.error, L("配置保存失败：\(error.localizedDescription)", "Failed to save config: \(error.localizedDescription)"))
+            return
         }
+        // 开了自动同步就约 2 秒后写一次自己那份（防抖；内容没变不重写）。
+        scheduleAutoSync()
     }
 
     // MARK: - 动作
@@ -1378,7 +1428,8 @@ final class AppState {
             guard let row = SecondaryDockContentBuilder.snapshot(
                 from: DockConfig(pinnedApps: bar.apps, otherItems: bar.otherItems),
                 runningBundleIDs: running,
-                iconSize: iconSize
+                iconSize: iconSize,
+                locator: appLocator
             ) else { continue }
             rows.append(SecondaryDockRow(barID: bar.id, name: bar.name, items: row.items))
         }
@@ -1642,6 +1693,24 @@ final class AppState {
             return false
         }
 
+        let migratedBarCount = replaceConfiguration(with: payload)
+        let normalizedBindings = bindings
+
+        append(.info, L("配置已导入：\(settings.dockBars.count) 根 Dock 栏、\(normalizedBindings.count) 条桌面命名", "Config imported: \(settings.dockBars.count) Dock bar(s), \(normalizedBindings.count) desktop name(s)")
+            + (migratedBarCount > 0 ? L("（迁移 \(migratedBarCount) 条旧 override）", " (migrated \(migratedBarCount) legacy override(s))") : ""))
+        recordDataOperation(
+            L("已导入：\(settings.dockBars.count) 根 Dock 栏、\(normalizedBindings.count) 条桌面命名。", "Imported: \(settings.dockBars.count) Dock bar(s), \(normalizedBindings.count) desktop name(s). ")
+                + L("次级条已生效；原生 Dock 由「立即应用」/ 切桌面 / 下次启动跟上。", "Secondary bars are active; the native Dock follows via “Apply” / desktop switching / next launch."),
+            failed: false
+        )
+        return true
+    }
+
+    /// 整份换掉当前配置（文件导入与同步导入共用）：与启动加载同一套归一化/迁移 → 落盘 →
+    /// 按「原生固定 App 不进栏」清洗 → 刷新次级条；冻结开关变成关时恢复逐桌面写。
+    /// **不自动应用原生 Dock**。返回迁移的旧 override 条数。
+    @discardableResult
+    func replaceConfiguration(with payload: ConfigStore.Payload) -> Int {
         let previousFreeze = settings.freezeNativeDockSwitching
         let (importedSettings, normalizedBindings, migratedBarCount) = normalizePayload(payload)
         settings = importedSettings
@@ -1658,15 +1727,7 @@ final class AppState {
            let space = activeSpace {
             applyForDesktopSwitch(space, reason: L("导入配置：解冻恢复逐桌面切换", "import config: unfreeze, restore per-desktop switching"))
         }
-
-        append(.info, L("配置已导入：\(settings.dockBars.count) 根 Dock 栏、\(normalizedBindings.count) 条桌面命名", "Config imported: \(settings.dockBars.count) Dock bar(s), \(normalizedBindings.count) desktop name(s)")
-            + (migratedBarCount > 0 ? L("（迁移 \(migratedBarCount) 条旧 override）", " (migrated \(migratedBarCount) legacy override(s))") : ""))
-        recordDataOperation(
-            L("已导入：\(settings.dockBars.count) 根 Dock 栏、\(normalizedBindings.count) 条桌面命名。", "Imported: \(settings.dockBars.count) Dock bar(s), \(normalizedBindings.count) desktop name(s). ")
-                + L("次级条已生效；原生 Dock 由「立即应用」/ 切桌面 / 下次启动跟上。", "Secondary bars are active; the native Dock follows via “Apply” / desktop switching / next launch."),
-            failed: false
-        )
-        return true
+        return migratedBarCount
     }
 
     private func recordDataOperation(_ message: String, failed: Bool) {

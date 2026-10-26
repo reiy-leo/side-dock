@@ -231,6 +231,8 @@ arm64 由 CI 构建）。「关于」页的更新检查走 `releases/latest`，�
 | 次级 Dock 条 | `Dock/SecondaryDockLayout.swift`、`Dock/DockFaceProviding.swift`、`UI/SecondaryDock{StripView,Window,Controller}.swift` | 几何源 `visibleFrame` 内缩（**Dock 条不是独立 CG 窗口**）；层级 19 半露 / hover 全出；**条宽随本桌面内容撑开**（图标尺寸跟随系统实时 tilesize）；附着模式同步显隐（face + 显出带 + 400 ms 宽限，200 ms 轮询）；**位置 ≠ Dock 方位 → 独立贴边**（半露 = 滑出屏幕一半，与 Dock 显隐无关）；空间拉回 = 方案 ②（沉没位 + 0.12 s 升起，实验 25）；**手势预隐藏**（type 30 → α=0 + 600 ms 超时分步渐回 + 安全网兜底，实验 27；alpha 渐变一律分步直设——animator 随机静默失效）；**右键菜单**（`NSHostingView` 子类接管 rightMouseDown → 纯函数 builder 每次现建 → 选中带栏 ID 回 `AppState`，2026-10-06）；依赖全注入可单测 |
 | 桌面（Space） | `Spaces/SkyLightBridge.swift`、`SpaceProvider.swift`、`SpaceObserver.swift`、`SpaceSwitcher.swift`、`AnimatedSpaceSwitch.swift`、`SpaceTransitionGestureMonitor.swift`、`DesktopNaming.swift`、`ScreenNaming.swift` | dlopen 私有 API + 降级；300 ms 轮询 + 通知快速通道；循环切换（可选借系统过渡：相邻 ⌃←/⌃→、跨选/循环「切换到桌面 N」，按热键表原样修饰键合成，实验 28 复盘；单屏才用桌面 N；带超时兜底/防抢跑）；命名（≤10 字素簇）；显示器名解析；**切桌面前置手势监视**（listen-only CGEventTap 只听 type 30，零权限，实验 27） |
 | 持久化 | `Store/ConfigStore.swift`、`Store/BaselineStore.swift` | 原子写 `config.json`；基准快照 + 会话标记 + 备份轮转（20 份） |
+| 配置同步（2026-10-26） | `Store/ConfigSync.swift`、`Store/DeviceIdentity.swift`、`App/AppState+Sync.swift`、`UI/DataView.swift`「同步」节 | 每台 Mac 只写 `<文件夹>/SideDock/<硬件 UUID>.json`；`ConfigSync` 纯规则（文件名 / 剔除本机字段 / 桌面序号与映射 / 内容键）；`ConfigSyncFolder` 磁盘读写（原子写、内容没变不写、文件夹不在报错）；同步设置存本机 `sync-settings.json`；`SyncEnvironment` 默认 `.inert`，真机 `AppDelegate` 传 `.live` |
+| 缺 App 过滤（2026-10-26） | `Dock/AppLocator.swift` | 原路径 → bundle ID 再找 → 缺失；次级条跳过缺失、写原生 Dock 跳过缺失（换位置的按新路径重建条目），配置不删；`AppState.appLocator` 默认 nil，真机传 `.live` |
 | 菜单栏 / 设置 UI | `UI/MenuBarController.swift`、`UI/MenuBarIcon.swift`、`UI/SettingsView.swift`、`UI/SettingsWindow.swift`、`UI/NameField.swift`、`UI/DockBarsTabView.swift`、`UI/DesktopsTabView.swift`、`UI/LaunchpadTabView.swift`、`UI/DockBarEditor.swift`、`UI/DataView.swift`、`UI/AboutView.swift`、`UI/SpaceThumbnail.swift`、`UI/DebugPanelView.swift` | **菜单栏状态项**（Lucide 图标 + 桌面序号；序号标题 `attributedTitle` + `baselineOffset -0.75` 保持与图标光学居中——**别退回 `button.title`**，见 `docs/rules.md`「菜单栏标题对齐的新坑」）；侧边栏七选项卡（通用/菜单栏/应用栏/桌面/启动台/数据/关于，`NavigationSplitView`；主 tabs 顶部一组、留 26 pt 顶部让位，**「关于」钉列底**——`safeAreaInset(edge:.bottom)` 内嵌单行原生 sidebar 小 List，与主 List 共用 selection 绑定，2026-10-06）；**无 titlebar**（`fullSizeContentView` + 隐藏标题 + 透明 titlebar，侧边栏贯通到窗口顶、红绿灯浮在侧边栏上；`.titled` 保留给红绿灯/顶部拖拽/「窗口」菜单）；**红绿灯重定位**（`SettingsWindow` 子类：布局拍子里把三个圆点贴到侧边栏图标列正上方——首个圆点中心 (26,26)、左=上=20 pt，标题栏视图与容器加长 12 pt 让圆点下半截可点；**缩放会打回系统基准，必须靠 `layoutIfNeeded` 重贴**，见 `docs/rules.md`「红绿灯对齐的新坑」）；顶部报警横幅；**通用页两节（Dock / 启动、退出与自愈，2026-10-06 第 7 轮并节、第 9 轮拆出菜单栏）**；**菜单栏 Tab**（`MenuBarTab`）= 点击行为（左键动作 + 右键/⌥/⇧ 说明）+ 图标（Lucide 五选一）；数据页 = 导出/导入（与加载同一套归一化）+ 备份还原；关于页 = 版本/GitHub 链接/更新检查（发布读取器可注入，未配置不碰网络）；**应用栏 Tab**（`DockBarsTab`，原「桌面」页拆出）= Dock 栏列表（`ScrollView` + 手绘行，**auto-grow**；标题行右上角「＋」添加；`NameField` 自绘输入框、宽 = 10 个中文字（`tenCharacterWidth`）；绑定下拉缩略图在控件外、位置**下拉**（三条边都列、不能用的置灰——与条上右键菜单共用 `DockBarPosition.choices`）、横向编辑器 8 槽滚动、垃圾桶在预览右侧正方形拖拽变红，0–15 个图标、无名称预览与计数；未绑定栏才显示删除按钮）；**名称输入**（`NameField`，AppKit 自绘：组字安全的超 10 字素簇即截、圆角描边 + 聚焦强调色）；**桌面 Tab**（`DesktopsTab`）= 桌面命名（缩略图 + 桌面 N + `NameField` 单行同线，无前置圆点）+ 名称展示（开关 / 位置分段） |
 | 桌面名称展示 | `UI/DesktopNameOverlay.swift`、`UI/DesktopNameEffectCanvas.swift`、`UI/ToastPresenter.swift`、`UI/DesktopNameToast.swift` | **双通路调度**：桌面名 → `DesktopNameOverlayWindow`（磨砂面板 + 64 pt 字重 800 大字；位置 顶部/中部/底部 纯几何 `frameOrigin` 可单测；**背景效果三档**：默认走原生磨砂面板、霓虹两档走 `DesktopNameEffectCanvas` 自绘背景（暗底 + 流动光带 + 霓虹描边，插在 label **之下**；文字恒可见），30 fps `Timer` 只在展示的 1 秒里跑，`presentation/apply` 纯值可单测，`bandCenterX` 扫动几何纯函数）；系统告知（自愈等）→ `HudToastWindow` 胶囊 HUD（原 `DesktopNameToastWindow` 更名，HUD 材质 + 描边，属性清单逐条是踩坑项）；接替时旧窗立即收、只收当前通路；跨空间、不抢焦点、零权限；`ScreenMatching` 共享显示器映射 |
 | 启动台 | `Launchpad/LaunchpadModels.swift`、`LaunchpadDatabase.swift`、`LaunchpadResolver.swift`、`LaunchpadImport.swift` | **只读**启动台 SQLite 库（`$DARWIN_USER_DIR/com.apple.dock.launchpad/db/db`，`confstr(_CS_DARWIN_USER_DIR)`）：递归 CTE 按每层 `ordering` 还原文件夹与 App 的屏幕顺序（含多页文件夹）；bookmark（`book.resolving`）解真实路径、bundle id 索引兜底；`LaunchpadImport` = 搬运纯规则（并入 / 替换 / 三道闸 + 逐项报数）；`LaunchpadLoader` 三闭包全可注入（测试与 UI 快照不碰真实库）。**macOS 26 起没有启动台**（系统闸门 `LaunchpadSupport`） |
@@ -250,6 +252,19 @@ arm64 由 CI 构建）。「关于」页的更新检查走 `releases/latest`，�
 CFBundleName/DisplayName、Release 标题与资产名）。**刻意不改**：Swift 包 / target / 模块名 `MultiDock`、
 可执行文件名、图标文件名、bundle id `local.multidock`、配置目录 `~/Library/Application Support/MultiDock/`
 —— 改了会丢用户配置、登录项与历史测试。包名带空格，脚本里路径一律加引号。
+
+**新增（2026-10-26，第 73 次）配置同步到云盘文件夹 + 缺 App 过滤**（Rei 原话「添加同步到 google-drive webdav 的支持」「每台电脑有一个单独的同步，互不干扰」）：
+Google Drive 没有官方 WebDAV，所以只在用户选的文件夹里读写文件，上传下载交给云盘客户端。每台 Mac 只写 `<文件夹>/SideDock/<硬件 UUID>.json`，不碰别的设备；
+改设置后约 2 秒自动写（内容没变不重写）；数据页「同步」节列出各设备快照，本机那份可「从云端恢复」，别的设备「导入到本机」（先确认，桌面按「第几块屏 · 第几个桌面」映射，对不上成孤儿栏）。
+本机没装的 App：次级条不画、写原生 Dock 时跳过，配置里不删；换了位置的按 bundle ID 再找到。规格见 `docs/PLAN.md` §3.14，约定见 `docs/rules.md`「2026-10-26 配置同步」。
+代码在 `feat/multi-row-dock`，沙箱没法编译，靠 CI 验证；新增测试 24 个（`ConfigSyncTests` / `ConfigSyncStateTests`）。**未发版**。
+
+- **A17（待真机，2026-10-26 同步）**：① 数据页 → 同步 → 选择…，选 Google Drive「我的云端硬盘」下一个文件夹 → 结果行出「已同步」，
+  访达里能看到 `SideDock/<硬件 UUID>.json`，列表里有本机（带「本机」标签）；② 改一个设置（比如栏名），约 2 秒后文件的修改时间变了；
+  什么都不改点「立即同步」→ 结果行说「已是最新，没重写」，修改时间不变；③ 退出 Google Drive 客户端（或换成一个没挂载的路径）→ 页面出橙色提示，「立即同步」报找不到文件夹；
+  ④ 有第二台 Mac 时：两边都开同步，各自一份互不覆盖；在一台上「导入到本机」另一台的设置 → 绑定按序号落到本机桌面，结果行写清对上几根、孤儿几根；
+  ⑤ 把栏里某个 App 挪走或删掉（或从另一台导入本机没装的 App）→ 次级条不显示它、点不到，编辑器里标灰；未冻结模式「立即应用」后原生 Dock 没有问号图标；
+  ⑥「停止同步」后云端文件还在。
 
 - **A16（待真机）**：① 次级条 hover 图标出名字（窗口开了 `allowsToolTipsWhenApplicationIsInactive`，
   内容没变不再重建视图）；② 开台前调度：贴在它那边的栏临时显示到底部，关掉回原位；原生 Dock 放左时台前调度在右，
@@ -389,6 +404,7 @@ MULTIDOCK_LAUNCHPAD_ACCEPTANCE=1 swift test --disable-sandbox --filter Launchpad
 | 3 | **其他项（文件夹 / 堆栈）不能在 App 里新建**（实测所限，实验 8）：编辑器里只能排序 / 移除 | ⏳ 折中已按"只搬不造 + UI 写替代做法"实现，等用户点头 |
 | 4 | ~~默认 Dock 数量还想调吗？~~ **已随「最近添加的应用」整块删除而销账**（2026-10-06）：`defaultDockAppCount` 字段与生成逻辑都不存在了 | ✅ 无此问题 |
 | 5 | **显示次级条 / 冻结开关的 UI 入口没了**（2026-10-06 用户指令删「次级 Dock 条」节）——两个开关仍存 config.json（默认都开）、行为不变；要改只能手编文件。⚠️ 手编边界：置 `showSecondaryDock=false` 时冻结若仍开，加载路径**不会**自动解冻（原联动只存在于被删的 UI 绑定里）→ 条不显示、原生 Dock 也不写 = 桌面差异完全不可见；要关条就把 `freezeNativeDockSwitching` 一并置 false | ⏳ 等用户：需要的话再放隐藏入口，或永久保持手编 |
+| 6 | **同步的几处默认做法（2026-10-26）**：① 选了文件夹后「自动同步」默认开；② 只「各写各的」，不自动拉取别的设备，也不合并，导入要手动点；③ 「从云端恢复」本机那份也弹确认（需求只要求别的设备弹）；④ 未冻结模式下手改原生 Dock 回存时，本机缺的 App 会从那根栏里掉出去 | ⏳ 等 Rei 真机用过再定 |
 
 > **2026-10-06 用户已拍板（原 6.1 #4–#6，销账）**：① 最近应用**不排除**系统自带 App（维持字面规格）；
 ② **要重扫，但只在打开设置窗口时扫**（`prepareSettingsPresentation`，窗口复用每次打开都扫；重扫只更新内存与预览，**不自动应用**）；③ 下拉菜单**纯文本即可**，但**台前调度开/关、原生 Dock 位置变化要实时反映**到位置选项与提示（`AppState` 2 s 环境轮询 + 打开设置即刷；原生 Dock 方位变化同时更新设置页的附着/独立提示）。

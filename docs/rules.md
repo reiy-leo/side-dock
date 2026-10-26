@@ -636,6 +636,23 @@ Dock 一杀就回来，所以红横幅在本机复现不了。逻辑有单测覆
    （`isSystemSupported` / `loadRecords` / `resolve`）；不注入，快照就会读**用户自己的
    启动台**，结果不再固定，还会跟着用户的改动变。
 
+
+### 2026-10-26 配置同步与缺 App 过滤的约定
+
+1. **同步只写自己那份**：`ConfigSyncFolder.write` 只写 `ConfigSync.fileName(deviceID:)` 这一个文件。
+   别的设备的文件只读不写、不删；「停止同步」也只忘掉文件夹，不删云端文件。改这块时别加「清理旧设备」之类的动作。
+2. **同步设置不进 `AppSettings`**：文件夹路径、自动同步开关、上次同步时间存本机 `sync-settings.json`（`SyncSettingsStore`）。
+   放进 `AppSettings` 会跟着导出、导入、同步文件到处走，换台机器路径也不对。
+3. **新加本机专属字段时，两头一起改**：`ConfigSync.syncPayload` 里去掉，`ConfigSync.keepingLocalOnlyFields` 里保留本机值。
+   现在只有 `secondaryDockRowPrefs` 一个。
+4. **默认值必须是「什么都不做」**：`AppState` 的 `appLocator` 默认 nil、`syncEnvironment` 默认 `.inert`，真机在 `AppDelegate` 显式传 `.live`。
+   和合成器同一个道理：默认接真实磁盘的话，`swift test` 会往用户的云盘文件夹里写文件，或者把测试夹具里的假 App 全当成缺失过滤掉。
+5. **云盘目录的读写不上主线程**：FileProvider 的占位文件读一下可能要等下载。读写放 `Task.detached`，结果回到主线程再改状态。
+6. **文件夹不在时不替用户建**：只在用户选的文件夹里建 `SideDock/`。根目录不在多半是云盘没开或卷没挂载，建出来会写进本地磁盘，用户以为同步了其实没有。
+7. **缺 App 只过滤，不删配置**：次级条和写原生 Dock 时跳过；配置里留着，装回来就又出现。
+   换位置的 App 用 `DockTile.makeFileTile` 重建（编辑器「添加」同一形状），**别手拼条目**（实验 8：坏形状会让 Dock SIGABRT）。
+8. **ISO8601 只到秒**：测「内容没变不重写」时，两次写入的 `writtenAt` 要差开至少 1 秒（或直接比 `contentKey`），不然同一秒写两次字节相同，测不出有没有重写。
+
 ---
 
 # 已解决问题台账（D1–D26，留档别重复查；编号接 AGENTS.md §6.3）

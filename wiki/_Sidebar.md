@@ -9,6 +9,7 @@
   - [[Settings: General|Settings-General]]
   - [[Settings: Desktops|Settings-Desktops]]
   - [[Settings: Launchpad|Settings-Launchpad]]
+  - [[Settings: Data & Sync|Settings-Data]]
   - [[Switch Animation|Switch-Animation]]
 
 **How it works**
