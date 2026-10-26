@@ -98,7 +98,18 @@ jobs:
           mkdir -p "$STAGE"
           ditto "build/Side Dock.app" "$STAGE/Side Dock.app"
           ln -s /Applications "$STAGE/Applications"
-          hdiutil create -volname "Side Dock" -srcfolder "$STAGE" -ov -format UDZO "${BASE}.dmg"
+          # hdiutil 在 GitHub 的 macOS runner 上偶发「Resource busy」失败（2026-10-26 arm64 撞到一次），重试几次。
+          for attempt in 1 2 3 4 5; do
+            if hdiutil create -volname "Side Dock" -srcfolder "$STAGE" -ov -format UDZO "${BASE}.dmg"; then
+              break
+            fi
+            if [[ "$attempt" == 5 ]]; then
+              echo "hdiutil create 连续失败 5 次" >&2
+              exit 1
+            fi
+            echo "hdiutil create 第 ${attempt} 次失败，5 秒后重试" >&2
+            sleep 5
+          done
           hdiutil verify "${BASE}.dmg"
           shasum -a 256 "${BASE}.zip" "${BASE}.dmg"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
