@@ -3,6 +3,10 @@
 > append-only，**最新在最上面**。每条记录：这次做了什么 / 当前进度 / 未解决的事。
 > 2026-10-04 自 AGENTS.md §8 迁移（verbatim）；旧文档里"见 §8"即指本文件。
 
+### 2026-10-26 — 预发布 v0.2.1-alpha.2
+
+Rei 要求发 alpha。Info.plist 0.2.1 (10)，标签 `v0.2.1-alpha.2`。比 alpha.1 多了：配置同步到云盘文件夹（每台 Mac 一份）、本机缺 App 过滤、中文文档改写、Wiki 双语。
+
 ### 2026-10-26 — 合并 main，之后在 main 上开发
 
 Rei 要求：`feat/multi-row-dock` 快进合并到 `main`（b96cb2e，含配置同步和中文文档改写），以后直接在 `main` 上开发。未发版。
