@@ -257,7 +257,7 @@ CFBundleName/DisplayName、Release 标题与资产名）。**刻意不改**：Sw
 Google Drive 没有官方 WebDAV，所以只在用户选的文件夹里读写文件，上传下载交给云盘客户端。每台 Mac 只写 `<文件夹>/SideDock/<硬件 UUID>.json`，不碰别的设备；
 改设置后约 2 秒自动写（内容没变不重写）；数据页「同步」节列出各设备快照，本机那份可「从云端恢复」，别的设备「导入到本机」（先确认，桌面按「第几块屏 · 第几个桌面」映射，对不上成孤儿栏）。
 本机没装的 App：次级条不画、写原生 Dock 时跳过，配置里不删；换了位置的按 bundle ID 再找到。规格见 `docs/PLAN.md` §3.14，约定见 `docs/rules.md`「2026-10-26 配置同步」。
-代码在 `feat/multi-row-dock`，沙箱没法编译，靠 CI 验证；新增测试 24 个（`ConfigSyncTests` / `ConfigSyncStateTests`）。**未发版**。
+代码已快进合并到 `main`（2026-10-26，b96cb2e），沙箱没法编译，靠 CI 验证；新增测试 24 个（`ConfigSyncTests` / `ConfigSyncStateTests`）。**未发版**。
 
 - **A17（待真机，2026-10-26 同步）**：① 数据页 → 同步 → 选择…，选 Google Drive「我的云端硬盘」下一个文件夹 → 结果行出「已同步」，
   访达里能看到 `SideDock/<硬件 UUID>.json`，列表里有本机（带「本机」标签）；② 改一个设置（比如栏名），约 2 秒后文件的修改时间变了；
